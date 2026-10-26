@@ -1,16 +1,16 @@
 import "./style.css";
 import { addRoutes, createMap, fitRoute, paintCoverage, showTrack } from "./map";
-import { matchTrack, mergeCoverage } from "./matcher";
+import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { computeStats, percent, type Progress } from "./stats";
-import { exportBackup, importBackup, loadCoverage, loadLogs, saveCoverage, saveLogs } from "./store";
+import { exportBackup, importBackup, openStore, type Record } from "./store";
 import { CATEGORY_LABELS, type Category, type RouteData } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = $("status");
 
-let coverage = loadCoverage();
-let logs = loadLogs();
+let record: Record = { coverage: new Map(), logs: [] };
+const storePromise = openStore();
 let data: RouteData | null = null;
 
 const map = createMap($("map"));
@@ -26,7 +26,7 @@ function row(label: string, p: Progress): string {
 
 function render() {
   if (!data) return;
-  const stats = computeStats(data, coverage);
+  const stats = computeStats(data, record.coverage);
   $("overall").innerHTML = `<h2>総合制覇率</h2><div class="big">${percent(stats.overall).toFixed(2)}%</div>
     <p class="muted">${km(stats.overall.done)} / ${km(stats.overall.total)} km(重複区間は1回だけ数えています)</p>`;
   $("categories").innerHTML =
@@ -43,7 +43,7 @@ function render() {
   $("routes").innerHTML = refs
     .map((r) => `<li data-ref="${r}">${row(routeName(r), stats.byRoute.get(r)!.overall)}</li>`)
     .join("");
-  paintCoverage(map, coverage);
+  paintCoverage(map, record.coverage);
 }
 
 async function loadData() {
@@ -54,9 +54,12 @@ async function loadData() {
 
 map.on("load", async () => {
   try {
-    data = await loadData();
+    const store = await storePromise;
+    [data, record] = await Promise.all([loadData(), store.load()]);
     addRoutes(map, data);
-    status.textContent = `国道データ: ${Object.keys(data.routes).length} 路線(${data.generatedAt.slice(0, 10)} 時点)`;
+    status.textContent =
+      `国道データ: ${Object.keys(data.routes).length} 路線(${data.generatedAt.slice(0, 10)} 時点)` +
+      (store.shared ? " / 記録は MiniPC に保存されます" : " / 記録はこのブラウザに保存されます");
     render();
   } catch (e) {
     status.textContent = (e as Error).message;
@@ -66,22 +69,29 @@ map.on("load", async () => {
 $<HTMLInputElement>("file").addEventListener("change", async (ev) => {
   const input = ev.target as HTMLInputElement;
   if (!data || !input.files) return;
+  const store = await storePromise;
   for (const file of Array.from(input.files)) {
     status.textContent = `${file.name} を判定中…`;
     try {
       const track = await parseTrackFile(file);
       const result = matchTrack(data, track);
-      coverage = mergeCoverage(coverage, result);
-      logs = [...logs, { name: file.name, importedAt: new Date().toISOString(), points: track.length }];
+      const log = { name: file.name, importedAt: new Date().toISOString(), points: track.length };
+      record = await store.add({ coverage: result, logs: [log] });
       showTrack(map, track);
       status.textContent = `${file.name}: ${track.length} 点を読み込み、${result.size} 区間を通過しました`;
     } catch (e) {
       status.textContent = `${file.name}: ${(e as Error).message}`;
     }
   }
-  saveCoverage(coverage);
-  saveLogs(logs);
   input.value = "";
+  render();
+});
+
+// ほかの端末で追加した記録を、このページに戻ってきたときに取り込む
+document.addEventListener("visibilitychange", async () => {
+  const store = await storePromise;
+  if (document.visibilityState !== "visible" || !store.shared || !data) return;
+  record = await store.load();
   render();
 });
 
@@ -92,7 +102,7 @@ $("routes").addEventListener("click", (e) => {
 });
 
 $("export").addEventListener("click", () => {
-  const blob = new Blob([exportBackup(coverage, logs)], { type: "application/json" });
+  const blob = new Blob([exportBackup(record)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `kokudo-record-${new Date().toISOString().slice(0, 10)}.json`;
@@ -103,19 +113,16 @@ $("export").addEventListener("click", () => {
 $<HTMLInputElement>("import").addEventListener("change", async (ev) => {
   const file = (ev.target as HTMLInputElement).files?.[0];
   if (!file) return;
-  const b = importBackup(await file.text());
-  coverage = mergeCoverage(coverage, b.coverage);
-  logs = [...logs, ...b.logs];
-  saveCoverage(coverage);
-  saveLogs(logs);
+  const store = await storePromise;
+  record = await store.add(importBackup(await file.text()));
   render();
 });
 
-$("reset").addEventListener("click", () => {
-  if (!confirm("走行記録をすべて消します。よろしいですか?")) return;
-  coverage = new Map();
-  logs = [];
-  saveCoverage(coverage);
-  saveLogs(logs);
+$("reset").addEventListener("click", async () => {
+  const store = await storePromise;
+  const where = store.shared ? "すべての端末の" : "";
+  if (!confirm(`${where}走行記録をすべて消します。よろしいですか?`)) return;
+  await store.clear();
+  record = { coverage: new Map(), logs: [] };
   render();
 });
