@@ -27,8 +27,10 @@ npm run dev
 
 ## 国道データ
 
-OpenStreetMap の `network=JP:national` の路線リレーションから作ります(`scripts/build_routes.py`)。
+OpenStreetMap の `network=JP:national` の路線リレーションから作ります。
 データは大きいのでリポジトリには入れず、Actions の「国道データを更新」でリリース `route-data` に置き、公開時に取り込みます。
+Actions では [Geofabrik](https://download.geofabrik.de/asia/japan.html) の日本全体のファイルから抽出します(`scripts/extract_pbf.py`)。
+Overpass API から直接取ることもできますが、混雑で断られることがあります。
 
 種別の判定方法:
 
