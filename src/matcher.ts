@@ -118,10 +118,3 @@ export function matchTrack(
   }
   return result;
 }
-
-/** 既存の記録に新しいログの結果を足す(区間ごとに大きい方を残す) */
-export function mergeCoverage(base: Coverage, add: Coverage): Coverage {
-  const out = new Map(base);
-  for (const [id, r] of add) out.set(id, Math.max(out.get(id) ?? 0, r));
-  return out;
-}

@@ -40,19 +40,29 @@ Overpass API から直接取ることもできますが、混雑で断られる�
 - 重複区間: 複数の国道リレーションに含まれる区間
 - 旧道: OSM では国道リレーションから外れていることが多く、未対応
 
-## MiniPC で動かして LAN から使う
+## MiniPC(Windows 11)で動かして LAN から使う
 
-必要なもの: Node.js 22 以上、Git、[GitHub CLI](https://cli.github.com/)(`gh auth login` 済み)
+MiniPC でサーバーを動かし、LAN 内の PC やスマホのブラウザから開きます。
+走行記録は MiniPC の `data\record.json` に保存されるので、どの端末から見ても同じ記録になります。
 
-```sh
+必要なもの: [Node.js](https://nodejs.org/) 22 以上、[Git](https://git-scm.com/)、[GitHub CLI](https://cli.github.com/)
+
+```powershell
 git clone https://github.com/Yzvica/National-Route-Conquest-Map.git
 cd National-Route-Conquest-Map
-./scripts/update.sh   # 依存関係・国道データを取り込んでビルド
-npm run serve         # http://<MiniPCのIPアドレス>:8080 で開ける
+gh auth login                                                    # 初回だけ
+powershell -ExecutionPolicy Bypass -File scripts\update.ps1      # 国道データの取得とビルド
+npm run serve                                                    # http://<MiniPCのIPアドレス>:8080 で開ける
 ```
 
-- 常時起動するには `deploy/kokudo.service`(systemd の設定例)を使います
-- 新しいコードや国道データを取り込むときは `./scripts/update.sh` を実行して再起動します
-- 走行記録は、ページを開いたブラウザごとに保存されます(PC とスマホでは別々)。移すときは「記録を書き出す / 読み込む」を使います
+起動時に自動で立ち上げるには、管理者の PowerShell で次を実行します(タスクスケジューラへの登録と、ファイアウォールで 8080 番ポートを家庭内ネットワークに開放します)。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
+```
+
+- 新しいコードや国道データを取り込むときは `scripts\update.ps1` を実行します(自動起動していれば再起動もします)
+- `data\record.json` をコピーしておけばバックアップになります。画面の「記録を書き出す」でも保存できます
+- `npm run dev` で開いたときなど、サーバーがない場合はブラウザの中に保存します
 
 地図の背景には[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)、道路データには © OpenStreetMap contributors を使っています。
