@@ -140,8 +140,10 @@ def simplify(pts: list[tuple[float, float]], eps: float) -> list[tuple[float, fl
     return [p for p, k in zip(pts, keep) if k]
 
 
-def normalize_ref(ref: str) -> str:
-    return ref.strip().replace("号", "")
+def parse_refs(ref: str) -> list[str]:
+    """"1;8" のような併記は分け、"E9" のような高速道路の路線記号は除く"""
+    parts = (p.strip().replace("号", "") for p in ref.split(";"))
+    return [p for p in parts if p.isdigit()]
 
 
 def build(osm: dict) -> dict:
@@ -150,13 +152,12 @@ def build(osm: dict) -> dict:
     for el in osm["elements"]:
         if el["type"] != "relation":
             continue
-        ref = normalize_ref(el.get("tags", {}).get("ref", ""))
-        if not ref:
-            continue
-        routes.setdefault(ref, {"name": f"国道{ref}号"})
+        refs = parse_refs(el.get("tags", {}).get("ref", ""))
+        for ref in refs:
+            routes.setdefault(ref, {"name": f"国道{ref}号"})
         for m in el.get("members", []):
-            if m["type"] == "way":
-                way_routes.setdefault(m["ref"], set()).add(ref)
+            if m["type"] == "way" and refs:
+                way_routes.setdefault(m["ref"], set()).update(refs)
 
     segments = []
     tunnels = []
@@ -176,7 +177,7 @@ def build(osm: dict) -> dict:
             cats.append("bypass")
         else:
             cats.append("main")
-        refs = sorted(way_routes[el["id"]], key=lambda r: (len(r), r))
+        refs = sorted(way_routes[el["id"]], key=int)
         if len(refs) > 1:
             cats.append("overlap")
 
@@ -201,7 +202,7 @@ def build(osm: dict) -> dict:
     return {
         "version": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "routes": dict(sorted(routes.items(), key=lambda kv: (len(kv[0]), kv[0]))),
+        "routes": dict(sorted(routes.items(), key=lambda kv: int(kv[0]))),
         "segments": segments,
         "tunnels": tunnels,
     }
