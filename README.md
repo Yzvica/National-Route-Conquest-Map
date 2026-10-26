@@ -40,10 +40,19 @@ Overpass API から直接取ることもできますが、混雑で断られる�
 - 重複区間: 複数の国道リレーションに含まれる区間
 - 旧道: OSM では国道リレーションから外れていることが多く、未対応
 
-## 公開(GitHub Pages)
+## MiniPC で動かして LAN から使う
 
-main に push すると `.github/workflows/deploy.yml` で GitHub Pages に公開されます。
-初回は Settings → Pages の Source を「GitHub Actions」にしてください。
-無料プランの場合、GitHub Pages はリポジトリが公開(public)のときだけ使えます。
+必要なもの: Node.js 22 以上、Git、[GitHub CLI](https://cli.github.com/)(`gh auth login` 済み)
+
+```sh
+git clone https://github.com/Yzvica/National-Route-Conquest-Map.git
+cd National-Route-Conquest-Map
+./scripts/update.sh   # 依存関係・国道データを取り込んでビルド
+npm run serve         # http://<MiniPCのIPアドレス>:8080 で開ける
+```
+
+- 常時起動するには `deploy/kokudo.service`(systemd の設定例)を使います
+- 新しいコードや国道データを取り込むときは `./scripts/update.sh` を実行して再起動します
+- 走行記録は、ページを開いたブラウザごとに保存されます(PC とスマホでは別々)。移すときは「記録を書き出す / 読み込む」を使います
 
 地図の背景には[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)、道路データには © OpenStreetMap contributors を使っています。

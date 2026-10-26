@@ -1,0 +1,17 @@
+# MiniPC(Linux)で常時起動するための systemd の設定例。
+# User と WorkingDirectory を自分の環境に合わせて書き換え、
+#   sudo cp deploy/kokudo.service /etc/systemd/system/
+#   sudo systemctl enable --now kokudo
+# で起動します。
+[Unit]
+Description=国道制覇マップ
+After=network-online.target
+
+[Service]
+User=ryo
+WorkingDirectory=/home/ryo/National-Route-Conquest-Map
+ExecStart=/usr/bin/npm run serve
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
