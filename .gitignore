@@ -1,0 +1,5 @@
+node_modules/
+dist/
+scripts/__pycache__/
+scripts/cache/
+public/data/routes.json
