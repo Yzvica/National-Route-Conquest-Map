@@ -1,0 +1,38 @@
+# OSM から国道データを作り直し、リリース "route-data" に routes.json として置く。
+# データは大きいのでリポジトリには入れない。Actions タブから手動で実行する。
+name: 国道データを更新
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: "対象の国道番号(空欄なら全部。例: 1 20 246)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Overpass API から取得して変換
+        env:
+          REFS: ${{ inputs.refs }}
+        run: |
+          args=()
+          for r in $REFS; do args+=(--ref "$r"); done
+          python3 scripts/build_routes.py "${args[@]}" --out routes.json
+      - name: リリースに置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view route-data >/dev/null 2>&1 || \
+            gh release create route-data --title "国道データ" --notes "build_routes.py で生成した国道データ"
+          gh release upload route-data routes.json --clobber
