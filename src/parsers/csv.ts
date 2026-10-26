@@ -49,26 +49,53 @@ export function parseTime(s: string): number | undefined {
   return Number.isNaN(t) ? undefined : t;
 }
 
+/** "Latitude(deg)" → "Latitude" のように単位を外して比べる */
+const normalizeHeader = (h: string) => h.replace(/[(（].*?[)）]/g, "").trim();
+
+/** gbowl の 1行目 "#GBOWLCSV,2026-09-19 20:05:37 (13m) DriverA" から記録開始時刻(日本時間)を読む */
+function gbowlStartTime(rows: string[][]): number | undefined {
+  const first = rows[0]?.[0]?.trim();
+  if (first !== "#GBOWLCSV") return undefined;
+  const m = rows[0][1]?.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return undefined;
+  const t = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+09:00`);
+  return Number.isNaN(t) ? undefined : t;
+}
+
 /**
  * 緯度・経度(・時刻)列をヘッダー名から探して読む。
- * gbowl の CSV もこれで読む想定(サンプル受領後に列名を確定させる)。
+ * gbowl の CSV は先頭に "#GBOWLCSV" などの情報行があり、時刻は記録開始からの秒数。
  */
 export function parseTrackCsv(text: string): TrackPoint[] {
-  const rows = parseCsvRows(text.replace(/^﻿/, ""));
-  if (rows.length < 2) return [];
-  const header = rows[0].map((h) => h.trim());
+  const rows = parseCsvRows(text.replace(/^\uFEFF/, ""));
+  const headerIndex = rows.findIndex((r) => {
+    const h = r.map(normalizeHeader);
+    return h.some((c) => LAT.test(c)) && h.some((c) => LON.test(c));
+  });
+  if (headerIndex < 0) {
+    throw new Error(`緯度・経度の列が見つかりません(1行目: ${rows[0]?.join(", ") ?? ""})`);
+  }
+  const header = rows[headerIndex].map(normalizeHeader);
   const latCol = header.findIndex((h) => LAT.test(h));
   const lonCol = header.findIndex((h) => LON.test(h));
   const timeCol = header.findIndex((h) => TIME.test(h));
-  if (latCol < 0 || lonCol < 0) {
-    throw new Error(`緯度・経度の列が見つかりません(ヘッダー: ${header.join(", ")})`);
-  }
+  const start = gbowlStartTime(rows);
+
   const points: TrackPoint[] = [];
-  for (const r of rows.slice(1)) {
+  for (const r of rows.slice(headerIndex + 1)) {
     const lat = Number(r[latCol]);
     const lon = Number(r[lonCol]);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) continue;
-    points.push({ lat, lon, time: timeCol >= 0 ? parseTime(r[timeCol] ?? "") : undefined });
+    const prev = points[points.length - 1];
+    // 停車中などで同じ座標が続く行は1つにまとめる
+    if (prev && prev.lat === lat && prev.lon === lon) continue;
+    let time: number | undefined;
+    if (timeCol >= 0) {
+      const raw = r[timeCol] ?? "";
+      time = start !== undefined ? start + Number(raw) * 1000 : parseTime(raw);
+      if (time !== undefined && Number.isNaN(time)) time = undefined;
+    }
+    points.push({ lat, lon, time });
   }
   return points;
 }
