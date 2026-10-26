@@ -14,12 +14,22 @@ import argparse
 import json
 import math
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_ENDPOINT = "https://overpass-api.de/api/interpreter"
+# 混んでいて 502/504 を返すことがあるので、順に試す
+ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+# 国道の番号は 1〜58 と 101〜507。一度に全部頼むと断られやすいので分けて取る
+ALL_REFS = [str(n) for n in [*range(1, 59), *range(101, 508)]]
+REFS_PER_QUERY = 25
 SEGMENT_LENGTH = 200.0  # m。判定と表示の最小単位
 SIMPLIFY_METERS = 3.0  # 区間の形をこの誤差まで間引いてファイルを小さくする
 DOTTED_HIGHWAYS = {"path", "track", "footway", "steps", "bridleway", "cycleway", "pedestrian"}
@@ -29,20 +39,40 @@ OUT = Path(__file__).resolve().parent.parent / "public" / "data" / "routes.json"
 def overpass_query(refs: list[str]) -> str:
     ref_filter = f'["ref"~"^({"|".join(refs)})$"]' if refs else ""
     return f"""
-[out:json][timeout:1800][maxsize:2147483648];
-area["ISO3166-1"="JP"][admin_level=2]->.jp;
-rel["type"="route"]["route"~"^(road|ferry)$"]["network"="JP:national"]{ref_filter}(area.jp)->.r;
+[out:json][timeout:900];
+rel["type"="route"]["route"~"^(road|ferry)$"]["network"="JP:national"]{ref_filter}->.r;
 .r out body;
 way(r.r);
 out tags geom;
 """
 
 
-def fetch(endpoint: str, query: str) -> dict:
+def fetch(endpoints: list[str], query: str, attempts: int = 6) -> dict:
     body = urllib.parse.urlencode({"data": query}).encode()
-    req = urllib.request.Request(endpoint, data=body, headers={"User-Agent": "national-route-conquest-map"})
-    with urllib.request.urlopen(req, timeout=2000) as res:
-        return json.load(res)
+    for i in range(attempts):
+        endpoint = endpoints[i % len(endpoints)]
+        req = urllib.request.Request(endpoint, data=body, headers={"User-Agent": "national-route-conquest-map"})
+        try:
+            with urllib.request.urlopen(req, timeout=1000) as res:
+                return json.load(res)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            if i == attempts - 1:
+                raise
+            wait = 15 * (i + 1)
+            print(f"  {endpoint} で失敗({e})。{wait}秒後に再試行します", file=sys.stderr)
+            time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
+def fetch_all(endpoints: list[str], refs: list[str]) -> dict:
+    """番号を分けて取得し、1つの Overpass 結果にまとめる(重複する要素は1つにする)"""
+    elements: dict[tuple[str, int], dict] = {}
+    chunks = [refs[i : i + REFS_PER_QUERY] for i in range(0, len(refs), REFS_PER_QUERY)]
+    for n, chunk in enumerate(chunks, 1):
+        print(f"取得中 {n}/{len(chunks)}: 国道{chunk[0]}〜{chunk[-1]}号", file=sys.stderr)
+        for el in fetch(endpoints, overpass_query(chunk))["elements"]:
+            elements[(el["type"], el["id"])] = el
+    return {"elements": list(elements.values())}
 
 
 def dist(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -187,15 +217,14 @@ def main() -> None:
     ap.add_argument("--ref", action="append", default=[], help="対象の国道番号(複数指定可)")
     ap.add_argument("--input", type=Path, help="取得済みの Overpass JSON")
     ap.add_argument("--save-raw", type=Path, help="取得した Overpass JSON の保存先")
-    ap.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    ap.add_argument("--endpoint", action="append", help="Overpass API の URL(複数指定可。省略時は公開サーバーを順に使う)")
     ap.add_argument("--out", type=Path, default=OUT)
     args = ap.parse_args()
 
     if args.input:
         osm = json.loads(args.input.read_text())
     else:
-        print("Overpass API から取得中…", file=sys.stderr)
-        osm = fetch(args.endpoint, overpass_query(args.ref))
+        osm = fetch_all(args.endpoint or ENDPOINTS, args.ref or ALL_REFS)
         if args.save_raw:
             args.save_raw.write_text(json.dumps(osm))
 
