@@ -1,4 +1,4 @@
-# MiniPC(Windows)で最新のコードと国道データを取り込み、アプリを作り直す。
+﻿# MiniPC(Windows)で最新のコードと国道データを取り込み、アプリを作り直す。
 # 国道データ(リリース route-data)の取得に GitHub CLI(gh)のログインが必要です。
 #   powershell -ExecutionPolicy Bypass -File scripts\update.ps1
 $ErrorActionPreference = "Stop"

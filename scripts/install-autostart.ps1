@@ -1,4 +1,4 @@
-# MiniPC(Windows)の起動時に国道制覇マップのサーバーを自動で立ち上げ、
+﻿# MiniPC(Windows)の起動時に国道制覇マップのサーバーを自動で立ち上げ、
 # LAN の他の端末から 8080 番ポートに入れるようにする。管理者の PowerShell で実行する。
 #   powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 $ErrorActionPreference = "Stop"
