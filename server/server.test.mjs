@@ -15,6 +15,20 @@ describe("mergeRecord", () => {
     expect(merged.coverage).toEqual({ a: 1, b: 0.6, c: 0.2 });
     expect(merged.logs.map((l) => l.name)).toEqual(["x", "y"]);
   });
+
+  it("通った日は最初と最後を広げ、日付のない古い記録とも混ぜられる", () => {
+    const merged = mergeRecord(
+      { coverage: { a: 1 }, logs: [] },
+      { coverage: { a: 1 }, dates: { a: ["2026-05-01", "2026-05-01"] }, logs: [] },
+    );
+    expect(merged.dates).toEqual({ a: ["2026-05-01", "2026-05-01"] });
+    const again = mergeRecord(merged, {
+      coverage: {},
+      dates: { a: ["2026-03-10", "2026-03-10"], b: ["2026-09-01", "2026-09-01"], c: "bad" },
+      logs: [],
+    });
+    expect(again.dates).toEqual({ a: ["2026-03-10", "2026-05-01"], b: ["2026-09-01", "2026-09-01"] });
+  });
 });
 
 describe("/api/record", () => {
@@ -37,6 +51,6 @@ describe("/api/record", () => {
     expect(rec.logs).toHaveLength(2);
 
     await fetch(base, { method: "DELETE" });
-    expect(await (await fetch(base)).json()).toEqual({ coverage: {}, logs: [] });
+    expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [] });
   });
 });
