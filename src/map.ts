@@ -1,5 +1,6 @@
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import type { PassDates } from "./store";
 import type { Coverage, RouteData, TrackPoint } from "./types";
 
 export function createMap(container: HTMLElement): maplibregl.Map {
@@ -24,7 +25,7 @@ export function createMap(container: HTMLElement): maplibregl.Map {
   });
 }
 
-export function addRoutes(map: maplibregl.Map, data: RouteData) {
+export function addRoutes(map: maplibregl.Map, data: RouteData, datesOf: (id: string) => PassDates | undefined) {
   map.addSource("routes", {
     type: "geojson",
     promoteId: "id",
@@ -70,7 +71,9 @@ export function addRoutes(map: maplibregl.Map, data: RouteData) {
       .map((r) => data.routes[r]?.name ?? `国道${r}号`)
       .join(" / ");
     const r = Number(f.state?.r ?? 0);
-    new maplibregl.Popup().setLngLat(e.lngLat).setText(`${names}(この区間 ${Math.round(r * 100)}%)`).addTo(map);
+    const d = datesOf(String(f.properties.id));
+    const when = !d ? "" : d[0] === d[1] ? ` / ${d[0]} に通過` : ` / 初めて ${d[0]}、最後 ${d[1]}`;
+    new maplibregl.Popup().setLngLat(e.lngLat).setText(`${names}(この区間 ${Math.round(r * 100)}%${when})`).addTo(map);
   });
 }
 

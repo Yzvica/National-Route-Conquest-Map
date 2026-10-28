@@ -3,13 +3,13 @@ import { addRoutes, createMap, fitRoute, paintCoverage, showTrack } from "./map"
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { computeStats, percent, type Progress } from "./stats";
-import { exportBackup, importBackup, openStore, type Record } from "./store";
-import { CATEGORY_LABELS, type Category, type RouteData } from "./types";
+import { emptyRecord, exportBackup, importBackup, openStore, type Record } from "./store";
+import { CATEGORY_LABELS, type Category, type RouteData, type TrackPoint } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const status = $("status");
 
-let record: Record = { coverage: new Map(), logs: [] };
+let record: Record = emptyRecord();
 const storePromise = openStore();
 let data: RouteData | null = null;
 
@@ -56,7 +56,7 @@ map.on("load", async () => {
   try {
     const store = await storePromise;
     [data, record] = await Promise.all([loadData(), store.load()]);
-    addRoutes(map, data);
+    addRoutes(map, data, (id) => record.dates.get(id));
     status.textContent =
       `国道データ: ${Object.keys(data.routes).length} 路線(${data.generatedAt.slice(0, 10)} 時点)` +
       (store.shared ? " / 記録は MiniPC に保存されます" : " / 記録はこのブラウザに保存されます");
@@ -66,25 +66,74 @@ map.on("load", async () => {
   }
 });
 
-$<HTMLInputElement>("file").addEventListener("change", async (ev) => {
-  const input = ev.target as HTMLInputElement;
-  if (!data || !input.files) return;
+/** ログの日付(YYYY-MM-DD、端末の時刻帯)。ログに時刻がなければファイルの更新日を使う */
+function logDate(track: TrackPoint[], file: File): string {
+  const d = new Date(track.find((p) => p.time !== undefined)?.time ?? file.lastModified);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const isTrackFile = (f: File) => /\.(csv|gpx)$/i.test(f.name);
+
+async function importFiles(files: File[]) {
+  if (!data) return;
   const store = await storePromise;
-  for (const file of Array.from(input.files)) {
-    status.textContent = `${file.name} を判定中…`;
+  const passed = new Set<string>();
+  const failed: string[] = [];
+  for (const [i, file] of files.entries()) {
+    status.textContent = `${file.name} を判定中…(${i + 1} / ${files.length})`;
     try {
       const track = await parseTrackFile(file);
       const result = matchTrack(data, track);
+      const day = logDate(track, file);
+      const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const log = { name: file.name, importedAt: new Date().toISOString(), points: track.length };
-      record = await store.add({ coverage: result, logs: [log] });
+      record = await store.add({ coverage: result, dates, logs: [log] });
+      for (const id of result.keys()) passed.add(id);
       showTrack(map, track);
-      status.textContent = `${file.name}: ${track.length} 点を読み込み、${result.size} 区間を通過しました`;
     } catch (e) {
-      status.textContent = `${file.name}: ${(e as Error).message}`;
+      failed.push(`${file.name}: ${(e as Error).message}`);
     }
   }
-  input.value = "";
+  const ok = files.length - failed.length;
+  status.textContent =
+    `${ok} ファイルを読み込み、${passed.size} 区間を通過しました` + (failed.length ? `(読めなかったもの: ${failed.join(" / ")})` : "");
   render();
+}
+
+$<HTMLInputElement>("file").addEventListener("change", async (ev) => {
+  const input = ev.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  await importFiles(files);
+});
+
+// 画面のどこにでもファイルをドロップして読み込める
+let dragDepth = 0;
+const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes("Files") ?? false;
+document.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth++;
+  document.body.classList.add("dragging");
+});
+document.addEventListener("dragleave", () => {
+  if (dragDepth > 0 && --dragDepth === 0) document.body.classList.remove("dragging");
+});
+document.addEventListener("dragover", (e) => {
+  if (hasFiles(e)) e.preventDefault();
+});
+document.addEventListener("drop", async (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("dragging");
+  const files = Array.from(e.dataTransfer?.files ?? []);
+  const tracks = files.filter(isTrackFile);
+  if (tracks.length === 0) {
+    status.textContent = "CSV か GPX のファイルをドロップしてください";
+    return;
+  }
+  await importFiles(tracks);
 });
 
 // ほかの端末で追加した記録を、このページに戻ってきたときに取り込む
@@ -123,6 +172,6 @@ $("reset").addEventListener("click", async () => {
   const where = store.shared ? "すべての端末の" : "";
   if (!confirm(`${where}走行記録をすべて消します。よろしいですか?`)) return;
   await store.clear();
-  record = { coverage: new Map(), logs: [] };
+  record = emptyRecord();
   render();
 });

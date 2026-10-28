@@ -26,9 +26,9 @@ const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg"]);
 function loadRecord() {
   try {
     const j = JSON.parse(readFileSync(RECORD, "utf8"));
-    return { coverage: j.coverage ?? {}, logs: j.logs ?? [] };
+    return { coverage: j.coverage ?? {}, dates: j.dates ?? {}, logs: j.logs ?? [] };
   } catch {
-    return { coverage: {}, logs: [] };
+    return { coverage: {}, dates: {}, logs: [] };
   }
 }
 
@@ -39,13 +39,24 @@ function saveRecord(rec) {
   renameSync(`${RECORD}.tmp`, RECORD);
 }
 
-/** 区間ごとに大きい方を残す(src/matcher.ts の mergeCoverage と同じ規則) */
+const isDates = (d) => Array.isArray(d) && d.length === 2 && d.every((x) => typeof x === "string");
+
+/**
+ * 区間ごとに割合は大きい方、通った日は初めての日が早い方・最後の日が遅い方を残す
+ * (src/store.ts の mergeRecord と同じ規則)
+ */
 export function mergeRecord(base, add) {
   const coverage = { ...base.coverage };
   for (const [id, r] of Object.entries(add.coverage ?? {})) {
     if (typeof r === "number" && r > (coverage[id] ?? 0)) coverage[id] = Math.min(r, 1);
   }
-  return { coverage, logs: [...base.logs, ...(add.logs ?? [])] };
+  const dates = { ...base.dates };
+  for (const [id, d] of Object.entries(add.dates ?? {})) {
+    if (!isDates(d)) continue;
+    const cur = dates[id];
+    dates[id] = cur ? [cur[0] < d[0] ? cur[0] : d[0], cur[1] > d[1] ? cur[1] : d[1]] : d;
+  }
+  return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])] };
 }
 
 // --- 配信 ---
@@ -93,8 +104,9 @@ export function createApp() {
           return json(res, 200, merged);
         }
         if (req.method === "DELETE") {
-          saveRecord({ coverage: {}, logs: [] });
-          return json(res, 200, { coverage: {}, logs: [] });
+          const empty = { coverage: {}, dates: {}, logs: [] };
+          saveRecord(empty);
+          return json(res, 200, empty);
         }
         return json(res, 405, { error: "method not allowed" });
       }
