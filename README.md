@@ -62,7 +62,7 @@ npm run serve                                                    # http://<MiniP
 powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 ```
 
-- 新しいコードや国道データを取り込むときは `scripts\update.ps1` を実行します(自動起動していれば再起動もします)
+- 新しいコードや国道データを取り込むときは、フォルダ直下の `update.bat` をダブルクリックします(`scripts\update.ps1` を管理者で実行し、自動起動していればサーバーも再起動します)
 - `data\record.json` をコピーしておけばバックアップになります。画面の「記録を書き出す」でも保存できます
 - `npm run dev` で開いたときなど、サーバーがない場合はブラウザの中に保存します
 
