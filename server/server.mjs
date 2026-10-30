@@ -128,8 +128,14 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
     console.error("dist/ がありません。先に npm run build(または scripts\\update.ps1)を実行してください。");
     process.exit(1);
   }
-  createApp().listen(PORT, "0.0.0.0", () => {
-    console.log(`国道制覇マップ: http://localhost:${PORT}/ (LAN からは http://<このPCのIPアドレス>:${PORT}/)`);
+  const app = createApp();
+  app.on("error", (e) => {
+    if (e.code === "EADDRINUSE") console.error(`ポート ${PORT} はほかのプログラムが使っています(前のサーバーが残っている可能性があります)。`);
+    else console.error(e);
+    process.exit(1);
+  });
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`${new Date().toISOString()} 国道制覇マップ: http://localhost:${PORT}/ (LAN からは http://<このPCのIPアドレス>:${PORT}/)`);
     console.log(`走行記録の保存先: ${RECORD}`);
   });
 }

@@ -6,7 +6,9 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $node = (Get-Command node).Source
 $port = 8080
 
-$action = New-ScheduledTaskAction -Execute $node -Argument "server\server.mjs" -WorkingDirectory $root
+# サーバーが落ちても run-server.ps1 が立ち上げ直す
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -WorkingDirectory $root `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\run-server.ps1`" -Node `"$node`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 # S4U: ログインしていなくても、パスワードを保存せずに自分のユーザーで動かす
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U
@@ -21,8 +23,10 @@ if (-not (Get-NetFirewallRule -DisplayName "KokudoMap" -ErrorAction SilentlyCont
         -Action Allow -Profile Private | Out-Null
 }
 
+Stop-ScheduledTask -TaskName "KokudoMap" -ErrorAction SilentlyContinue
+& (Join-Path $PSScriptRoot "stop-port.ps1") $port
 Start-ScheduledTask -TaskName "KokudoMap"
 $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -in "Dhcp", "Manual" -and $_.IPAddress -notlike "169.*" } |
     Select-Object -First 1).IPAddress
 Write-Host "起動しました。LAN の端末から http://${ip}:$port/ を開いてください。"
-Write-Host "走行記録は $root\data\record.json に保存されます。"
+Write-Host "走行記録は $root\data\record.json に、サーバーのログは $root\data\server.log に保存されます。"
