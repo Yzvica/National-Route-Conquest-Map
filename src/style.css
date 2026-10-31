@@ -20,7 +20,7 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
-#app { display: flex; height: 100%; }
+#app { display: flex; height: 100%; position: relative; }
 #panel { width: 340px; overflow-y: auto; padding: 16px; border-right: 1px solid var(--line); }
 #map { flex: 1; }
 body.dragging::after {
@@ -45,7 +45,32 @@ button.danger { color: var(--accent); }
 #routes { list-style: none; padding: 0; margin: 0; }
 #routes li { cursor: pointer; }
 #route-filter { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
+#routes li.selected { background: var(--bar); border-radius: 6px; padding: 0 6px; }
+#detail {
+  position: absolute; top: 12px; right: 12px; z-index: 5; width: 300px; max-width: calc(100% - 24px);
+  max-height: calc(100% - 60px); overflow-y: auto; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--bg); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+}
+#detail[hidden] { display: none; }
+#detail .big { font-size: 32px; }
+#detail p { margin: 8px 0; }
+.detail-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.detail-head h2 { margin: 0; }
+#detail-close { padding: 2px 10px; font-size: 18px; line-height: 1; }
+.legend { font-size: 13px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.sw { display: inline-block; width: 18px; height: 5px; border-radius: 3px; margin-left: 6px; }
+.sw.done { background: #d93025; }
+.sw.part { background: #f29900; }
+.sw.todo { background: #1a56db; }
 @media (max-width: 720px) {
+  /* スマホでは地図に重ねず、地図の上に置く(column-reverse なので最後の要素が一番上) */
+  #detail {
+    position: static; width: 100%; max-width: none; max-height: 30%; flex: none;
+    border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; padding: 8px 12px;
+  }
+  #detail .big { font-size: 22px; }
+  #detail .row { display: none; }
+  #detail p { margin: 4px 0; }
   #app { flex-direction: column-reverse; }
   #panel { width: 100%; height: 45%; border-right: 0; border-top: 1px solid var(--line); }
 }
