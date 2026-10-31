@@ -6,8 +6,9 @@ import type { Coverage, RouteData, TrackPoint } from "./types";
 export function createMap(container: HTMLElement): maplibregl.Map {
   return new maplibregl.Map({
     container,
-    center: [137.5, 37.5],
-    zoom: 4.5,
+    // 北海道から沖縄まで入るように
+    bounds: [[123, 24], [146, 45.6]],
+    fitBoundsOptions: { padding: 20 },
     style: {
       version: 8,
       sources: {
@@ -34,6 +35,8 @@ export function addRoutes(
   map.addSource("routes", {
     type: "geojson",
     promoteId: "id",
+    // 引いた縮尺でも短い区間(約200m)を間引かず、全国表示で国道が消えないようにする
+    tolerance: 0,
     data: {
       type: "FeatureCollection",
       features: data.segments.map((s) => ({
@@ -98,7 +101,7 @@ export function showTrack(map: maplibregl.Map, track: TrackPoint[]) {
   if (src) src.setData(data);
   else {
     map.addSource("track", { type: "geojson", data });
-    map.addLayer({ id: "track", type: "line", source: "track", paint: { "line-color": "#1a73e8", "line-width": 2, "line-opacity": 0.7 } });
+    map.addLayer({ id: "track", type: "line", source: "track", paint: { "line-color": "#8e24aa", "line-width": 2, "line-opacity": 0.8 } });
   }
   if (track.length > 0) {
     const b = new maplibregl.LngLatBounds();
