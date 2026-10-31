@@ -9,7 +9,10 @@ function Run($exe, [string[]]$argList) {
     if ($LASTEXITCODE -ne 0) { throw "$exe $argList が失敗しました(終了コード $LASTEXITCODE)" }
 }
 
-Run git @("pull", "--ff-only")
+# git の後片付け(gc)で「Deletion of directory ... failed. Should I try again? (y/n)」と何度も聞かれて
+# 止まることがあるので、自動で「いいえ」と答える。後片付けはこの更新では行わない(gc.auto=0)
+$env:GIT_ASK_YESNO = "false"
+Run git @("-c", "gc.auto=0", "pull", "--ff-only")
 Run npm @("ci")
 Run gh @("release", "download", "route-data", "-p", "routes.json", "-D", "public/data", "--clobber")
 # 高速道路のデータ。まだ作っていなければ国道だけで動く
