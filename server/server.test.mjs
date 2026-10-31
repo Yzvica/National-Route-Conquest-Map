@@ -32,6 +32,17 @@ describe("mergeRecord", () => {
   });
 });
 
+describe("点線国道の自己申告", () => {
+  it("申告した時刻が新しい方を残し、取り消しもできる", () => {
+    const on = mergeRecord({ coverage: {}, logs: [] }, { declared: { 339: { on: true, at: "2026-10-31T10:00:00Z" } } });
+    expect(on.declared).toEqual({ 339: { on: true, at: "2026-10-31T10:00:00Z" } });
+    const off = mergeRecord(on, { declared: { 339: { on: false, at: "2026-10-31T11:00:00Z" }, 1: "bad" } });
+    expect(off.declared).toEqual({ 339: { on: false, at: "2026-10-31T11:00:00Z" } });
+    // 古い申告は無視する
+    expect(mergeRecord(off, { declared: { 339: { on: true, at: "2026-10-30T00:00:00Z" } } }).declared[339].on).toBe(false);
+  });
+});
+
 describe("/api/record", () => {
   let server;
   let base;
@@ -52,7 +63,7 @@ describe("/api/record", () => {
     expect(rec.logs).toHaveLength(2);
 
     await fetch(base, { method: "DELETE" });
-    expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [] });
+    expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [], declared: {} });
   });
 });
 

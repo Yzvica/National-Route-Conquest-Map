@@ -4,15 +4,12 @@ import {
   almostConquered,
   cumulative,
   monthly,
-  monthlyChallenges,
   nearbyUntouched,
-  prevMonth,
   regionProgress,
   timeline,
   yearly,
   type AchievementState,
   type DatasetSummary,
-  type GameContext,
   type Level,
   type Suggestion,
 } from "./game";
@@ -32,7 +29,7 @@ export function levelCard(lv: Level, unlocked: number, total: number, regionTitl
     <p class="muted">経験値 ${num(lv.xp)}(次のレベルまで ${num(lv.to - lv.xp)})</p>
     <div class="game-buttons">
       <button type="button" data-game="achievements">🏅 実績 ${unlocked}/${total}</button>
-      <button type="button" data-game="challenges">🎯 チャレンジ</button>
+      <button type="button" data-game="suggest">🧭 おすすめ</button>
       <button type="button" data-game="review">📊 振り返り</button>
       <button type="button" data-game="prefs">🗾 都道府県</button>
     </div>`;
@@ -84,7 +81,7 @@ export function achievementsView(states: AchievementState[], lv: Level): string 
       制覇は走行率 ${CONQUER_RATIO * 100}% 以上です。</p>`;
 }
 
-// ---------------------------------------------------------------- チャレンジ・おすすめ
+// ---------------------------------------------------------------- おすすめ
 
 function suggestionList(items: Suggestion[], name: (ref: string) => string, kind: DatasetKind, note: (s: Suggestion) => string) {
   if (items.length === 0) return `<p class="muted">該当なし</p>`;
@@ -96,39 +93,16 @@ function suggestionList(items: Suggestion[], name: (ref: string) => string, kind
     .join("")}</ul>`;
 }
 
-export function challengesView(
-  c: GameContext,
-  today: string,
+export function suggestionsView(
   active: { kind: DatasetKind; data: RouteData; summary: DatasetSummary; coverage: Coverage },
   name: (ref: string) => string,
 ): string {
-  const ym = today.slice(0, 7);
-  const card = (list: ReturnType<typeof monthlyChallenges>, closed: boolean) =>
-    `<ul class="challenges">${list
-      .map((ch) => {
-        const done = ch.cur >= ch.target;
-        const digits = ch.unit === "km" ? 1 : 0;
-        return `<li class="${done ? "done" : ""}"><span class="badge-icon">${done ? "✅" : ch.icon}</span>
-          <span class="badge-body"><b>${ch.title}</b>
-            <span class="bar"><span style="width:${Math.min(100, (ch.cur / ch.target) * 100)}%"></span></span>
-            <span class="muted">${num(Math.min(ch.cur, ch.target), digits)} / ${ch.target} ${ch.unit}${
-              done ? "・達成!" : closed ? "・未達成" : ""
-            }</span></span></li>`;
-      })
-      .join("")}</ul>`;
-  const [y, m] = ym.split("-").map(Number);
-  const last = prevMonth(ym);
-  const days = new Date(y, m, 0).getDate() - Number(today.slice(8, 10));
-  const left = days === 0 ? "今日まで" : `残り ${days} 日`;
   const label = active.kind === "kokudo" ? "国道" : "高速道路";
-  return `<h3>${y}年${m}月のチャレンジ <span class="muted">${left}</span></h3>
-    ${card(monthlyChallenges(c, ym), false)}
-    <details><summary class="muted">先月(${Number(last.slice(5))}月)の結果</summary>${card(monthlyChallenges(c, last), true)}</details>
-    <h3>あと少しで制覇できる${label}</h3>
+  return `<h3>あと少しで制覇できる${label}</h3>
     ${suggestionList(almostConquered(active.summary), name, active.kind, (s) => `あと ${km(s.total * CONQUER_RATIO - s.done)} km(${num((s.done / s.total) * 100)}%)`)}
     <h3>よく走るあたりから近い、未踏の${label}</h3>
     ${suggestionList(nearbyUntouched(active.data, active.summary, active.coverage), name, active.kind, (s) => `約 ${km(s.distance!, 0)} km 先・全長 ${km(s.total)} km`)}
-    <p class="muted">名前を押すと地図で表示します。おすすめは今開いているタブ(${label})から選んでいます。</p>`;
+    <p class="muted">名前を押すと地図で表示します。今開いているタブ(${label})から選んでいます。</p>`;
 }
 
 // ---------------------------------------------------------------- 振り返り
@@ -237,7 +211,7 @@ export function reviewView(s: DatasetSummary, today: string, name: (ref: string)
     ${progressChart(points, start, s.stats.overall.total)}
     ${undated}
     <h3>タイムライン</h3>
-    <ol class="timeline">${shownEvents
+    <ol class="timeline" data-scroll="timeline">${shownEvents
       .map(
         (e) => `<li class="${e.type}"><span class="muted">${e.date}</span>
           <span>${e.type === "conquer" ? "🏁" : "👣"} <a href="#" data-route="${esc(e.ref)}" data-kind="${kind}">${esc(name(e.ref))}</a>

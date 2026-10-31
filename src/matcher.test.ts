@@ -57,9 +57,11 @@ describe("computeStats", () => {
   it("重複区間は国道ごとには丸ごと、総合では1回だけ数える", () => {
     const c = new Map(ids("w12-").map((id) => [id, 1]));
     const s = computeStats(data, c);
-    expect(percent(s.byRoute.get("2")!.overall)).toBeCloseTo(100);
+    expect(percent(s.byRoute.get("2")!.byCategory.overlap!)).toBeCloseTo(100);
     expect(s.byCategory.overlap.done).toBeCloseTo(s.byCategory.overlap.total);
-    const total = data.segments.reduce((a, x) => a + x.len, 0);
+    // この重複区間は点線国道なので、総合・路線の制覇率には入れない(参考として種別にだけ数える)
+    const total = data.segments.filter((x) => !x.cats.includes("dotted")).reduce((a, x) => a + x.len, 0);
     expect(s.overall.total).toBeCloseTo(total);
+    expect(s.byRoute.get("2")!.overall.total).toBe(0);
   });
 });

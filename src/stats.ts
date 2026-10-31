@@ -5,8 +5,15 @@ export interface Progress {
   done: number;
 }
 
+/**
+ * 参考として別に出し、総合・路線ごとの制覇率には入れない種別。
+ * 点線国道は車で走るログでは判定しにくく(関門トンネルの人道を通ったことになるなど)、自己申告で記録する
+ */
+export const REFERENCE_CATS: Category[] = ["dotted"];
+export const isReference = (s: Segment) => s.cats.some((c) => REFERENCE_CATS.includes(c));
+
 export interface Stats {
-  /** 全種別をまとめた総合。重複区間は1回だけ数える */
+  /** 全種別をまとめた総合(点線国道は除く)。重複区間は1回だけ数える */
   overall: Progress;
   byCategory: Record<Category, Progress>;
   byRoute: Map<string, { overall: Progress; byCategory: Partial<Record<Category, Progress>> }>;
@@ -49,13 +56,14 @@ export function computeStats(data: RouteData, coverage: Coverage): Stats {
   for (const seg of data.segments) {
     const r = coverage.get(seg.id) ?? 0;
     const len = seg.len * segmentWeight(seg);
-    add(stats.overall, len, r);
+    const counted = !isReference(seg);
+    if (counted) add(stats.overall, len, r);
     for (const c of seg.cats) add(stats.byCategory[c], len, r);
     // 重複区間は、それぞれの国道の制覇率には丸ごと数える
     for (const ref of seg.routes) {
       let route = stats.byRoute.get(ref);
       if (!route) stats.byRoute.set(ref, (route = { overall: empty(), byCategory: {} }));
-      add(route.overall, len, r);
+      if (counted) add(route.overall, len, r);
       for (const c of seg.cats) add((route.byCategory[c] ??= empty()), len, r);
     }
   }
@@ -63,3 +71,18 @@ export function computeStats(data: RouteData, coverage: Coverage): Stats {
 }
 
 export const percent = (p: Progress) => (p.total === 0 ? 0 : (p.done / p.total) * 100);
+
+/**
+ * 点線国道はログの判定を使わず、自己申告(国道番号ごと)で走ったことにする。
+ * 申告した国道のどれかに入っている点線国道の区間を 1、それ以外の点線国道の区間を 0 にした記録を返す
+ */
+export function applyDeclared(data: RouteData, coverage: Coverage, declared: Set<string>): Coverage {
+  if (!data.segments.some(isReference)) return coverage;
+  const out = new Map(coverage);
+  for (const s of data.segments) {
+    if (!isReference(s)) continue;
+    if (s.routes.some((r) => declared.has(r))) out.set(s.id, 1);
+    else out.delete(s.id);
+  }
+  return out;
+}

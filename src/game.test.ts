@@ -5,7 +5,6 @@ import {
   cumulative,
   evaluateAchievements,
   monthly,
-  monthlyChallenges,
   nearbyUntouched,
   regionProgress,
   regionTitle,
@@ -14,6 +13,7 @@ import {
   xpForLevel,
   yearly,
 } from "./game";
+import { applyDeclared, computeStats } from "./stats";
 import type { PassDates } from "./store";
 import type { RouteData, Segment } from "./types";
 
@@ -143,16 +143,9 @@ describe("実績・レベル", () => {
   });
 });
 
-describe("チャレンジ・おすすめ", () => {
+describe("おすすめ", () => {
   const cov = new Map([["a", 1], ["b", 1], ["c", 1]]);
   const s = summarize(data, cov, dates);
-
-  it("その月の分だけ数える", () => {
-    const ch = monthlyChallenges({ kokudo: s }, "2026-01");
-    expect(ch.find((c) => c.id === "new-km")!.cur).toBe(2);
-    expect(ch.find((c) => c.id === "new-routes")!.cur).toBe(1);
-    expect(ch).toHaveLength(3);
-  });
 
   it("あと少しの路線と、近くの未踏路線", () => {
     expect(almostConquered(s).map((x) => x.ref)).toEqual(["1"]);
@@ -183,5 +176,33 @@ describe("都道府県", () => {
   it("都道府県のないデータでは集計しない", () => {
     expect(summarize(data, new Map(), dates).byPref).toBeUndefined();
     expect(regionTitle({})).toBeUndefined();
+  });
+});
+
+describe("点線国道", () => {
+  // a〜d は国道1号の車道、x は国道1号と2号の点線国道
+  const withDotted: RouteData = {
+    ...data,
+    segments: [...data.segments, { ...seg("x", ["1", "2"], 139.05), cats: ["dotted", "overlap"] }],
+  };
+
+  it("ログで通っていても、申告がなければ通っていないことにする", () => {
+    const cov = applyDeclared(withDotted, new Map([["a", 1], ["x", 1]]), new Set());
+    expect(cov.has("x")).toBe(false);
+    expect(cov.get("a")).toBe(1);
+    expect(applyDeclared(withDotted, new Map(), new Set(["2"])).get("x")).toBe(1);
+  });
+
+  it("総合・路線の制覇率には入れず、種別では参考として数える", () => {
+    const cov = applyDeclared(withDotted, new Map([["a", 1], ["b", 1], ["c", 1], ["d", 1]]), new Set(["1"]));
+    const stats = computeStats(withDotted, cov);
+    expect(stats.overall.total).toBe(5000);
+    expect(stats.byRoute.get("1")!.overall).toEqual({ total: 4000, done: 4000 });
+    expect(stats.byCategory.dotted).toEqual({ total: 1000, done: 1000 });
+    const s = summarize(withDotted, cov, dates);
+    expect(s.routes.get("1")!.conqueredDate).toBe("2026-02-11");
+    expect(s.passedSegments).toBe(4);
+    const got = evaluateAchievements({ kokudo: s });
+    expect(got.find((x) => x.a.id === "dotted-0.2")!.unlocked).toBe(true);
   });
 });

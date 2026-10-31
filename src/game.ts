@@ -1,7 +1,7 @@
 // 実績・レベル・振り返り・チャレンジなど、ゲームとしての集計。
 // 画面には依存しない純粋な計算だけを置く(src/game.test.ts で確かめる)。
 import { REGIONS } from "./prefs";
-import { computeStats, segmentWeight, type Progress, type Stats } from "./stats";
+import { computeStats, isReference, segmentWeight, type Progress, type Stats } from "./stats";
 import type { PassDates } from "./store";
 import type { Coverage, DatasetKind, RouteData } from "./types";
 
@@ -64,6 +64,8 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
   const byPref = new Map<number, Progress>();
 
   for (const s of data.segments) {
+    // 点線国道は参考データ(自己申告)なので、制覇・都道府県・振り返りには数えない
+    if (isReference(s)) continue;
     const r = ratioOf(coverage, s.id);
     if (s.pref) {
       let p = byPref.get(s.pref);
@@ -110,8 +112,8 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
     routes.set(ref, p);
   }
 
-  const tunnelIds = new Set(data.tunnels.map((t) => t.id));
-  for (const s of data.segments) if (s.tunnel) tunnelIds.add(s.tunnel);
+  const tunnelIds = new Set<string>();
+  for (const s of data.segments) if (s.tunnel && !isReference(s)) tunnelIds.add(s.tunnel);
   return {
     kind,
     stats,
@@ -368,7 +370,7 @@ export const ACHIEVEMENTS: Achievement[] = [
     "🥾",
     [0.2, 10, 50],
     (v) => (v < 1 ? "点線国道デビュー" : `点線国道 ${v} km`),
-    (v) => (v < 1 ? "点線国道(車道でない国道)を走る" : `点線国道を ${v} km 走る`),
+    (v) => (v < 1 ? "点線国道(車道でない国道)を走ったと申告する" : `走ったと申告した点線国道が ${v} km になる`),
     (c) => (c.kokudo ? catKm(c.kokudo, "dotted") : null),
     "km",
   ),
@@ -626,15 +628,6 @@ export function nextMonth(ym: string): string {
   return `${y}-${String(m).padStart(2, "0")}`;
 }
 
-export function prevMonth(ym: string): string {
-  let [y, m] = ym.split("-").map(Number);
-  if (--m < 1) {
-    m = 12;
-    y--;
-  }
-  return `${y}-${String(m).padStart(2, "0")}`;
-}
-
 /** 制覇率の推移: 日付ごとの累計(m)。日付不明の分は最初から走っていたことにする */
 export function cumulative(s: DatasetSummary): { start: number; points: [string, number][] } {
   const start = s.daily.get(UNDATED) ?? 0;
@@ -662,87 +655,6 @@ export function timeline(s: DatasetSummary): TimelineEvent[] {
   }
   // 同じ日なら制覇を先に
   return out.sort((a, b) => b.date.localeCompare(a.date) || (a.type === b.type ? 0 : a.type === "conquer" ? -1 : 1));
-}
-
-// ---------------------------------------------------------------- チャレンジ
-
-export interface Challenge {
-  id: string;
-  icon: string;
-  title: string;
-  cur: number;
-  target: number;
-  unit: string;
-}
-
-const inMonth = (d: string | undefined, ym: string) => !!d && d.startsWith(ym);
-
-/** その月に新たに走った距離(m) */
-const monthKm = (s: DatasetSummary | undefined, ym: string) =>
-  s ? [...s.daily].filter(([d]) => inMonth(d, ym)).reduce((a, [, m]) => a + m, 0) : 0;
-
-/**
- * 月ごとのお題。毎月「開拓距離」「未踏の国道」と、月替わりのお題を1つ出す。
- * ym は "YYYY-MM"
- */
-export function monthlyChallenges(c: GameContext, ym: string): Challenge[] {
-  const k = c.kokudo;
-  const list: Challenge[] = [];
-  if (k) {
-    list.push({ id: "new-km", icon: "🧭", title: "国道を新たに 200 km 開拓する", cur: monthKm(k, ym) / 1000, target: 200, unit: "km" });
-    list.push({
-      id: "new-routes",
-      icon: "🆕",
-      title: "まだ走ったことのない国道を 3 本走る",
-      cur: [...k.routes.values()].filter((p) => inMonth(p.firstDate, ym)).length,
-      target: 3,
-      unit: "本",
-    });
-  }
-  const rotating: Challenge[] = [];
-  if (k) {
-    rotating.push({
-      id: "conquer",
-      icon: "🏁",
-      title: "国道を 1 本制覇する",
-      cur: [...k.routes.values()].filter((p) => inMonth(p.conqueredDate, ym)).length,
-      target: 1,
-      unit: "本",
-    });
-    rotating.push({
-      id: "tunnels",
-      icon: "🚇",
-      title: "初めてのトンネルを 10 本通る",
-      cur: k.tunnelDates.filter((d) => inMonth(d, ym)).length,
-      target: 10,
-      unit: "本",
-    });
-  }
-  if (c.expressway) {
-    rotating.push({
-      id: "exp-km",
-      icon: "💨",
-      title: "高速道路を新たに 100 km 走る",
-      cur: monthKm(c.expressway, ym) / 1000,
-      target: 100,
-      unit: "km",
-    });
-  }
-  if (k) {
-    rotating.push({
-      id: "days",
-      icon: "📅",
-      title: "新しい国道を走る日を 4 日つくる",
-      cur: [...k.daily.keys()].filter((d) => inMonth(d, ym)).length,
-      target: 4,
-      unit: "日",
-    });
-  }
-  if (rotating.length) {
-    const [y, m] = ym.split("-").map(Number);
-    list.push(rotating[(y * 12 + m) % rotating.length]);
-  }
-  return list;
 }
 
 // ---------------------------------------------------------------- おすすめ

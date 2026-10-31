@@ -28,9 +28,9 @@ const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg"]);
 function loadRecord() {
   try {
     const j = JSON.parse(readFileSync(RECORD, "utf8"));
-    return { coverage: j.coverage ?? {}, dates: j.dates ?? {}, logs: j.logs ?? [] };
+    return { coverage: j.coverage ?? {}, dates: j.dates ?? {}, logs: j.logs ?? [], declared: j.declared ?? {} };
   } catch {
-    return { coverage: {}, dates: {}, logs: [] };
+    return { coverage: {}, dates: {}, logs: [], declared: {} };
   }
 }
 
@@ -44,7 +44,7 @@ function saveRecord(rec) {
 const isDates = (d) => Array.isArray(d) && d.length === 2 && d.every((x) => typeof x === "string");
 
 /**
- * 区間ごとに割合は大きい方、通った日は初めての日が早い方・最後の日が遅い方を残す
+ * 区間ごとに割合は大きい方、通った日は初めての日が早い方・最後の日が遅い方を残す。
  * (src/store.ts の mergeRecord と同じ規則)
  */
 export function mergeRecord(base, add) {
@@ -58,7 +58,13 @@ export function mergeRecord(base, add) {
     const cur = dates[id];
     dates[id] = cur ? [cur[0] < d[0] ? cur[0] : d[0], cur[1] > d[1] ? cur[1] : d[1]] : d;
   }
-  return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])] };
+  // 点線国道の自己申告は、申告した時刻が新しい方を残す(取り消しもできるように)
+  const declared = { ...(base.declared ?? {}) };
+  for (const [ref, d] of Object.entries(add.declared ?? {})) {
+    if (!d || typeof d.on !== "boolean" || typeof d.at !== "string") continue;
+    if (!declared[ref] || d.at > declared[ref].at) declared[ref] = { on: d.on, at: d.at };
+  }
+  return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])], declared };
 }
 
 // --- 走行ログ ---
@@ -128,7 +134,7 @@ export function createApp() {
           return json(res, 200, merged);
         }
         if (req.method === "DELETE") {
-          const empty = { coverage: {}, dates: {}, logs: [] };
+          const empty = { coverage: {}, dates: {}, logs: [], declared: {} };
           saveRecord(empty);
           return json(res, 200, empty);
         }
