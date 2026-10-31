@@ -318,3 +318,84 @@ export function showFocus(map: maplibregl.Map, data: RouteData, ids: string[]) {
     map.getLayer("selected-casing") ? "selected-casing" : undefined,
   );
 }
+
+// ---- 都道府県の色分け ----
+
+type Ring = [number, number][];
+export interface PrefShapes {
+  type: "FeatureCollection";
+  features: {
+    type: "Feature";
+    properties: { code: number; name: string };
+    geometry: { type: "Polygon"; coordinates: Ring[] } | { type: "MultiPolygon"; coordinates: Ring[][] };
+  }[];
+}
+
+/** 制覇率(0〜1)を色に。少し走った県から濃くなるよう、平方根で目盛る */
+const PREF_COLOR = [
+  "case",
+  ["<", ["get", "r"], 0],
+  "rgba(0,0,0,0)",
+  ["interpolate", ["linear"], ["sqrt", ["get", "r"]], 0, "#f3f3f4", 0.05, "#fde2df", 0.3, "#f6a49b", 0.6, "#e5544a", 1, "#8f1d14"],
+];
+
+/**
+ * 都道府県を制覇率で塗る。values が null なら消す。
+ * 道路の線より下に描く(道路のレイヤーはあとから足しても上に来る)
+ */
+export function showPrefFill(map: maplibregl.Map, shapes: PrefShapes, values: Map<number, { total: number; done: number }> | null) {
+  const visibility = values ? "visible" : "none";
+  const fc = {
+    ...shapes,
+    features: shapes.features.map((f) => {
+      const p = values?.get(f.properties.code);
+      return { ...f, properties: { ...f.properties, r: p && p.total > 0 ? p.done / p.total : -1 } };
+    }),
+  };
+  const src = map.getSource("prefs") as GeoJSONSource | undefined;
+  if (src) {
+    src.setData(fc as never);
+    for (const id of ["prefs-fill", "prefs-line"]) map.setLayoutProperty(id, "visibility", visibility);
+    return;
+  }
+  if (!values) return;
+  map.addSource("prefs", { type: "geojson", data: fc as never });
+  const before = map.getStyle().layers.find((l) => /^(overview|routes)-/.test(l.id))?.id;
+  map.addLayer({
+    id: "prefs-fill",
+    type: "fill",
+    source: "prefs",
+    layout: { visibility },
+    // 拡大したら道路の線が見やすいよう薄くする
+    paint: { "fill-color": PREF_COLOR as never, "fill-opacity": ["interpolate", ["linear"], ["zoom"], 5, 0.6, 10, 0.3] },
+  }, before);
+  map.addLayer({
+    id: "prefs-line",
+    type: "line",
+    source: "prefs",
+    layout: { visibility },
+    paint: { "line-color": "#6b6b70", "line-width": 0.8, "line-opacity": 0.6 },
+  }, before);
+  map.on("click", "prefs-fill", (e) => {
+    const f = e.features?.[0];
+    if (!f) return;
+    // 道路の線を押したときは道路のポップアップを優先する
+    const roads = map.getStyle().layers.filter((l) => /^(overview|routes)-/.test(l.id)).map((l) => l.id);
+    if (roads.length && map.queryRenderedFeatures(e.point, { layers: roads }).length) return;
+    const r = Number(f.properties.r);
+    new maplibregl.Popup()
+      .setLngLat(e.lngLat)
+      .setText(`${f.properties.name}: ${r < 0 ? "データなし" : `${(r * 100).toFixed(1)}%`}`)
+      .addTo(map);
+  });
+}
+
+/** 都道府県の範囲を映す */
+export function fitPref(map: maplibregl.Map, shapes: PrefShapes, code: number, padding: maplibregl.PaddingOptions | number = 40) {
+  const f = shapes.features.find((x) => x.properties.code === code);
+  if (!f) return;
+  const b = new maplibregl.LngLatBounds();
+  const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+  for (const poly of polys) for (const [lon, lat] of poly[0]) b.extend([lon, lat]);
+  map.fitBounds(b, { padding, maxZoom: 11 });
+}

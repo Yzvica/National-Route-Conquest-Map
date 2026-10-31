@@ -7,6 +7,8 @@ import {
   monthly,
   monthlyChallenges,
   nearbyUntouched,
+  regionProgress,
+  regionTitle,
   summarize,
   timeline,
   xpForLevel,
@@ -157,5 +159,29 @@ describe("チャレンジ・おすすめ", () => {
     const near = nearbyUntouched(data, s, cov);
     expect(near.map((x) => x.ref)).toEqual(["2", "3"]);
     expect(near[0].distance!).toBeLessThan(near[1].distance!);
+  });
+});
+
+describe("都道府県", () => {
+  // a〜d は神奈川(14)、e は北海道(1)
+  const withPref: RouteData = {
+    ...data,
+    segments: data.segments.map((s) => ({ ...s, pref: s.id === "e" ? 1 : 14 })),
+  };
+
+  it("都道府県・地方ごとに集計し、地方の称号を出す", () => {
+    const s = summarize(withPref, new Map([["a", 1]]), dates);
+    expect(s.byPref!.get(14)).toEqual({ total: 4000, done: 1000 });
+    expect(s.byPref!.get(1)).toEqual({ total: 1000, done: 0 });
+    const regions = regionProgress(s.byPref!);
+    expect(regions.map((r) => r.name)).toEqual(["北海道", "関東"]);
+    expect(regionTitle({ prefs: { byPref: s.byPref! } })).toBe("関東の常連");
+    const all = summarize(withPref, new Map([["a", 1], ["b", 1], ["c", 1]]), dates);
+    expect(regionTitle({ prefs: { byPref: all.byPref! } })).toBe("関東の覇者");
+  });
+
+  it("都道府県のないデータでは集計しない", () => {
+    expect(summarize(data, new Map(), dates).byPref).toBeUndefined();
+    expect(regionTitle({})).toBeUndefined();
   });
 });

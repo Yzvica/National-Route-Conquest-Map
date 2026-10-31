@@ -1,6 +1,7 @@
 // 実績・レベル・振り返り・チャレンジなど、ゲームとしての集計。
 // 画面には依存しない純粋な計算だけを置く(src/game.test.ts で確かめる)。
-import { computeStats, segmentWeight, type Stats } from "./stats";
+import { REGIONS } from "./prefs";
+import { computeStats, segmentWeight, type Progress, type Stats } from "./stats";
 import type { PassDates } from "./store";
 import type { Coverage, DatasetKind, RouteData } from "./types";
 
@@ -34,6 +35,8 @@ export interface DatasetSummary {
   maxOverlap: number;
   /** 通った区間の数 */
   passedSegments: number;
+  /** 都道府県コード → 距離。データに都道府県がなければ undefined */
+  byPref?: Map<number, Progress>;
 }
 
 const ratioOf = (coverage: Coverage, id: string) => coverage.get(id) ?? 0;
@@ -58,9 +61,16 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
   const tunnelFirst = new Map<string, string>();
   let maxOverlap = 0;
   let passedSegments = 0;
+  const byPref = new Map<number, Progress>();
 
   for (const s of data.segments) {
     const r = ratioOf(coverage, s.id);
+    if (s.pref) {
+      let p = byPref.get(s.pref);
+      if (!p) byPref.set(s.pref, (p = { total: 0, done: 0 }));
+      p.total += s.len * segmentWeight(s);
+      p.done += s.len * segmentWeight(s) * r;
+    }
     if (r <= 0) continue;
     passedSegments++;
     const d = firstDateOf(dates, s.id, s.pair);
@@ -111,6 +121,7 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
     tunnelDates: [...tunnelFirst.values()],
     maxOverlap,
     passedSegments,
+    byPref: byPref.size ? byPref : undefined,
   };
 }
 
@@ -129,7 +140,42 @@ export interface GameContext {
 
 export interface PrefSummary {
   /** 都道府県コード(1〜47) → 距離 */
-  byPref: Map<number, { total: number; done: number }>;
+  byPref: Map<number, Progress>;
+}
+
+/** 地方ごとの距離(都道府県を足したもの) */
+export function regionProgress(byPref: Map<number, Progress>): { name: string; progress: Progress; prefs: number[] }[] {
+  return REGIONS.map((r) => {
+    const progress = { total: 0, done: 0 };
+    const prefs: number[] = [];
+    for (let code = r.from; code <= r.to; code++) {
+      const p = byPref.get(code);
+      if (!p) continue;
+      prefs.push(code);
+      progress.total += p.total;
+      progress.done += p.done;
+    }
+    return { name: r.name, progress, prefs };
+  }).filter((r) => r.progress.total > 0);
+}
+
+export const REGION_TITLES: [number, string][] = [
+  [0.7, "の覇者"],
+  [0.3, "の主"],
+  [0.1, "の常連"],
+];
+
+/** いちばん制覇率の高い地方による称号(「関東の主」など)。どこも 10% 未満なら undefined */
+export function regionTitle(c: GameContext): string | undefined {
+  if (!c.prefs) return undefined;
+  let best: { name: string; ratio: number } | undefined;
+  for (const r of regionProgress(c.prefs.byPref)) {
+    const ratio = r.progress.done / r.progress.total;
+    if (!best || ratio > best.ratio) best = { name: r.name, ratio };
+  }
+  if (!best) return undefined;
+  const t = REGION_TITLES.find(([min]) => best!.ratio >= min);
+  return t ? `${best.name}${t[1]}` : undefined;
 }
 
 // ---------------------------------------------------------------- 実績
@@ -442,6 +488,30 @@ export const ACHIEVEMENTS: Achievement[] = [
     "都道府県",
   ),
   {
+    id: "region-all",
+    icon: "🧳",
+    name: "全国行脚",
+    desc: "8つの地方(北海道・東北・関東・中部・近畿・中国・四国・九州沖縄)すべてで国道を走る",
+    group: "都道府県",
+    unit: "地方",
+    check: (c) => {
+      if (!c.prefs) return null;
+      const rs = regionProgress(c.prefs.byPref);
+      return goal(rs.filter((r) => r.progress.done > 0).length, rs.length);
+    },
+  },
+  {
+    id: "region-conquer",
+    icon: "🏯",
+    name: "地方制覇",
+    desc: `どこかの地方で、国道の制覇率 ${CONQUER_RATIO * 100}% を達成する`,
+    group: "都道府県",
+    check: (c) =>
+      c.prefs
+        ? goal(regionProgress(c.prefs.byPref).some((r) => r.progress.done / r.progress.total >= CONQUER_RATIO) ? 1 : 0, 1)
+        : null,
+  },
+  {
     id: "pref-conquer",
     icon: "👑",
     name: "県内制覇",
@@ -744,5 +814,6 @@ export function buildContext(
     const d = datasets[kind];
     if (d) c[kind] = summarize(d, coverageOf(d), dates);
   }
+  if (c.kokudo?.byPref) c.prefs = { byPref: c.kokudo.byPref };
   return c;
 }

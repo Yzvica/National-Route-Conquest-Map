@@ -7,6 +7,7 @@ import {
   monthlyChallenges,
   nearbyUntouched,
   prevMonth,
+  regionProgress,
   timeline,
   yearly,
   type AchievementState,
@@ -15,21 +16,25 @@ import {
   type Level,
   type Suggestion,
 } from "./game";
+import { prefName } from "./prefs";
+import type { Progress } from "./stats";
 import type { Coverage, DatasetKind, RouteData } from "./types";
 
 const km = (m: number, digits = 1) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: digits });
 const num = (n: number, digits = 0) => n.toLocaleString("ja-JP", { maximumFractionDigits: digits });
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
-export function levelCard(lv: Level, unlocked: number, total: number): string {
+export function levelCard(lv: Level, unlocked: number, total: number, regionTitle?: string): string {
   const pct = ((lv.xp - lv.from) / (lv.to - lv.from)) * 100;
-  return `<div class="level-head"><span class="level-num">Lv.${lv.level}</span><span class="level-title">${lv.title}</span></div>
+  return `<div class="level-head"><span class="level-num">Lv.${lv.level}</span><span class="level-title">${lv.title}</span>
+      ${regionTitle ? `<span class="region-title" title="いちばん制覇率の高い地方の称号">${regionTitle}</span>` : ""}</div>
     <div class="bar" title="${lv.parts.map((p) => `${p.label}: ${num(p.xp)}`).join("\n")}"><span style="width:${pct}%"></span></div>
     <p class="muted">経験値 ${num(lv.xp)}(次のレベルまで ${num(lv.to - lv.xp)})</p>
     <div class="game-buttons">
       <button type="button" data-game="achievements">🏅 実績 ${unlocked}/${total}</button>
       <button type="button" data-game="challenges">🎯 チャレンジ</button>
       <button type="button" data-game="review">📊 振り返り</button>
+      <button type="button" data-game="prefs">🗾 都道府県</button>
     </div>`;
 }
 
@@ -240,4 +245,37 @@ export function reviewView(s: DatasetSummary, today: string, name: (ref: string)
       )
       .join("")}</ol>
     ${events.length > shownEvents.length ? `<p class="muted">ほか ${events.length - shownEvents.length} 件</p>` : ""}`;
+}
+
+// ---------------------------------------------------------------- 都道府県
+
+function prefRow(label: string, p: Progress, attrs: string) {
+  const pct = p.total > 0 ? (p.done / p.total) * 100 : 0;
+  return `<div class="row" ${attrs}><span>${label}</span><span>${pct.toFixed(1)}%</span>
+    <div class="bar"><span style="width:${pct}%"></span></div>
+    <span class="muted">${km(p.done)} / ${km(p.total)} km</span></div>`;
+}
+
+export function prefsView(s: DatasetSummary, kind: DatasetKind, fillOn: boolean, hasShapes: boolean): string {
+  const label = kind === "kokudo" ? "国道" : "高速道路";
+  if (!s.byPref) {
+    return `<p>道路データにまだ都道府県が付いていません。</p>
+      <p class="muted">GitHub の Actions で「国道・高速道路のデータを更新」を target = pref で実行し、
+      終わったら MiniPC で update.bat を実行してください(10分ほどかかります)。</p>`;
+  }
+  const regions = regionProgress(s.byPref);
+  const visited = [...s.byPref.values()].filter((p) => p.done > 0).length;
+  return `<p class="muted">今開いているタブ(${label})の都道府県ごとの制覇率です。都道府県は区間の中ほどの位置で決めています。
+      足跡のある都道府県 ${visited} / ${s.byPref.size}</p>
+    ${hasShapes ? `<button type="button" id="pref-fill" aria-pressed="${fillOn}">${fillOn ? "地図の色分けをやめる" : "🗺️ 地図を都道府県で色分けする"}</button>
+      <p class="legend pref-legend">0% <span class="ramp"></span> 100%<span class="muted">(少し走っただけでも色が付くよう、低い側を細かく塗り分けています。地図の県を押すと制覇率が出ます)</span></p>` : ""}
+    ${regions
+      .map(
+        (r) => `<details class="region" open><summary>${prefRow(`<b>${r.name}</b>`, r.progress, "")}</summary>
+          <ul class="prefs">${r.prefs
+            .map((code) => `<li>${prefRow(prefName(code), s.byPref!.get(code)!, `data-pref="${code}"`)}</li>`)
+            .join("")}</ul></details>`,
+      )
+      .join("")}
+    <p class="muted">都道府県名を押すと、地図を色分けしてその都道府県を映します。</p>`;
 }

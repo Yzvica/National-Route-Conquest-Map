@@ -1,4 +1,5 @@
 # OSM から国道・高速道路のデータを作り直し、リリース "route-data" に routes.json / expressways.json として置く。
+# 各区間には都道府県を付け、地図の色分け用の都道府県の形 prefectures.json も置く。
 # データは大きいのでリポジトリには入れない。Actions タブから手動で実行する。
 name: 国道・高速道路のデータを更新
 
@@ -11,9 +12,9 @@ on:
         options: [geofabrik, overpass]
         default: geofabrik
       target:
-        description: "作り直すデータ(both: 両方 / kokudo: 国道だけ / expressway: 高速道路だけ。geofabrik のとき)"
+        description: "作り直すデータ(both: 両方 / kokudo: 国道だけ / expressway: 高速道路だけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
         type: choice
-        options: [both, kokudo, expressway]
+        options: [both, kokudo, expressway, pref]
         default: both
       refs:
         description: "overpass のときの対象国道番号(空欄なら全部。例: 1 20 246)"
@@ -37,20 +38,29 @@ jobs:
         if: inputs.source != 'overpass'
         env:
           TARGET: ${{ inputs.target }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
-          pip install osmium
+          pip install osmium shapely
           curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
+          osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
           rm japan.osm.pbf
-          if [ "$TARGET" != expressway ]; then
+          if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ]; then
             python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json
             python3 scripts/build_routes.py --input raw.json --out routes.json
           fi
-          if [ "$TARGET" != kokudo ]; then
+          if [ "$TARGET" = both ] || [ "$TARGET" = expressway ]; then
             python3 scripts/build_expressways.py expressway.osm.pbf --out expressways.json
           fi
+          # 作り直さなかったほうも、今リリースにあるものに都道府県を付け直す
+          for f in routes.json expressways.json; do
+            [ -f "$f" ] || gh release download route-data -p "$f" || echo "$f はまだリリースにありません"
+          done
+          files=()
+          for f in routes.json expressways.json; do [ -f "$f" ] && files+=("$f"); done
+          python3 scripts/add_prefectures.py pref.osm.pbf "${files[@]}" --out prefectures.json
 
       - name: Overpass API から取得して変換
         if: inputs.source == 'overpass'
@@ -65,10 +75,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -lh routes.json expressways.json || true
+          ls -lh routes.json expressways.json prefectures.json || true
           gh release view route-data >/dev/null 2>&1 || \
             gh release create route-data --title "国道データ" --notes "build_routes.py で生成した国道データ"
-          # 作ったものだけ置く(高速道路は Geofabrik から作ったときだけできる)
-          for f in routes.json expressways.json; do
+          # 作ったものだけ置く(高速道路と都道府県は Geofabrik から作ったときだけできる)
+          for f in routes.json expressways.json prefectures.json; do
             if [ -f "$f" ]; then gh release upload route-data "$f" --clobber; fi
           done

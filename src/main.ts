@@ -1,8 +1,20 @@
 import "./style.css";
 import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
-import { buildContext, computeLevel, evaluateAchievements, type GameContext } from "./game";
-import { achievementsView, challengesView, levelCard, reviewView } from "./gameView";
-import { addRoutes, clearRoutes, createMap, fitSegments, paintCoverage, showFocus, showSelected, showTrack } from "./map";
+import { buildContext, computeLevel, evaluateAchievements, regionTitle, type GameContext } from "./game";
+import { achievementsView, challengesView, levelCard, prefsView, reviewView } from "./gameView";
+import {
+  addRoutes,
+  clearRoutes,
+  createMap,
+  fitPref,
+  fitSegments,
+  paintCoverage,
+  showFocus,
+  showPrefFill,
+  showSelected,
+  showTrack,
+  type PrefShapes,
+} from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { computeStats, effectiveCoverage, percent, type Progress } from "./stats";
@@ -79,13 +91,28 @@ const today = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
-type GameTab = "achievements" | "challenges" | "review";
+type GameTab = "achievements" | "challenges" | "review" | "prefs";
 let gameTab: GameTab = "achievements";
+/** 都道府県の形(地図の色分け用)。データがなければ undefined */
+let prefShapes: PrefShapes | undefined;
+/** 地図を都道府県で色分けしているか */
+let prefFill = false;
+
+/** 前回塗ったときの値。同じなら塗り直さない(形のデータが大きいので) */
+let paintedPrefs: unknown = undefined;
+function paintPrefs() {
+  if (!prefShapes) return;
+  const byPref = (prefFill && data ? gameContext()[active]?.byPref : undefined) ?? null;
+  if (byPref === paintedPrefs) return;
+  paintedPrefs = byPref;
+  showPrefFill(map, prefShapes, byPref);
+}
 
 function renderGame() {
   if (!datasets.kokudo) return;
   const g = gameState();
-  $("level").innerHTML = levelCard(g.level, g.unlocked.length, g.achievements.length);
+  $("level").innerHTML = levelCard(g.level, g.unlocked.length, g.achievements.length, regionTitle(g.ctx));
+  paintPrefs();
   const dialog = $<HTMLDialogElement>("game");
   if (!dialog.open) return;
   for (const b of $("game-tabs").querySelectorAll<HTMLButtonElement>("button")) {
@@ -98,7 +125,9 @@ function renderGame() {
     body.innerHTML =
       gameTab === "challenges"
         ? challengesView(g.ctx, today(), { kind: active, data, summary, coverage: coverage() }, routeName)
-        : reviewView(summary, today(), routeName, active);
+        : gameTab === "prefs"
+          ? prefsView(summary, active, prefFill, !!prefShapes)
+          : reviewView(summary, today(), routeName, active);
   }
 }
 
@@ -281,11 +310,15 @@ function showDataset(kind: DatasetKind) {
 map.on("load", async () => {
   try {
     const store = await storePromise;
-    const [kokudo, expressway, rec] = await Promise.all([
+    const [kokudo, expressway, rec, shapes] = await Promise.all([
       loadData("kokudo"),
       loadData("expressway").catch(() => undefined),
       store.load(),
+      fetch(`${import.meta.env.BASE_URL}data/prefectures.json`)
+        .then((r) => (r.ok && r.headers.get("content-type")?.includes("json") ? (r.json() as Promise<PrefShapes>) : undefined))
+        .catch(() => undefined),
     ]);
+    prefShapes = shapes;
     datasets.kokudo = kokudo;
     datasets.expressway = expressway;
     record = rec;
@@ -499,7 +532,21 @@ $("game").addEventListener("click", (e) => {
 });
 // 路線名を押したら、その路線を地図で表示する
 $("game-body").addEventListener("click", (e) => {
-  const a = (e.target as HTMLElement).closest<HTMLElement>("[data-route]");
+  const el = e.target as HTMLElement;
+  if (el.closest("#pref-fill")) {
+    prefFill = !prefFill;
+    renderGame();
+    return;
+  }
+  const pref = el.closest<HTMLElement>("[data-pref]");
+  if (pref && prefShapes) {
+    $<HTMLDialogElement>("game").close();
+    prefFill = true;
+    select(null, false);
+    fitPref(map, prefShapes, Number(pref.dataset.pref));
+    return;
+  }
+  const a = el.closest<HTMLElement>("[data-route]");
   if (!a) return;
   e.preventDefault();
   $<HTMLDialogElement>("game").close();

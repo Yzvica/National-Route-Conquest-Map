@@ -86,8 +86,20 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .level-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .level-num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .level-title { font-weight: 700; color: var(--accent); }
-.game-buttons { display: flex; gap: 6px; }
-.game-buttons button { flex: 1 1 0; padding: 6px 4px; font-size: 13px; white-space: nowrap; }
+.game-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.game-buttons button { padding: 6px 4px; font-size: 13px; white-space: nowrap; }
+.level-head { flex-wrap: wrap; }
+.region-title { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); }
+#pref-fill { margin: 8px 0 4px; }
+.pref-legend .ramp { display: inline-block; width: 120px; height: 8px; border-radius: 4px; margin: 0 4px;
+  background: linear-gradient(to right, #f3f3f4, #fde2df 22%, #f6a49b 55%, #e5544a 77%, #8f1d14); }
+.pref-legend .muted { margin-left: 8px; }
+#pref-fill[aria-pressed="true"] { background: var(--bar); }
+.region > summary { list-style: none; cursor: pointer; }
+.region > summary::-webkit-details-marker { display: none; }
+.prefs { list-style: none; margin: 0 0 8px 12px; padding: 0 0 0 8px; border-left: 2px solid var(--line); display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; }
+.prefs li { cursor: pointer; font-size: 13px; }
+.prefs li:hover { background: var(--bar); }
 #game {
   width: min(640px, calc(100% - 24px)); max-height: calc(100% - 48px); padding: 0; border: 1px solid var(--line);
   border-radius: 14px; background: var(--bg); color: var(--fg); box-shadow: 0 8px 32px rgb(0 0 0 / 0.3);
