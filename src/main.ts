@@ -45,7 +45,7 @@ function render() {
   $("routes").innerHTML = refs
     .map((r) => `<li data-ref="${r}"${r === selected ? ' class="selected"' : ""}>${row(routeName(r), stats.byRoute.get(r)!.overall)}</li>`)
     .join("");
-  paintCoverage(map, record.coverage);
+  paintCoverage(map, data, record.coverage);
   renderDetail(stats);
 }
 
