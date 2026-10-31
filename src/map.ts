@@ -280,7 +280,8 @@ export function showSelected(map: maplibregl.Map, data: RouteData, ref: string |
     type: "line",
     source: "selected",
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#ffffff", "line-width": ["+", width, 3] as never, "line-opacity": 0.9 },
+    // zoom の式は一番外側でしか使えないので、太さは段ごとに書く
+    paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 6, 12, 9], "line-opacity": 0.9 },
   });
   map.addLayer({
     id: "selected",
@@ -312,7 +313,7 @@ export function showFocus(map: maplibregl.Map, data: RouteData, ids: string[]) {
       type: "line",
       source: "focus",
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": "#ffd400", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 10, 12, 16], "line-opacity": 0.7 },
+      paint: { "line-color": "#ffd400", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 10, 12, 16], "line-opacity": 0.85 },
     },
     map.getLayer("selected-casing") ? "selected-casing" : undefined,
   );
