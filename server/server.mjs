@@ -2,14 +2,16 @@
 // 走行記録を data/record.json に保存して、LAN 内のどの端末からも同じ記録を見られるようにする。
 // Node.js の標準機能だけで動く。
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { extname, join, normalize, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, extname, join, normalize, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
 const RECORD = process.env.RECORD_FILE ?? join(ROOT, "data", "record.json");
 const PORT = Number(process.env.PORT ?? 8080);
+// 読み込んだ走行ログそのもの。あとで判定方法や対象の道路(高速道路など)を増やしたときに判定し直せるよう残す
+const LOGS = process.env.LOGS_DIR ?? join(dirname(RECORD), "logs");
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -59,6 +61,26 @@ export function mergeRecord(base, add) {
   return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])] };
 }
 
+// --- 走行ログ ---
+
+/** ファイル名に使えない文字を除く。id は「保存時刻-元の名前.gz」 */
+const safeName = (name) => name.replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 120) || "log";
+
+function saveLog(name, body) {
+  mkdirSync(LOGS, { recursive: true });
+  const id = `${Date.now()}-${safeName(name)}.gz`;
+  writeFileSync(join(LOGS, id), gzipSync(body));
+  return id;
+}
+
+function listLogs() {
+  if (!existsSync(LOGS)) return [];
+  return readdirSync(LOGS)
+    .filter((f) => f.endsWith(".gz"))
+    .sort()
+    .map((id) => ({ id, name: id.replace(/^\d+-/, "").replace(/\.gz$/, ""), size: statSync(join(LOGS, id)).size }));
+}
+
 // --- 配信 ---
 
 const gzCache = new Map();
@@ -78,14 +100,16 @@ function sendFile(req, res, path) {
   res.end(readFileSync(path));
 }
 
-function readBody(req) {
+function readChunks(req) {
   return new Promise((ok, ng) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(c));
-    req.on("end", () => ok(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => ok(chunks));
     req.on("error", ng);
   });
 }
+
+const readBody = async (req) => Buffer.concat(await readChunks(req)).toString("utf8");
 
 function json(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -109,6 +133,24 @@ export function createApp() {
           return json(res, 200, empty);
         }
         return json(res, 405, { error: "method not allowed" });
+      }
+
+      if (url.pathname === "/api/logs") {
+        if (req.method === "GET") return json(res, 200, listLogs());
+        if (req.method === "POST") {
+          const body = Buffer.concat(await readChunks(req));
+          return json(res, 200, { id: saveLog(url.searchParams.get("name") ?? "log", body) });
+        }
+        return json(res, 405, { error: "method not allowed" });
+      }
+      const logMatch = /^\/api\/logs\/([^/]+)$/.exec(url.pathname);
+      if (logMatch && req.method === "GET") {
+        const id = decodeURIComponent(logMatch[1]);
+        const path = join(LOGS, id);
+        if (id !== safeName(id) || !existsSync(path)) return json(res, 404, { error: "not found" });
+        // 保存している gzip をそのまま送り、ブラウザに展開してもらう
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Encoding": "gzip" });
+        return res.end(readFileSync(path));
       }
 
       let path = normalize(join(DIST, decodeURIComponent(url.pathname)));

@@ -30,6 +30,9 @@ body.dragging::after {
 }
 h1 { font-size: 20px; margin: 0 0 12px; }
 h2 { font-size: 15px; margin: 20px 0 8px; }
+.tabs { display: flex; gap: 4px; margin: 0 0 12px; border-bottom: 1px solid var(--line); }
+.tabs button { flex: 1; border: none; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 4px; color: var(--muted); }
+.tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--fg); font-weight: 700; }
 .muted { color: var(--muted); font-size: 13px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .button, button {

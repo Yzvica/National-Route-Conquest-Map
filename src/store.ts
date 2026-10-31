@@ -51,7 +51,19 @@ export interface RecordStore {
   /** 追加分を保存し、ほかの端末の分も含めた最新の記録を返す */
   add(added: Record): Promise<Record>;
   clear(): Promise<void>;
+  /** 走行ログそのものを残す(MiniPC のときだけ。あとで判定し直すため) */
+  saveLog(name: string, text: string): Promise<void>;
+  listLogs(): Promise<SavedLog[]>;
+  loadLog(id: string): Promise<string>;
 }
+
+export interface SavedLog {
+  id: string;
+  name: string;
+  size: number;
+}
+
+const LOGS_API = `${import.meta.env.BASE_URL}api/logs`;
 
 class ServerStore implements RecordStore {
   readonly shared = true;
@@ -74,6 +86,22 @@ class ServerStore implements RecordStore {
 
   async clear() {
     await fetch(API, { method: "DELETE" });
+  }
+
+  async saveLog(name: string, text: string) {
+    const res = await fetch(`${LOGS_API}?name=${encodeURIComponent(name)}`, { method: "POST", body: text });
+    if (!res.ok) throw new Error(`ログを保存できませんでした(${res.status})`);
+  }
+
+  async listLogs(): Promise<SavedLog[]> {
+    const res = await fetch(LOGS_API);
+    return res.ok ? res.json() : [];
+  }
+
+  async loadLog(id: string) {
+    const res = await fetch(`${LOGS_API}/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`ログを読み込めませんでした(${res.status})`);
+    return res.text();
   }
 }
 
@@ -103,6 +131,15 @@ class LocalStore implements RecordStore {
       console.warn("走行記録を保存できませんでした", e);
     }
     return merged;
+  }
+
+  // ブラウザの保存領域は小さいので、ログそのものは残さない
+  async saveLog() {}
+  async listLogs(): Promise<SavedLog[]> {
+    return [];
+  }
+  async loadLog(): Promise<string> {
+    throw new Error("このブラウザにはログを保存していません");
   }
 
   async clear() {

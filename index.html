@@ -9,6 +9,10 @@
     <div id="app">
       <aside id="panel">
         <h1>国道制覇マップ</h1>
+        <div id="tabs" class="tabs" role="tablist">
+          <button type="button" role="tab" data-kind="kokudo" aria-selected="true">国道</button>
+          <button type="button" role="tab" data-kind="expressway" aria-selected="false">高速道路</button>
+        </div>
         <section class="actions">
           <label class="button">
             走行ログを読み込む
@@ -19,7 +23,7 @@
         <section id="overall"></section>
         <section id="categories"></section>
         <section>
-          <h2>国道別</h2>
+          <h2 id="routes-title">国道別</h2>
           <input id="route-filter" type="search" placeholder="番号で絞り込み(例: 1)" />
           <ol id="routes"></ol>
         </section>
@@ -29,6 +33,7 @@
             記録を読み込む
             <input id="import" type="file" accept=".json" hidden />
           </label>
+          <button id="rematch" type="button" hidden>保存したログで判定し直す</button>
           <button id="reset" type="button" class="danger">記録を消す</button>
         </section>
       </aside>

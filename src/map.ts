@@ -26,22 +26,45 @@ export function createMap(container: HTMLElement): maplibregl.Map {
   });
 }
 
+/** 今のデータ(国道/高速道路)で登録したイベントの後始末。データを切り替えるときに呼ぶ */
+let cleanups: (() => void)[] = [];
+
+function onLayers(map: maplibregl.Map, layers: string[], fn: (e: maplibregl.MapLayerMouseEvent) => void) {
+  map.on("click", layers, fn);
+  cleanups.push(() => map.off("click", layers, fn));
+}
+
+const routeLabel = (data: RouteData, ref: string) =>
+  data.routes[ref]?.name ?? (data.kind === "expressway" ? ref : `国道${ref}号`);
+
+/** 地図から道路の線をすべて消す(データを切り替える前に呼ぶ) */
+export function clearRoutes(map: maplibregl.Map) {
+  for (const f of cleanups) f();
+  cleanups = [];
+  painted = null;
+  for (const id of map.getStyle().layers.map((l) => l.id)) {
+    if (/^(routes|overview)-|^(selected|selected-casing|focus)$/.test(id)) map.removeLayer(id);
+  }
+  for (const id of ["routes", "overview", "selected", "focus"]) if (map.getSource(id)) map.removeSource(id);
+}
+
 export function addRoutes(
   map: maplibregl.Map,
   data: RouteData,
   datesOf: (id: string) => PassDates | undefined,
   onSelect: (ref: string) => void,
 ) {
+  clearRoutes(map);
   // 引いた縮尺では約200mの区間が間引かれて消えるので、つながった区間を長い線にまとめた
   // 軽いソースで描く(paintCoverage で走行状況が変わるたびに作り直す)
   map.addSource("overview", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   const overviewColor = ["match", ["get", "s"], 2, "#d93025", 1, "#f29900", "#9aa0a6"];
   addLineLayers(map, "overview", "overview", overviewColor, { maxzoom: DETAIL_ZOOM });
-  map.on("click", ["overview-road", "overview-dotted", "overview-ferry"], (e) => {
+  onLayers(map, ["overview-road", "overview-dotted", "overview-ferry"], (e) => {
     const f = e.features?.[0];
     if (!f) return;
     const refs = String(f.properties.routes).split(",");
-    const names = refs.map((r) => data.routes[r]?.name ?? `国道${r}号`).join(" / ");
+    const names = refs.map((r) => routeLabel(data, r)).join(" / ");
     new maplibregl.Popup().setLngLat(e.lngLat).setText(`${names}(拡大すると区間ごとの割合が見られます)`).addTo(map);
     onSelect(refs[0]);
   });
@@ -54,6 +77,7 @@ export function addRoutes(
     }
   };
   map.on("zoomend", check);
+  cleanups.push(() => map.off("zoomend", check));
   check();
 }
 
@@ -170,12 +194,12 @@ function addDetail(
   const color = ["case", [">=", ratio, 1], "#d93025", [">", ratio, 0], "#f29900", "#9aa0a6"];
   addLineLayers(map, "routes", "routes", color, { minzoom: DETAIL_ZOOM }, "overview-road");
 
-  map.on("click", ["routes-road", "routes-dotted", "routes-ferry"], (e) => {
+  onLayers(map, ["routes-road", "routes-dotted", "routes-ferry"], (e) => {
     const f = e.features?.[0];
     if (!f) return;
     const names = String(f.properties.routes)
       .split(",")
-      .map((r) => data.routes[r]?.name ?? `国道${r}号`)
+      .map((r) => routeLabel(data, r))
       .join(" / ");
     const r = Number(f.state?.r ?? 0);
     const d = datesOf(String(f.properties.id));
