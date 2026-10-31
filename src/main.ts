@@ -44,6 +44,8 @@ let data: RouteData | null = null;
 let selected: string | null = null;
 /** 種別ごとの内訳で開いているもの(描き直しても開いたままにする) */
 const openCats = new Set<Category>();
+/** 詳細で押した種別(その区間を地図で縁取る) */
+let detailCat: Category | null = null;
 /** 内訳の行(data-item)から、その区間を引けるようにしておく */
 let breakdownItems = new Map<string, BreakdownItem>();
 /** 内訳を出す種別。現道は路線一覧と同じになるので出さない */
@@ -234,7 +236,11 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
     <p class="muted">走行済み ${km(p.done)} km / 全長 ${km(p.total)} km(未踏破 ${km(p.total - p.done)} km)</p>
     ${(Object.keys(CATEGORY_LABELS) as Category[])
       .filter((c) => route.byCategory[c])
-      .map((c) => row(CATEGORY_LABELS[c], route.byCategory[c]!))
+      .map(
+        (c) =>
+          `<button type="button" class="detail-cat${c === detailCat ? " active" : ""}" data-detail-cat="${c}"
+            title="地図でこの区間を縁取る">${row(CATEGORY_LABELS[c], route.byCategory[c]!)}</button>`,
+      )
       .join("")}
     <p class="muted">通過した区間 ${passed.toLocaleString("ja-JP")} / ${segs.length.toLocaleString("ja-JP")}<br>
       ${dates.length ? `初めて ${dates[0]} / 最後 ${dates[dates.length - 1]}` : "まだ通過していません"}</p>
@@ -273,6 +279,7 @@ function fitSelected(ids?: string[]) {
 
 function select(ref: string | null, fit: boolean | string[]) {
   selected = ref;
+  detailCat = null;
   render();
   if (data) showFocus(map, data, Array.isArray(fit) ? fit : []);
   if (fit) fitSelected(Array.isArray(fit) ? fit : undefined);
@@ -457,6 +464,17 @@ $("detail").addEventListener("click", (e) => {
   const el = e.target as HTMLElement;
   if (el.id === "detail-close") select(null, false);
   if (el.id === "detail-fit") fitSelected();
+  // 種別の行: その種別の区間を黄色く縁取って映す。もう一度押すと戻す
+  const catBtn = el.closest<HTMLElement>("[data-detail-cat]");
+  if (catBtn && data && selected) {
+    const cat = catBtn.dataset.detailCat as Category;
+    detailCat = detailCat === cat ? null : cat;
+    const ref = selected;
+    const ids = detailCat ? data.segments.filter((s) => s.routes.includes(ref) && s.cats.includes(cat)).map((s) => s.id) : [];
+    render();
+    showFocus(map, data, ids);
+    fitSelected(ids.length ? ids : undefined);
+  }
   if (el.dataset.jump) {
     e.preventDefault();
     select(el.dataset.jump, true);
