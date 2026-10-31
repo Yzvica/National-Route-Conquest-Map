@@ -9,6 +9,7 @@
     <div id="app">
       <aside id="panel">
         <h1>国道制覇マップ</h1>
+        <section id="level" class="level"></section>
         <div id="tabs" class="tabs" role="tablist">
           <button type="button" role="tab" data-kind="kokudo" aria-selected="true">国道</button>
           <button type="button" role="tab" data-kind="expressway" aria-selected="false">高速道路</button>
@@ -39,6 +40,19 @@
       </aside>
       <main id="map"></main>
       <section id="detail" hidden></section>
+      <dialog id="game">
+        <div class="game-head">
+          <div id="game-tabs" class="tabs" role="tablist">
+            <button type="button" role="tab" data-game="achievements">実績</button>
+            <button type="button" role="tab" data-game="challenges">チャレンジ</button>
+            <button type="button" role="tab" data-game="review">振り返り</button>
+            <button type="button" role="tab" data-game="prefs">都道府県</button>
+          </div>
+          <button id="game-close" type="button" aria-label="閉じる">×</button>
+        </div>
+        <div id="game-body"></div>
+      </dialog>
+      <div id="toast" role="status" aria-live="polite"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -15,6 +15,9 @@ Run gh @("release", "download", "route-data", "-p", "routes.json", "-D", "public
 # 高速道路のデータ。まだ作っていなければ国道だけで動く
 & gh release download route-data -p expressways.json -D public/data --clobber
 if ($LASTEXITCODE -ne 0) { Write-Host "高速道路のデータ(expressways.json)はまだありません。国道だけで続けます。" }
+# 都道府県の形(地図の色分け用)。なくても動く
+& gh release download route-data -p prefectures.json -D public/data --clobber
+if ($LASTEXITCODE -ne 0) { Write-Host "都道府県のデータ(prefectures.json)はまだありません。都道府県別の表示なしで続けます。" }
 Run npm @("run", "build")
 
 if (Get-ScheduledTask -TaskName "KokudoMap" -ErrorAction SilentlyContinue) {
