@@ -1,5 +1,5 @@
 import "./style.css";
-import { addRoutes, createMap, fitRoute, paintCoverage, showTrack } from "./map";
+import { addRoutes, createMap, fitRoute, paintCoverage, showSelected, showTrack } from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { computeStats, percent, type Progress } from "./stats";
@@ -12,6 +12,8 @@ const status = $("status");
 let record: Record = emptyRecord();
 const storePromise = openStore();
 let data: RouteData | null = null;
+/** 選んでいる国道番号 */
+let selected: string | null = null;
 
 const map = createMap($("map"));
 const km = (m: number) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 1 });
@@ -41,9 +43,57 @@ function render() {
     .filter((r) => !filter || r.startsWith(filter))
     .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
   $("routes").innerHTML = refs
-    .map((r) => `<li data-ref="${r}">${row(routeName(r), stats.byRoute.get(r)!.overall)}</li>`)
+    .map((r) => `<li data-ref="${r}"${r === selected ? ' class="selected"' : ""}>${row(routeName(r), stats.byRoute.get(r)!.overall)}</li>`)
     .join("");
   paintCoverage(map, record.coverage);
+  renderDetail(stats);
+}
+
+/** 選んだ国道の詳細を地図の上に出す */
+function renderDetail(stats: ReturnType<typeof computeStats>) {
+  if (!data) return;
+  const box = $("detail");
+  const route = selected ? stats.byRoute.get(selected) : undefined;
+  showSelected(map, data, route ? selected : null, record.coverage);
+  if (!selected || !route) {
+    box.hidden = true;
+    return;
+  }
+  const segs = data.segments.filter((s) => s.routes.includes(selected!));
+  const passed = segs.filter((s) => (record.coverage.get(s.id) ?? 0) > 0).length;
+  const dates = segs.flatMap((s) => record.dates.get(s.id) ?? []).sort();
+  const p = route.overall;
+  box.innerHTML = `<div class="detail-head"><h2>${routeName(selected)}</h2>
+      <button id="detail-close" type="button" aria-label="閉じる">×</button></div>
+    <div class="big">${percent(p).toFixed(1)}%</div>
+    <div class="bar"><span style="width:${percent(p)}%"></span></div>
+    <p class="muted">走行済み ${km(p.done)} km / 全長 ${km(p.total)} km(未踏破 ${km(p.total - p.done)} km)</p>
+    ${(Object.keys(CATEGORY_LABELS) as Category[])
+      .filter((c) => route.byCategory[c])
+      .map((c) => row(CATEGORY_LABELS[c], route.byCategory[c]!))
+      .join("")}
+    <p class="muted">通過した区間 ${passed.toLocaleString("ja-JP")} / ${segs.length.toLocaleString("ja-JP")}<br>
+      ${dates.length ? `初めて ${dates[0]} / 最後 ${dates[dates.length - 1]}` : "まだ通過していません"}</p>
+    <p class="legend"><span class="sw done"></span>走行済み <span class="sw part"></span>一部 <span class="sw todo"></span>未踏破</p>
+    <button id="detail-fit" type="button">全体を表示</button>`;
+  box.hidden = false;
+}
+
+/** 詳細の枠に路線が隠れないよう、その分の余白をとって全体を映す */
+function fitSelected() {
+  if (!data || !selected) return;
+  const box = $("detail");
+  const pad = { top: 40, bottom: 40, left: 40, right: 40 };
+  // スマホでは枠が地図の外にあるので余白は要らない
+  if (getComputedStyle(box).position === "absolute") pad.right += Math.min(box.offsetWidth, $("map").clientWidth / 2);
+  map.resize(); // スマホでは枠が出た分だけ地図が縮むので、先に大きさを合わせる
+  fitRoute(map, data, selected, pad);
+}
+
+function select(ref: string | null, fit: boolean) {
+  selected = ref;
+  render();
+  if (fit) fitSelected();
 }
 
 async function loadData() {
@@ -56,7 +106,7 @@ map.on("load", async () => {
   try {
     const store = await storePromise;
     [data, record] = await Promise.all([loadData(), store.load()]);
-    addRoutes(map, data, (id) => record.dates.get(id));
+    addRoutes(map, data, (id) => record.dates.get(id), (ref) => select(ref, false));
     status.textContent =
       `国道データ: ${Object.keys(data.routes).length} 路線(${data.generatedAt.slice(0, 10)} 時点)` +
       (store.shared ? " / 記録は MiniPC に保存されます" : " / 記録はこのブラウザに保存されます");
@@ -147,7 +197,12 @@ document.addEventListener("visibilitychange", async () => {
 $("route-filter").addEventListener("input", render);
 $("routes").addEventListener("click", (e) => {
   const li = (e.target as HTMLElement).closest("li");
-  if (data && li?.dataset.ref) fitRoute(map, data, li.dataset.ref);
+  if (li?.dataset.ref) select(li.dataset.ref, true);
+});
+$("detail").addEventListener("click", (e) => {
+  const id = (e.target as HTMLElement).id;
+  if (id === "detail-close") select(null, false);
+  if (id === "detail-fit") fitSelected();
 });
 
 $("export").addEventListener("click", () => {
