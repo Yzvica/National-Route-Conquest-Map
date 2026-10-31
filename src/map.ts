@@ -1,7 +1,7 @@
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { PassDates } from "./store";
-import type { Coverage, LonLat, RouteData, TrackPoint } from "./types";
+import type { Coverage, LonLat, RouteData, Segment, TrackPoint } from "./types";
 
 export function createMap(container: HTMLElement): maplibregl.Map {
   return new maplibregl.Map({
@@ -217,9 +217,14 @@ export function showTrack(map: maplibregl.Map, track: TrackPoint[]) {
 }
 
 export function fitRoute(map: maplibregl.Map, data: RouteData, ref: string, padding: maplibregl.PaddingOptions | number = 40) {
+  fitSegments(map, data.segments.filter((s) => s.routes.includes(ref)), padding);
+}
+
+export function fitSegments(map: maplibregl.Map, segs: Segment[], padding: maplibregl.PaddingOptions | number = 40) {
   const b = new maplibregl.LngLatBounds();
-  for (const s of data.segments) if (s.routes.includes(ref)) for (const c of s.coords) b.extend(c);
-  if (!b.isEmpty()) map.fitBounds(b, { padding });
+  for (const s of segs) for (const c of s.coords) b.extend(c);
+  // 点線国道のような短い区間は寄りすぎないようにする
+  if (!b.isEmpty()) map.fitBounds(b, { padding, maxZoom: 15 });
 }
 
 /**
@@ -260,4 +265,31 @@ export function showSelected(map: maplibregl.Map, data: RouteData, ref: string |
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": color as never, "line-width": width as never },
   });
+}
+
+/** 内訳や重複区間から選んだ区間を、黄色い帯で目立たせる。ids が空なら消す */
+export function showFocus(map: maplibregl.Map, data: RouteData, ids: string[]) {
+  const want = new Set(ids);
+  const fc = {
+    type: "FeatureCollection" as const,
+    features: data.segments
+      .filter((s) => want.has(s.id))
+      .map((s) => ({ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: s.coords } })),
+  };
+  const src = map.getSource("focus") as GeoJSONSource | undefined;
+  if (src) {
+    src.setData(fc);
+    return;
+  }
+  map.addSource("focus", { type: "geojson", data: fc, tolerance: 0 });
+  map.addLayer(
+    {
+      id: "focus",
+      type: "line",
+      source: "focus",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffd400", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 10, 12, 16], "line-opacity": 0.7 },
+    },
+    map.getLayer("selected-casing") ? "selected-casing" : undefined,
+  );
 }
