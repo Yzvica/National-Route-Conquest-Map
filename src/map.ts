@@ -1,7 +1,7 @@
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { PassDates } from "./store";
-import type { Coverage, RouteData, TrackPoint } from "./types";
+import type { Coverage, LonLat, RouteData, TrackPoint } from "./types";
 
 export function createMap(container: HTMLElement): maplibregl.Map {
   return new maplibregl.Map({
@@ -32,11 +32,131 @@ export function addRoutes(
   datesOf: (id: string) => PassDates | undefined,
   onSelect: (ref: string) => void,
 ) {
+  // 引いた縮尺では約200mの区間が間引かれて消えるので、つながった区間を長い線にまとめた
+  // 軽いソースで描く(paintCoverage で走行状況が変わるたびに作り直す)
+  map.addSource("overview", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  const overviewColor = ["match", ["get", "s"], 2, "#d93025", 1, "#f29900", "#9aa0a6"];
+  addLineLayers(map, "overview", "overview", overviewColor, { maxzoom: DETAIL_ZOOM });
+  map.on("click", ["overview-road", "overview-dotted", "overview-ferry"], (e) => {
+    const f = e.features?.[0];
+    if (!f) return;
+    const refs = String(f.properties.routes).split(",");
+    const names = refs.map((r) => data.routes[r]?.name ?? `国道${r}号`).join(" / ");
+    new maplibregl.Popup().setLngLat(e.lngLat).setText(`${names}(拡大すると区間ごとの割合が見られます)`).addTo(map);
+    onSelect(refs[0]);
+  });
+
+  // 区間ごとのソース(約36万本)は重いので、拡大したときに初めて作る
+  const check = () => {
+    if (map.getZoom() >= DETAIL_ZOOM - 1) {
+      map.off("zoomend", check);
+      addDetail(map, data, datesOf, onSelect);
+    }
+  };
+  map.on("zoomend", check);
+  check();
+}
+
+/** これより拡大したら区間ごとに描き、引いたときはまとめた線(overview)で描く */
+const DETAIL_ZOOM = 9;
+
+function addLineLayers(
+  map: maplibregl.Map,
+  prefix: string,
+  source: string,
+  color: unknown,
+  zoom: { minzoom?: number; maxzoom?: number },
+  before?: string,
+) {
+  const width = ["interpolate", ["linear"], ["zoom"], 5, 1.5, 12, 4];
+  map.addLayer({
+    id: `${prefix}-road`,
+    type: "line",
+    source,
+    ...zoom,
+    filter: ["all", ["!", ["get", "dotted"]], ["!", ["get", "ferry"]]],
+    paint: { "line-color": color as never, "line-width": width as never },
+  }, before);
+  map.addLayer({
+    id: `${prefix}-dotted`,
+    type: "line",
+    source,
+    ...zoom,
+    filter: ["get", "dotted"],
+    paint: { "line-color": color as never, "line-width": width as never, "line-dasharray": [1, 1.5] },
+  }, before);
+  map.addLayer({
+    id: `${prefix}-ferry`,
+    type: "line",
+    source,
+    ...zoom,
+    filter: ["get", "ferry"],
+    paint: { "line-color": color as never, "line-width": 1.5, "line-dasharray": [3, 3] },
+  }, before);
+}
+
+/**
+ * 端点でつながっていて、国道・種別・走行状況(未走行/一部/走行済み)が同じ区間を1本の線にまとめる。
+ * 約36万区間が数千本になり、引いた縮尺でも速く、消えずに描ける。
+ */
+export function buildOverview(data: RouteData, coverage: Coverage) {
+  const segs = data.segments;
+  const keys = segs.map((s) => {
+    const r = coverage.get(s.id) ?? 0;
+    return `${s.routes.join(",")}|${s.cats.includes("dotted") ? 1 : 0}${s.cats.includes("ferry") ? 1 : 0}|${r >= 1 ? 2 : r > 0 ? 1 : 0}`;
+  });
+  const pt = (c: LonLat) => `${c[0]},${c[1]}`;
+  const ends = new Map<string, number[]>();
+  const addEnd = (k: string, i: number) => {
+    const list = ends.get(k);
+    if (list) list.push(i);
+    else ends.set(k, [i]);
+  };
+  segs.forEach((s, i) => {
+    addEnd(`${keys[i]}@${pt(s.coords[0])}`, i);
+    addEnd(`${keys[i]}@${pt(s.coords[s.coords.length - 1])}`, i);
+  });
+  const used = new Uint8Array(segs.length);
+  const next = (k: string, c: LonLat) => ends.get(`${k}@${pt(c)}`)?.find((j) => !used[j]);
+
+  const features = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    used[i] = 1;
+    const k = keys[i];
+    let line: LonLat[] = [...segs[i].coords];
+    // 後ろへ、次に前へ伸ばす
+    for (let j = next(k, line[line.length - 1]); j !== undefined; j = next(k, line[line.length - 1])) {
+      used[j] = 1;
+      const c = segs[j].coords;
+      line.push(...(pt(c[0]) === pt(line[line.length - 1]) ? c.slice(1) : [...c].reverse().slice(1)));
+    }
+    for (let j = next(k, line[0]); j !== undefined; j = next(k, line[0])) {
+      used[j] = 1;
+      const c = segs[j].coords;
+      line = (pt(c[c.length - 1]) === pt(line[0]) ? c.slice(0, -1) : [...c].reverse().slice(0, -1)).concat(line);
+    }
+    const [routes, kind, state] = k.split("|");
+    features.push({
+      type: "Feature" as const,
+      properties: { routes, dotted: kind[0] === "1", ferry: kind[1] === "1", s: Number(state) },
+      geometry: { type: "LineString" as const, coordinates: line },
+    });
+  }
+  return { type: "FeatureCollection" as const, features };
+}
+
+let painted: Coverage | null = null;
+
+function addDetail(
+  map: maplibregl.Map,
+  data: RouteData,
+  datesOf: (id: string) => PassDates | undefined,
+  onSelect: (ref: string) => void,
+) {
   map.addSource("routes", {
     type: "geojson",
     promoteId: "id",
-    // 引いた縮尺でも短い区間(約200m)を間引かず、全国表示で国道が消えないようにする
-    tolerance: 0,
     data: {
       type: "FeatureCollection",
       features: data.segments.map((s) => ({
@@ -48,28 +168,7 @@ export function addRoutes(
   });
   const ratio = ["coalesce", ["feature-state", "r"], 0];
   const color = ["case", [">=", ratio, 1], "#d93025", [">", ratio, 0], "#f29900", "#9aa0a6"];
-  const width = ["interpolate", ["linear"], ["zoom"], 5, 1.5, 12, 4];
-  map.addLayer({
-    id: "routes-road",
-    type: "line",
-    source: "routes",
-    filter: ["all", ["!", ["get", "dotted"]], ["!", ["get", "ferry"]]],
-    paint: { "line-color": color as never, "line-width": width as never },
-  });
-  map.addLayer({
-    id: "routes-dotted",
-    type: "line",
-    source: "routes",
-    filter: ["get", "dotted"],
-    paint: { "line-color": color as never, "line-width": width as never, "line-dasharray": [1, 1.5] },
-  });
-  map.addLayer({
-    id: "routes-ferry",
-    type: "line",
-    source: "routes",
-    filter: ["get", "ferry"],
-    paint: { "line-color": color as never, "line-width": 1.5, "line-dasharray": [3, 3] },
-  });
+  addLineLayers(map, "routes", "routes", color, { minzoom: DETAIL_ZOOM }, "overview-road");
 
   map.on("click", ["routes-road", "routes-dotted", "routes-ferry"], (e) => {
     const f = e.features?.[0];
@@ -84,11 +183,18 @@ export function addRoutes(
     new maplibregl.Popup().setLngLat(e.lngLat).setText(`${names}(この区間 ${Math.round(r * 100)}%${when})`).addTo(map);
     onSelect(String(f.properties.routes).split(",")[0]);
   });
+  if (painted) for (const [id, r] of painted) map.setFeatureState({ source: "routes", id }, { r });
 }
 
-export function paintCoverage(map: maplibregl.Map, coverage: Coverage) {
-  map.removeFeatureState({ source: "routes" });
-  for (const [id, r] of coverage) map.setFeatureState({ source: "routes", id }, { r });
+export function paintCoverage(map: maplibregl.Map, data: RouteData, coverage: Coverage) {
+  // 国道の絞り込みなどで描き直すときは、記録が変わっていなければ何もしない
+  if (coverage === painted) return;
+  painted = coverage;
+  if (map.getSource("routes")) {
+    map.removeFeatureState({ source: "routes" });
+    for (const [id, r] of coverage) map.setFeatureState({ source: "routes", id }, { r });
+  }
+  (map.getSource("overview") as GeoJSONSource | undefined)?.setData(buildOverview(data, coverage));
 }
 
 export function showTrack(map: maplibregl.Map, track: TrackPoint[]) {
