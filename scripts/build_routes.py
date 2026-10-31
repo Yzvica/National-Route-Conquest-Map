@@ -35,6 +35,8 @@ SIMPLIFY_METERS = 3.0  # 区間の形をこの誤差まで間引いてファイ�
 DOTTED_HIGHWAYS = {"path", "track", "footway", "steps", "bridleway", "cycleway", "pedestrian"}
 # 車道に沿って別の線で描かれた歩道・自転車道・人道トンネル(関門トンネルなど)は、国道のリレーションに
 # 入っていても点線国道ではないので除く。これらの種類で、区間のほとんどが同じ国道の車道のすぐ脇にあるもの
+# 工事中・計画中・廃止された道は、国道のリレーションに入っていても走れないので数えない
+NOT_ROADS = {"construction", "proposed", "planned", "abandoned", "disused", "razed"}
 SIDEWALK_HIGHWAYS = {"footway", "cycleway", "pedestrian", "path", "steps"}
 SIDEWALK_DIST = 25.0  # m。車道からこれ以内なら脇を通っているとみなす
 SIDEWALK_SHARE = 0.8  # 区間の点のうちこの割合以上が車道の脇なら歩道とみなす
@@ -166,6 +168,7 @@ def build(osm: dict) -> dict:
 
     segments = []
     tunnels = []
+    skipped_km = 0.0
     for el in osm["elements"]:
         if el["type"] != "way" or el["id"] not in way_routes or "geometry" not in el:
             continue
@@ -176,7 +179,11 @@ def build(osm: dict) -> dict:
         cats = []
         if tags.get("route") == "ferry":
             cats.append("ferry")
-        elif tags.get("highway") in DOTTED_HIGHWAYS or "highway" not in tags:
+        elif "highway" not in tags or tags["highway"] in NOT_ROADS:
+            # highway のない線(廃道や、災害で通れなくなり highway を外した道など)は道路ではないので除く
+            skipped_km += sum(dist(coords[i - 1], coords[i]) for i in range(1, len(coords))) / 1000
+            continue
+        elif tags.get("highway") in DOTTED_HIGHWAYS:
             cats.append("dotted")
         elif "バイパス" in tags.get("name", "") or "バイパス" in tags.get("official_name", ""):
             cats.append("bypass")
@@ -207,6 +214,8 @@ def build(osm: dict) -> dict:
                 seg["hw"] = tags.get("highway", "none")
             segments.append(seg)
 
+    if skipped_km:
+        print(f"道路でない線(highway なし・工事中・廃道など)を除きました: {skipped_km:.1f} km", file=sys.stderr)
     segments, dropped = drop_sidewalks(segments)
     if dropped:
         print(f"車道沿いの歩道などを点線国道から除きました: {len(dropped)} 区間 / {sum(s['len'] for s in dropped) / 1000:.1f} km", file=sys.stderr)
