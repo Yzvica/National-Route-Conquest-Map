@@ -1,0 +1,243 @@
+// ゲーム要素(レベル・実績・振り返り・チャレンジ)の画面。HTML の文字列を作るだけで、イベントは main.ts で扱う
+import {
+  CONQUER_RATIO,
+  almostConquered,
+  cumulative,
+  monthly,
+  monthlyChallenges,
+  nearbyUntouched,
+  prevMonth,
+  timeline,
+  yearly,
+  type AchievementState,
+  type DatasetSummary,
+  type GameContext,
+  type Level,
+  type Suggestion,
+} from "./game";
+import type { Coverage, DatasetKind, RouteData } from "./types";
+
+const km = (m: number, digits = 1) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: digits });
+const num = (n: number, digits = 0) => n.toLocaleString("ja-JP", { maximumFractionDigits: digits });
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+export function levelCard(lv: Level, unlocked: number, total: number): string {
+  const pct = ((lv.xp - lv.from) / (lv.to - lv.from)) * 100;
+  return `<div class="level-head"><span class="level-num">Lv.${lv.level}</span><span class="level-title">${lv.title}</span></div>
+    <div class="bar" title="${lv.parts.map((p) => `${p.label}: ${num(p.xp)}`).join("\n")}"><span style="width:${pct}%"></span></div>
+    <p class="muted">経験値 ${num(lv.xp)}(次のレベルまで ${num(lv.to - lv.xp)})</p>
+    <div class="game-buttons">
+      <button type="button" data-game="achievements">🏅 実績 ${unlocked}/${total}</button>
+      <button type="button" data-game="challenges">🎯 チャレンジ</button>
+      <button type="button" data-game="review">📊 振り返り</button>
+    </div>`;
+}
+
+// ---------------------------------------------------------------- 実績
+
+export function achievementsView(states: AchievementState[], lv: Level): string {
+  const groups = new Map<string, AchievementState[]>();
+  // 段階のある実績は、達成したものと次の1つだけ出す(先の目標まで並ぶと長くなるので)
+  const nextShown = new Set<string>();
+  const hidden = states.filter((s) => {
+    if (s.unlocked || !s.a.series) return false;
+    if (nextShown.has(s.a.series)) return true;
+    nextShown.add(s.a.series);
+    return false;
+  });
+  for (const s of states) {
+    if (hidden.includes(s)) continue;
+    let g = groups.get(s.a.group);
+    if (!g) groups.set(s.a.group, (g = []));
+    g.push(s);
+  }
+  const unlocked = states.filter((s) => s.unlocked).length;
+  return `<p class="muted">解除 ${unlocked} / ${states.length}。解除するたびに経験値 +50。段階のある実績は次の目標だけ出しています(ほか ${hidden.length} 個)</p>
+    ${[...groups]
+      .map(
+        ([name, list]) => `<h3>${name}</h3><ul class="badges">${list
+          .map((s) => {
+            const pct = Math.min(100, (s.cur / s.target) * 100);
+            const progress = s.unlocked
+              ? "達成!"
+              : s.target === 1
+                ? "未達成"
+                : `${num(Math.min(s.cur, s.target), s.a.unit === "km" || s.a.unit === "%" ? 1 : 0)} / ${num(s.target, 1)} ${s.a.unit ?? ""}`;
+            return `<li class="badge${s.unlocked ? " unlocked" : ""}">
+              <span class="badge-icon">${s.a.icon}</span>
+              <span class="badge-body"><b>${s.a.name}</b><span class="muted">${s.a.desc}</span>
+                ${s.unlocked || s.target === 1 ? "" : `<span class="bar"><span style="width:${pct}%"></span></span>`}
+                <span class="muted">${progress}</span></span></li>`;
+          })
+          .join("")}</ul>`,
+      )
+      .join("")}
+    <h3>レベルと称号</h3>
+    <table class="table"><tbody>${lv.parts.map((p) => `<tr><td>${p.label}</td><td>${num(p.xp)}</td></tr>`).join("")}
+      <tr><th>合計</th><th>${num(lv.xp)}</th></tr></tbody></table>
+    <p class="muted">国道 1km = 1、高速道路 1km = 0.5、国道の制覇 1本 = 30、高速道路の制覇 1路線 = 15、実績 1つ = 50。
+      制覇は走行率 ${CONQUER_RATIO * 100}% 以上です。</p>`;
+}
+
+// ---------------------------------------------------------------- チャレンジ・おすすめ
+
+function suggestionList(items: Suggestion[], name: (ref: string) => string, kind: DatasetKind, note: (s: Suggestion) => string) {
+  if (items.length === 0) return `<p class="muted">該当なし</p>`;
+  return `<ul class="suggest">${items
+    .map(
+      (s) => `<li><a href="#" data-route="${esc(s.ref)}" data-kind="${kind}">${esc(name(s.ref))}</a>
+        <span class="muted">${note(s)}</span></li>`,
+    )
+    .join("")}</ul>`;
+}
+
+export function challengesView(
+  c: GameContext,
+  today: string,
+  active: { kind: DatasetKind; data: RouteData; summary: DatasetSummary; coverage: Coverage },
+  name: (ref: string) => string,
+): string {
+  const ym = today.slice(0, 7);
+  const card = (list: ReturnType<typeof monthlyChallenges>, closed: boolean) =>
+    `<ul class="challenges">${list
+      .map((ch) => {
+        const done = ch.cur >= ch.target;
+        const digits = ch.unit === "km" ? 1 : 0;
+        return `<li class="${done ? "done" : ""}"><span class="badge-icon">${done ? "✅" : ch.icon}</span>
+          <span class="badge-body"><b>${ch.title}</b>
+            <span class="bar"><span style="width:${Math.min(100, (ch.cur / ch.target) * 100)}%"></span></span>
+            <span class="muted">${num(Math.min(ch.cur, ch.target), digits)} / ${ch.target} ${ch.unit}${
+              done ? "・達成!" : closed ? "・未達成" : ""
+            }</span></span></li>`;
+      })
+      .join("")}</ul>`;
+  const [y, m] = ym.split("-").map(Number);
+  const last = prevMonth(ym);
+  const days = new Date(y, m, 0).getDate() - Number(today.slice(8, 10));
+  const left = days === 0 ? "今日まで" : `残り ${days} 日`;
+  const label = active.kind === "kokudo" ? "国道" : "高速道路";
+  return `<h3>${y}年${m}月のチャレンジ <span class="muted">${left}</span></h3>
+    ${card(monthlyChallenges(c, ym), false)}
+    <details><summary class="muted">先月(${Number(last.slice(5))}月)の結果</summary>${card(monthlyChallenges(c, last), true)}</details>
+    <h3>あと少しで制覇できる${label}</h3>
+    ${suggestionList(almostConquered(active.summary), name, active.kind, (s) => `あと ${km(s.total * CONQUER_RATIO - s.done)} km(${num((s.done / s.total) * 100)}%)`)}
+    <h3>よく走るあたりから近い、未踏の${label}</h3>
+    ${suggestionList(nearbyUntouched(active.data, active.summary, active.coverage), name, active.kind, (s) => `約 ${km(s.distance!, 0)} km 先・全長 ${km(s.total)} km`)}
+    <p class="muted">名前を押すと地図で表示します。おすすめは今開いているタブ(${label})から選んでいます。</p>`;
+}
+
+// ---------------------------------------------------------------- 振り返り
+
+const W = 560;
+const H = 160;
+const PAD = { l: 44, r: 8, t: 10, b: 22 };
+
+/** 目盛りにちょうどよい刻み */
+function niceStep(max: number, ticks = 4) {
+  const raw = max / ticks;
+  const p = 10 ** Math.floor(Math.log10(raw || 1));
+  return [1, 2, 5, 10].map((k) => k * p).find((s) => s >= raw) ?? raw;
+}
+
+function axisY(max: number, fmt: (v: number) => string) {
+  const step = niceStep(max);
+  const top = Math.max(step, Math.ceil(max / step) * step);
+  const lines: string[] = [];
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    const y = PAD.t + (H - PAD.t - PAD.b) * (1 - v / top);
+    lines.push(`<line class="grid" x1="${PAD.l}" x2="${W - PAD.r}" y1="${y}" y2="${y}"/>
+      <text class="tick" x="${PAD.l - 6}" y="${y + 4}" text-anchor="end">${fmt(v)}</text>`);
+  }
+  return { top, svg: lines.join("") };
+}
+
+function monthlyChart(rows: [string, number][]): string {
+  const shown = rows.slice(-24);
+  const max = Math.max(...shown.map(([, m]) => m / 1000), 1);
+  const { top, svg } = axisY(max, (v) => num(v));
+  const plotW = W - PAD.l - PAD.r;
+  const bw = plotW / shown.length;
+  const plotH = H - PAD.t - PAD.b;
+  const bars = shown
+    .map(([ym, m], i) => {
+      const h = ((m / 1000) / top) * plotH;
+      const x = PAD.l + i * bw + 1;
+      const w = Math.max(1, bw - 2);
+      const month = Number(ym.slice(5));
+      // 年が分かるよう、最初の月と1月には年もつける
+      const label = i === 0 || month === 1 ? `${ym.slice(2, 4)}年${month}月` : shown.length <= 12 ? `${month}月` : "";
+      return `<g class="hit"><rect class="hitbox" x="${x - 1}" y="${PAD.t}" width="${bw}" height="${plotH}"/>
+        <path class="mark" d="${barPath(x, PAD.t + plotH, w, h)}"/>
+        <title>${ym.replace("-", "年")}月: ${km(m)} km</title>
+        ${label ? `<text class="tick" x="${x + w / 2}" y="${H - 6}" text-anchor="middle">${label}</text>` : ""}</g>`;
+    })
+    .join("");
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="月ごとの開拓距離">${svg}${bars}</svg>`;
+}
+
+/** 上の角だけ丸めた棒 */
+function barPath(x: number, base: number, w: number, h: number) {
+  if (h <= 0) return "";
+  const r = Math.min(4, w / 2, h);
+  const y = base - h;
+  return `M${x},${base}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${base}Z`;
+}
+
+function progressChart(points: [string, number][], start: number, total: number): string {
+  if (points.length === 0) return "";
+  const t0 = Date.parse(points[0][0]);
+  const t1 = Math.max(Date.parse(points[points.length - 1][0]), t0 + 86400000);
+  const pct = (m: number) => (m / total) * 100;
+  const max = Math.max(pct(points[points.length - 1][1]), 0.1);
+  const { top, svg } = axisY(max, (v) => `${num(v, 1)}%`);
+  const plotW = W - PAD.l - PAD.r;
+  const plotH = H - PAD.t - PAD.b;
+  const x = (d: string) => PAD.l + ((Date.parse(d) - t0) / (t1 - t0)) * plotW;
+  const y = (m: number) => PAD.t + plotH * (1 - pct(m) / top);
+  // 階段状に(その日まで横ばい、その日に増える)
+  let d = `M${x(points[0][0])},${y(start)}`;
+  for (const [day, m] of points) d += `H${x(day)}V${y(m)}`;
+  const dots = points
+    .map(
+      ([day, m]) => `<g class="hit"><circle class="hitbox" cx="${x(day)}" cy="${y(m)}" r="8"/>
+        <circle class="dot" cx="${x(day)}" cy="${y(m)}" r="3"/><title>${day}: ${num(pct(m), 2)}%(${km(m)} km)</title></g>`,
+    )
+    .join("");
+  const first = points[0][0];
+  const last = points[points.length - 1][0];
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="制覇率の推移">${svg}
+    <path class="line" d="${d}"/>${dots}
+    <text class="tick" x="${PAD.l}" y="${H - 6}">${first}</text>
+    <text class="tick" x="${W - PAD.r}" y="${H - 6}" text-anchor="end">${last}</text></svg>`;
+}
+
+export function reviewView(s: DatasetSummary, today: string, name: (ref: string) => string, kind: DatasetKind): string {
+  const label = kind === "kokudo" ? "国道" : "高速道路";
+  const years = yearly(s);
+  const months = monthly(s, today);
+  const { start, points } = cumulative(s);
+  const events = timeline(s);
+  if (points.length === 0) {
+    return `<p class="muted">${label}の日付つきの記録がまだありません。走行ログを読み込むと、ここに月ごとの記録や制覇の歴史が出ます。</p>`;
+  }
+  const undated = start > 0 ? `<p class="muted">日付を記録する前に読み込んだ ${km(start)} km は、最初から走っていたことにしています。</p>` : "";
+  const shownEvents = events.slice(0, 150);
+  return `<p class="muted">今開いているタブ(${label})の記録です。距離は「初めて通った日」で数えています。</p>
+    <h3>年ごとのまとめ</h3>
+    <table class="table"><thead><tr><th>年</th><th>開拓距離</th><th>初めて走った路線</th><th>制覇した路線</th></tr></thead>
+      <tbody>${years.map((y) => `<tr><td>${y.year === "" ? "日付なし" : y.year}</td><td>${km(y.newKm)} km</td><td>${y.firstRoutes}</td><td>${y.conquered}</td></tr>`).join("")}</tbody></table>
+    <h3>月ごとの開拓距離(km)</h3>
+    ${monthlyChart(months)}
+    <h3>制覇率の推移</h3>
+    ${progressChart(points, start, s.stats.overall.total)}
+    ${undated}
+    <h3>タイムライン</h3>
+    <ol class="timeline">${shownEvents
+      .map(
+        (e) => `<li class="${e.type}"><span class="muted">${e.date}</span>
+          <span>${e.type === "conquer" ? "🏁" : "👣"} <a href="#" data-route="${esc(e.ref)}" data-kind="${kind}">${esc(name(e.ref))}</a>
+          を${e.type === "conquer" ? "制覇" : "初めて走った"}</span></li>`,
+      )
+      .join("")}</ol>
+    ${events.length > shownEvents.length ? `<p class="muted">ほか ${events.length - shownEvents.length} 件</p>` : ""}`;
+}

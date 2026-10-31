@@ -280,7 +280,8 @@ export function showSelected(map: maplibregl.Map, data: RouteData, ref: string |
     type: "line",
     source: "selected",
     layout: { "line-cap": "round", "line-join": "round" },
-    paint: { "line-color": "#ffffff", "line-width": ["+", width, 3] as never, "line-opacity": 0.9 },
+    // zoom は interpolate の一番外でしか使えないので、太さに 3 を足した式を別に作る
+    paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 6, 12, 9] as never, "line-opacity": 0.9 },
   });
   map.addLayer({
     id: "selected",

@@ -1,5 +1,7 @@
 import "./style.css";
 import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
+import { buildContext, computeLevel, evaluateAchievements, type GameContext } from "./game";
+import { achievementsView, challengesView, levelCard, reviewView } from "./gameView";
 import { addRoutes, clearRoutes, createMap, fitSegments, paintCoverage, showFocus, showSelected, showTrack } from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
@@ -39,14 +41,92 @@ const map = createMap($("map"));
 const km = (m: number) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 1 });
 const routeName = (ref: string) => data?.routes[ref]?.name ?? (active === "kokudo" ? `国道${ref}号` : ref);
 
-/** 上下線のどちらかを走れば両方走ったことにした記録。記録が変わったときだけ作り直す */
-let effective: { data: RouteData; raw: Coverage; cov: Coverage } | null = null;
-function coverage(): Coverage {
-  if (!data) return record.coverage;
-  if (effective?.data !== data || effective.raw !== record.coverage) {
-    effective = { data, raw: record.coverage, cov: effectiveCoverage(data, record.coverage) };
+/** 上下線のどちらかを走れば両方走ったことにした記録 */
+const coverage = (): Coverage => (data ? coverageFor(data) : record.coverage);
+
+/** データごとの、上下線をならした記録 */
+const effectiveCache = new WeakMap<RouteData, { raw: Coverage; cov: Coverage }>();
+function coverageFor(d: RouteData): Coverage {
+  const hit = effectiveCache.get(d);
+  if (hit?.raw === record.coverage) return hit.cov;
+  const cov = effectiveCoverage(d, record.coverage);
+  effectiveCache.set(d, { raw: record.coverage, cov });
+  return cov;
+}
+
+// ---- ゲーム要素(実績・レベル・チャレンジ・振り返り) ----
+
+/** 記録が変わったときだけ作り直す */
+let gameCache: { cov: Coverage; dates: Record["dates"]; n: number; ctx: GameContext } | null = null;
+function gameContext(): GameContext {
+  const n = Object.keys(datasets).length;
+  if (gameCache?.cov !== record.coverage || gameCache.dates !== record.dates || gameCache.n !== n) {
+    gameCache = { cov: record.coverage, dates: record.dates, n, ctx: buildContext(datasets, coverageFor, record.dates) };
   }
-  return effective.cov;
+  return gameCache.ctx;
+}
+
+function gameState() {
+  const ctx = gameContext();
+  const achievements = evaluateAchievements(ctx);
+  const unlocked = achievements.filter((a) => a.unlocked);
+  return { ctx, achievements, unlocked, level: computeLevel(ctx, unlocked.length) };
+}
+
+const today = () => {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+type GameTab = "achievements" | "challenges" | "review";
+let gameTab: GameTab = "achievements";
+
+function renderGame() {
+  if (!datasets.kokudo) return;
+  const g = gameState();
+  $("level").innerHTML = levelCard(g.level, g.unlocked.length, g.achievements.length);
+  const dialog = $<HTMLDialogElement>("game");
+  if (!dialog.open) return;
+  for (const b of $("game-tabs").querySelectorAll<HTMLButtonElement>("button")) {
+    b.setAttribute("aria-selected", String(b.dataset.game === gameTab));
+  }
+  const body = $("game-body");
+  if (gameTab === "achievements") body.innerHTML = achievementsView(g.achievements, g.level);
+  else if (data) {
+    const summary = g.ctx[active]!;
+    body.innerHTML =
+      gameTab === "challenges"
+        ? challengesView(g.ctx, today(), { kind: active, data, summary, coverage: coverage() }, routeName)
+        : reviewView(summary, today(), routeName, active);
+  }
+}
+
+function openGame(tab: GameTab) {
+  gameTab = tab;
+  const dialog = $<HTMLDialogElement>("game");
+  if (!dialog.open) dialog.showModal();
+  renderGame();
+  $("game-body").scrollTop = 0;
+}
+
+let toastTimer = 0;
+function toast(lines: string[]) {
+  if (lines.length === 0) return;
+  const el = $("toast");
+  el.innerHTML = lines.map((l) => `<div>${l}</div>`).join("");
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => el.classList.remove("show"), 6000);
+}
+
+/** 記録を足す前後で、新しく解除した実績やレベルアップを知らせる */
+function announce(before: ReturnType<typeof gameState>) {
+  const after = gameState();
+  const had = new Set(before.unlocked.map((a) => a.a.id));
+  const lines = after.unlocked.filter((a) => !had.has(a.a.id)).map((a) => `${a.a.icon} 実績解除: <b>${a.a.name}</b>`);
+  if (after.level.level > before.level.level) lines.unshift(`⬆️ レベルアップ! <b>Lv.${after.level.level} ${after.level.title}</b>`);
+  toast(lines.slice(0, 6).concat(lines.length > 6 ? [`ほか ${lines.length - 6} 件`] : []));
 }
 
 function row(label: string, p: Progress): string {
@@ -101,6 +181,7 @@ function render() {
     .join("");
   paintCoverage(map, data, coverage());
   renderDetail(stats);
+  renderGame();
 }
 
 /** 選んだ国道の詳細を地図の上に出す */
@@ -251,6 +332,7 @@ function matchAll(track: TrackPoint[]): Coverage {
 async function importFiles(files: File[], opts: { save: boolean; logEntry: boolean } = { save: true, logEntry: true }) {
   if (!data) return;
   const store = await storePromise;
+  const before = gameState();
   const passed = new Set<string>();
   const failed: string[] = [];
   for (const [i, file] of files.entries()) {
@@ -273,6 +355,7 @@ async function importFiles(files: File[], opts: { save: boolean; logEntry: boole
   status.textContent =
     `${ok} ファイルを読み込み、${passed.size} 区間を通過しました` + (failed.length ? `(読めなかったもの: ${failed.join(" / ")})` : "");
   render();
+  announce(before);
 }
 
 // MiniPC に保存してあるログをすべて判定し直す(高速道路のデータを足したあとなど)
@@ -385,8 +468,10 @@ $<HTMLInputElement>("import").addEventListener("change", async (ev) => {
   const file = (ev.target as HTMLInputElement).files?.[0];
   if (!file) return;
   const store = await storePromise;
+  const before = gameState();
   record = await store.add(importBackup(await file.text()));
   render();
+  announce(before);
 });
 
 $("reset").addEventListener("click", async () => {
@@ -397,3 +482,29 @@ $("reset").addEventListener("click", async () => {
   record = emptyRecord();
   render();
 });
+
+// ゲーム要素の画面
+$("level").addEventListener("click", (e) => {
+  const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-game]")?.dataset.game as GameTab | undefined;
+  if (tab) openGame(tab);
+});
+$("game-tabs").addEventListener("click", (e) => {
+  const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-game]")?.dataset.game as GameTab | undefined;
+  if (tab) openGame(tab);
+});
+$("game-close").addEventListener("click", () => $<HTMLDialogElement>("game").close());
+// 枠の外(背景)を押しても閉じる
+$("game").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) $<HTMLDialogElement>("game").close();
+});
+// 路線名を押したら、その路線を地図で表示する
+$("game-body").addEventListener("click", (e) => {
+  const a = (e.target as HTMLElement).closest<HTMLElement>("[data-route]");
+  if (!a) return;
+  e.preventDefault();
+  $<HTMLDialogElement>("game").close();
+  const kind = a.dataset.kind as DatasetKind;
+  if (kind !== active) showDataset(kind);
+  select(a.dataset.route!, true);
+});
+$("toast").addEventListener("click", () => $("toast").classList.remove("show"));
