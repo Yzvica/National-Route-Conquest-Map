@@ -17,6 +17,7 @@ import {
 } from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
+import { trackLength, tripKey } from "./trips";
 import { REFERENCE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, openStore, type Record } from "./store";
 import {
@@ -171,7 +172,7 @@ function renderGame() {
         ? suggestionsView({ kind: active, data, summary, coverage: coverage() }, routeName)
         : gameTab === "prefs"
           ? prefsView(summary, active, prefFill, !!prefShapes)
-          : reviewView(summary, today(), routeName, active);
+          : reviewView(summary, record.trips, today(), routeName, active);
   }
 }
 
@@ -224,6 +225,30 @@ const declareBox = (ref: string) =>
     record.declared.get(ref)?.on ? " checked" : ""
   }> 点線区間を走った</label>`;
 
+/** 点線国道の内訳に出す、OSM での種類と、OSM の地図へのリンク */
+const HW_LABELS: { [hw: string]: string } = {
+  path: "小道",
+  track: "林道・農道",
+  footway: "歩道",
+  steps: "階段",
+  bridleway: "乗馬道",
+  cycleway: "自転車道",
+  pedestrian: "歩行者道",
+  none: "道路以外",
+};
+function dottedInfo(segIds: string[]): string {
+  if (!data) return "";
+  const want = new Set(segIds);
+  const kinds = new Set<string>();
+  for (const s of data.segments) if (want.has(s.id) && s.hw) kinds.add(HW_LABELS[s.hw] ?? s.hw);
+  const ways = [...new Set(segIds.map((id) => id.split("-")[0].slice(1)))];
+  const links = ways
+    .slice(0, 3)
+    .map((w, i) => `<a href="https://www.openstreetmap.org/way/${w}" target="_blank" rel="noopener">OSM${ways.length > 1 ? i + 1 : ""}</a>`)
+    .join(" ");
+  return `<span class="dotted-info muted">${kinds.size ? `${[...kinds].join("・")} / ` : ""}${links}${ways.length > 3 ? " …" : ""}</span>`;
+}
+
 function render() {
   keepScroll(renderNow);
 }
@@ -250,7 +275,7 @@ function renderNow() {
           .map((item) => {
             const key = `${c}:${item.key}`;
             breakdownItems.set(key, item);
-            const declare = REFERENCE_CATS.includes(c) ? declareBox(item.key) : "";
+            const declare = REFERENCE_CATS.includes(c) ? `<div class="declare-row">${declareBox(item.key)}${dottedInfo(item.segIds)}</div>` : "";
             return `<li data-item="${key}">${row(item.refs.map(routeName).join("・"), item.progress)}${declare}</li>`;
           })
           .join("");
@@ -442,7 +467,8 @@ async function importFiles(files: File[], opts: { save: boolean; logEntry: boole
       const day = logDate(track, file);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
-      record = await store.add({ coverage: result, dates, logs, declared: new Map() });
+      const trips = new Map([[tripKey(track, day), { date: day, m: Math.round(trackLength(track)) }]]);
+      record = await store.add({ coverage: result, dates, logs, declared: new Map(), trips });
       for (const id of result.keys()) passed.add(id);
       showTrack(map, track);
     } catch (e) {
@@ -566,7 +592,7 @@ for (const id of ["categories", "detail"]) {
   });
 }
 $("categories").addEventListener("click", (e) => {
-  if ((e.target as HTMLElement).closest(".declare")) return;
+  if ((e.target as HTMLElement).closest(".declare, .dotted-info")) return;
   const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-item]");
   const item = li && breakdownItems.get(li.dataset.item!);
   if (item) select(item.refs[0], item.segIds);

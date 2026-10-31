@@ -3,10 +3,12 @@ import {
   CONQUER_RATIO,
   almostConquered,
   cumulative,
+  fillMonths,
   monthly,
   nearbyUntouched,
   regionProgress,
   timeline,
+  tripTotals,
   yearly,
   type AchievementState,
   type DatasetSummary,
@@ -14,6 +16,7 @@ import {
   type Suggestion,
 } from "./game";
 import { prefName } from "./prefs";
+import type { Trip } from "./trips";
 import type { Progress } from "./stats";
 import type { Coverage, DatasetKind, RouteData } from "./types";
 
@@ -130,7 +133,7 @@ function axisY(max: number, fmt: (v: number) => string) {
   return { top, svg: lines.join("") };
 }
 
-function monthlyChart(rows: [string, number][]): string {
+function monthlyChart(rows: [string, number][], label: string): string {
   const shown = rows.slice(-24);
   const max = Math.max(...shown.map(([, m]) => m / 1000), 1);
   const { top, svg } = axisY(max, (v) => num(v));
@@ -151,7 +154,7 @@ function monthlyChart(rows: [string, number][]): string {
         ${label ? `<text class="tick" x="${x + w / 2}" y="${H - 6}" text-anchor="middle">${label}</text>` : ""}</g>`;
     })
     .join("");
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="月ごとの開拓距離">${svg}${bars}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${label}">${svg}${bars}</svg>`;
 }
 
 /** 上の角だけ丸めた棒 */
@@ -190,25 +193,53 @@ function progressChart(points: [string, number][], start: number, total: number)
     <text class="tick" x="${W - PAD.r}" y="${H - 6}" text-anchor="end">${last}</text></svg>`;
 }
 
-export function reviewView(s: DatasetSummary, today: string, name: (ref: string) => string, kind: DatasetKind): string {
+export function reviewView(
+  s: DatasetSummary,
+  trips: Map<string, Trip>,
+  today: string,
+  name: (ref: string) => string,
+  kind: DatasetKind,
+): string {
   const label = kind === "kokudo" ? "国道" : "高速道路";
   const years = yearly(s);
-  const months = monthly(s, today);
+  const t = tripTotals(trips);
+  const firstTrip = [...t.byMonth.keys()].sort()[0];
   const { start, points } = cumulative(s);
+  // 2つの棒グラフの月をそろえる
+  const firstNew = monthly(s, today)[0]?.[0];
+  const from = [firstTrip, firstNew].filter(Boolean).sort()[0];
+  const months = monthly(s, today, from);
+  const tripMonths = from ? fillMonths(t.byMonth, today, from) : [];
   const events = timeline(s);
-  if (points.length === 0) {
+  if (points.length === 0 && t.count === 0) {
     return `<p class="muted">${label}の日付つきの記録がまだありません。走行ログを読み込むと、ここに月ごとの記録や制覇の歴史が出ます。</p>`;
   }
+  // ログ上の距離だけの年もあるので、両方の年を並べる
+  const yearKeys = [...new Set([...years.map((y) => y.year), ...t.byYear.keys()])].sort((a, b) => b.localeCompare(a));
+  const yearRows = yearKeys
+    .map((key) => {
+      const y = years.find((x) => x.year === key);
+      const tr = t.byYear.get(key);
+      return `<tr><td>${key === "" ? "日付なし" : key}</td><td>${tr ? `${km(tr.m, 0)} km` : "-"}</td><td>${km(y?.newKm ?? 0)} km</td>
+        <td>${y?.firstRoutes ?? 0}</td><td>${y?.conquered ?? 0}</td></tr>`;
+    })
+    .join("");
   const undated = start > 0 ? `<p class="muted">日付を記録する前に読み込んだ ${km(start)} km は、最初から走っていたことにしています。</p>` : "";
+  const noTrips =
+    t.count === 0
+      ? `<p class="muted">ログ上の走行距離は、これから読み込むログから数えます。MiniPC に保存してあるログは「保存したログで判定し直す」を押すと数えられます。</p>`
+      : "";
   const shownEvents = events.slice(0, 150);
-  return `<p class="muted">今開いているタブ(${label})の記録です。距離は「初めて通った日」で数えています。</p>
+  return `<p class="muted">走行距離はログ上で走った距離(国道以外の道も、同じ道を何度走ったかも含む)、
+      開拓距離は今開いているタブ(${label})を初めて通った距離です。</p>
+    <p>ログ上の走行距離 合計 <b>${km(t.total, 0)} km</b> <span class="muted">(${t.count} 本のログ)</span></p>
+    ${noTrips}
     <h3>年ごとのまとめ</h3>
-    <table class="table"><thead><tr><th>年</th><th>開拓距離</th><th>初めて走った路線</th><th>制覇した路線</th></tr></thead>
-      <tbody>${years.map((y) => `<tr><td>${y.year === "" ? "日付なし" : y.year}</td><td>${km(y.newKm)} km</td><td>${y.firstRoutes}</td><td>${y.conquered}</td></tr>`).join("")}</tbody></table>
-    <h3>月ごとの開拓距離(km)</h3>
-    ${monthlyChart(months)}
-    <h3>制覇率の推移</h3>
-    ${progressChart(points, start, s.stats.overall.total)}
+    <table class="table"><thead><tr><th>年</th><th>走行距離</th><th>開拓距離</th><th>初めて走った路線</th><th>制覇した路線</th></tr></thead>
+      <tbody>${yearRows}</tbody></table>
+    ${t.count ? `<h3>月ごとの走行距離(ログ上・km)</h3>${monthlyChart(tripMonths, "月ごとの走行距離")}` : ""}
+    ${months.length ? `<h3>月ごとの開拓距離(${label}・km)</h3>${monthlyChart(months, "月ごとの開拓距離")}` : ""}
+    ${points.length ? `<h3>制覇率の推移</h3>${progressChart(points, start, s.stats.overall.total)}` : ""}
     ${undated}
     <h3>タイムライン</h3>
     <ol class="timeline" data-scroll="timeline">${shownEvents

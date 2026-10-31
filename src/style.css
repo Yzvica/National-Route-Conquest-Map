@@ -171,3 +171,7 @@ button.link { padding: 1px 8px; font-size: 12px; }
 #map .maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip, #map .maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: var(--bg); }
 .declare { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); cursor: pointer; margin: 0 0 6px; }
 .declare input { margin: 0; }
+.declare-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0 0 6px; }
+.declare-row .declare { margin: 0; }
+.dotted-info { font-size: 12px; }
+.dotted-info a { color: var(--accent); }

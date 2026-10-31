@@ -3,6 +3,7 @@
 import { REGIONS } from "./prefs";
 import { computeStats, isReference, segmentWeight, type Progress, type Stats } from "./stats";
 import type { PassDates } from "./store";
+import type { Trip } from "./trips";
 import type { Coverage, DatasetKind, RouteData } from "./types";
 
 /** 路線の走行率がこれ以上なら「制覇」とする(脇道や GPS のずれで 100% にならないことがあるため) */
@@ -609,14 +610,36 @@ export function yearly(s: DatasetSummary): YearSummary[] {
 }
 
 /** 月("YYYY-MM")ごとの新たに走った距離(m)。最初の月から今月まで、走らなかった月も 0 で埋める */
-export function monthly(s: DatasetSummary, today: string): [string, number][] {
+export function monthly(s: DatasetSummary, today: string, from?: string): [string, number][] {
   const byMonth = new Map<string, number>();
   for (const [d, m] of s.daily) if (d !== UNDATED) byMonth.set(d.slice(0, 7), (byMonth.get(d.slice(0, 7)) ?? 0) + m);
-  if (byMonth.size === 0) return [];
-  const first = [...byMonth.keys()].sort()[0];
+  return fillMonths(byMonth, today, from);
+}
+
+/** 月ごとの値を、最初の月(from があればそれと早い方)から今月まで、ない月は 0 で埋めて並べる */
+export function fillMonths(byMonth: Map<string, number>, today: string, from?: string): [string, number][] {
+  if (byMonth.size === 0 && !from) return [];
+  const first = [...byMonth.keys(), ...(from ? [from] : [])].sort()[0];
   const out: [string, number][] = [];
   for (let m = first; m <= today.slice(0, 7); m = nextMonth(m)) out.push([m, byMonth.get(m) ?? 0]);
   return out;
+}
+
+/** ログ上の走行距離を月ごと・年ごとにまとめる(m) */
+export function tripTotals(trips: Map<string, Trip>) {
+  const byMonth = new Map<string, number>();
+  const byYear = new Map<string, { m: number; count: number }>();
+  let total = 0;
+  for (const t of trips.values()) {
+    const ym = t.date.slice(0, 7);
+    byMonth.set(ym, (byMonth.get(ym) ?? 0) + t.m);
+    const y = byYear.get(t.date.slice(0, 4)) ?? { m: 0, count: 0 };
+    y.m += t.m;
+    y.count++;
+    byYear.set(t.date.slice(0, 4), y);
+    total += t.m;
+  }
+  return { byMonth, byYear, total, count: trips.size };
 }
 
 export function nextMonth(ym: string): string {
