@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 process.env.RECORD_FILE = join(mkdtempSync(join(tmpdir(), "kokudo-")), "record.json");
+process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-logs-"));
 const { createApp, mergeRecord } = await import("./server.mjs");
 
 describe("mergeRecord", () => {
@@ -52,5 +53,28 @@ describe("/api/record", () => {
 
     await fetch(base, { method: "DELETE" });
     expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [] });
+  });
+});
+
+describe("/api/logs", () => {
+  let server;
+  let base;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    base = `http://127.0.0.1:${server.address().port}/api/logs`;
+  });
+  afterAll(() => server.close());
+
+  it("保存したログを一覧から取り出せる", async () => {
+    const text = "#GBOWLCSV,2026-09-19 20:05:37\nTime(sec),Latitude(deg),Longitude(deg)\n0,35,139\n";
+    const { id } = await (await fetch(`${base}?name=${encodeURIComponent("走行 1.csv")}`, { method: "POST", body: text })).json();
+    const list = await (await fetch(base)).json();
+    expect(list).toEqual([expect.objectContaining({ id, name: "走行_1.csv" })]);
+    expect(await (await fetch(`${base}/${encodeURIComponent(id)}`)).text()).toBe(text);
+  });
+
+  it("ログフォルダの外は読めない", async () => {
+    expect((await fetch(`${base}/..%2Frecord.json`)).status).toBe(404);
   });
 });

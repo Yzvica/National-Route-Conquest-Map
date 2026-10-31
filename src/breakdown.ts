@@ -1,4 +1,4 @@
-import type { Progress } from "./stats";
+import { segmentWeight, type Progress } from "./stats";
 import type { Category, Coverage, RouteData } from "./types";
 
 export interface BreakdownItem {
@@ -30,9 +30,9 @@ export function categoryBreakdown(data: RouteData, coverage: Coverage, cat: Cate
     const r = coverage.get(s.id) ?? 0;
     if (cat === "overlap") {
       const refs = [...s.routes].sort(byRef);
-      collect(items, refs.join(","), refs, s.id, s.len, r);
+      collect(items, refs.join(","), refs, s.id, s.len * segmentWeight(s), r);
     } else {
-      for (const ref of s.routes) collect(items, ref, [ref], s.id, s.len, r);
+      for (const ref of s.routes) collect(items, ref, [ref], s.id, s.len * segmentWeight(s), r);
     }
   }
   return [...items.values()].sort((a, b) => byRef(a.refs[0], b.refs[0]) || byRef(a.key, b.key));
@@ -44,7 +44,7 @@ export function overlapsOf(data: RouteData, coverage: Coverage, ref: string): Br
   for (const s of data.segments) {
     if (s.routes.length < 2 || !s.routes.includes(ref)) continue;
     const r = coverage.get(s.id) ?? 0;
-    for (const other of s.routes) if (other !== ref) collect(items, other, [other], s.id, s.len, r);
+    for (const other of s.routes) if (other !== ref) collect(items, other, [other], s.id, s.len * segmentWeight(s), r);
   }
   return [...items.values()].sort((a, b) => byRef(a.key, b.key));
 }

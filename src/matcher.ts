@@ -25,6 +25,7 @@ export const DEFAULT_OPTIONS: MatchOptions = {
 const SAMPLE_STEP = 20;
 const DENSIFY_STEP = 10;
 const MIN_HIT_METERS = 50;
+const COARSE = 500;
 
 function pushGapPoints(out: LonLat[], pa: TrackPoint, pb: TrackPoint, b: LonLat, opt: MatchOptions) {
   const a: LonLat = [pa.lon, pa.lat];
@@ -93,7 +94,12 @@ export function matchTrack(
   if (track.length === 0) return result;
 
   const dense = new PointGrid<null>(Math.max(opt.tolerance, 50));
-  for (const p of densify(track, opt)) dense.add(p, null);
+  // ログから遠い区間をまとめて飛ばすための粗いマス(区間は 200m 前後なので、端から COARSE m 以内を見れば足りる)
+  const coarse = new PointGrid<null>(COARSE);
+  for (const p of densify(track, opt)) {
+    dense.add(p, null);
+    coarse.add(p, null);
+  }
 
   const raw = new PointGrid<number>(Math.max(opt.portalRadius, 50));
   track.forEach((p, i) => raw.add([p.lon, p.lat], i));
@@ -108,6 +114,7 @@ export function matchTrack(
       result.set(seg.id, 1);
       continue;
     }
+    if (seg.len + opt.tolerance <= COARSE && !coarse.hasNear(seg.coords[0], COARSE)) continue;
     const samples = samplePoints(seg.coords, SAMPLE_STEP);
     let hit = 0;
     for (const s of samples) if (dense.hasNear(s, opt.tolerance)) hit++;

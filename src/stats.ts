@@ -1,4 +1,4 @@
-import type { Category, Coverage, RouteData } from "./types";
+import { CATEGORY_LABELS, type Category, type Coverage, type RouteData, type Segment } from "./types";
 
 export interface Progress {
   total: number;
@@ -14,6 +14,24 @@ export interface Stats {
 
 const empty = (): Progress => ({ total: 0, done: 0 });
 
+/** 上下線が別の区間は半分ずつ数える(2つ合わせて道路1本分) */
+export const segmentWeight = (s: Segment) => (s.pair ? 0.5 : 1);
+
+/**
+ * 上下線のどちらかを走れば、両方を走ったことにした記録。
+ * 上下線の組がないデータ(国道)では、渡した記録をそのまま返す
+ */
+export function effectiveCoverage(data: RouteData, coverage: Coverage): Coverage {
+  if (!data.segments.some((s) => s.pair)) return coverage;
+  const out = new Map(coverage);
+  for (const s of data.segments) {
+    if (!s.pair) continue;
+    const r = Math.max(coverage.get(s.id) ?? 0, coverage.get(s.pair) ?? 0);
+    if (r > 0) out.set(s.id, r);
+  }
+  return out;
+}
+
 function add(p: Progress, len: number, ratio: number) {
   p.total += len;
   p.done += len * ratio;
@@ -22,19 +40,23 @@ function add(p: Progress, len: number, ratio: number) {
 export function computeStats(data: RouteData, coverage: Coverage): Stats {
   const stats: Stats = {
     overall: empty(),
-    byCategory: { main: empty(), bypass: empty(), dotted: empty(), ferry: empty(), overlap: empty() },
+    byCategory: Object.fromEntries((Object.keys(CATEGORY_LABELS) as Category[]).map((c) => [c, empty()])) as Record<
+      Category,
+      Progress
+    >,
     byRoute: new Map(),
   };
   for (const seg of data.segments) {
     const r = coverage.get(seg.id) ?? 0;
-    add(stats.overall, seg.len, r);
-    for (const c of seg.cats) add(stats.byCategory[c], seg.len, r);
+    const len = seg.len * segmentWeight(seg);
+    add(stats.overall, len, r);
+    for (const c of seg.cats) add(stats.byCategory[c], len, r);
     // 重複区間は、それぞれの国道の制覇率には丸ごと数える
     for (const ref of seg.routes) {
       let route = stats.byRoute.get(ref);
       if (!route) stats.byRoute.set(ref, (route = { overall: empty(), byCategory: {} }));
-      add(route.overall, seg.len, r);
-      for (const c of seg.cats) add((route.byCategory[c] ??= empty()), seg.len, r);
+      add(route.overall, len, r);
+      for (const c of seg.cats) add((route.byCategory[c] ??= empty()), len, r);
     }
   }
   return stats;
