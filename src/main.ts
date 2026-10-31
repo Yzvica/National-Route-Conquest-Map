@@ -1,7 +1,7 @@
 import "./style.css";
 import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
 import { buildContext, computeLevel, evaluateAchievements, regionTitle, type GameContext } from "./game";
-import { achievementsView, challengesView, levelCard, prefsView, reviewView } from "./gameView";
+import { achievementsView, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
 import {
   addRoutes,
   clearRoutes,
@@ -17,7 +17,7 @@ import {
 } from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
-import { computeStats, effectiveCoverage, percent, type Progress } from "./stats";
+import { REFERENCE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, openStore, type Record } from "./store";
 import {
   CATEGORY_LABELS,
@@ -55,27 +55,69 @@ const map = createMap($("map"));
 const km = (m: number) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 1 });
 const routeName = (ref: string) => data?.routes[ref]?.name ?? (active === "kokudo" ? `国道${ref}号` : ref);
 
-/** 上下線のどちらかを走れば両方走ったことにした記録 */
+/** 上下線のどちらかを走れば両方走ったことにし、点線国道は自己申告に置き換えた記録 */
 const coverage = (): Coverage => (data ? coverageFor(data) : record.coverage);
 
-/** データごとの、上下線をならした記録 */
-const effectiveCache = new WeakMap<RouteData, { raw: Coverage; cov: Coverage }>();
+/** 点線国道を走ったと申告している国道 */
+const declaredRefs = () => new Set([...record.declared].filter(([, d]) => d.on).map(([ref]) => ref));
+
+/** データごとの、画面で使う記録。記録が変わったときだけ作り直す */
+const effectiveCache = new WeakMap<RouteData, { raw: Coverage; declared: Record["declared"]; cov: Coverage }>();
 function coverageFor(d: RouteData): Coverage {
   const hit = effectiveCache.get(d);
-  if (hit?.raw === record.coverage) return hit.cov;
-  const cov = effectiveCoverage(d, record.coverage);
-  effectiveCache.set(d, { raw: record.coverage, cov });
+  if (hit?.raw === record.coverage && hit.declared === record.declared) return hit.cov;
+  const cov = applyDeclared(d, effectiveCoverage(d, record.coverage), declaredRefs());
+  effectiveCache.set(d, { raw: record.coverage, declared: record.declared, cov });
   return cov;
 }
 
-// ---- ゲーム要素(実績・レベル・チャレンジ・振り返り) ----
+/** 点線国道を走ったかの自己申告を切り替える */
+async function declareDotted(ref: string, on: boolean) {
+  const store = await storePromise;
+  const before = gameState();
+  const added = emptyRecord();
+  added.declared.set(ref, { on, at: new Date().toISOString() });
+  record = await store.add(added);
+  render();
+  announce(before);
+}
+
+/**
+ * 中身を作り直すとスクロールしていた一覧が先頭に戻ってしまうので、
+ * data-scroll を付けた一覧(と枠そのもの)の位置を覚えておいて戻す
+ */
+function keepScroll(fn: () => void) {
+  const roots = ["panel", "detail", "game-body"].map((id) => $(id));
+  const saved = new Map<string, number>();
+  for (const el of document.querySelectorAll<HTMLElement>("[data-scroll]")) saved.set(el.dataset.scroll!, el.scrollTop);
+  const rootTops = roots.map((el) => el.scrollTop);
+  fn();
+  for (const el of document.querySelectorAll<HTMLElement>("[data-scroll]")) {
+    const top = saved.get(el.dataset.scroll!);
+    if (top) el.scrollTop = top;
+  }
+  roots.forEach((el, i) => (el.scrollTop = rootTops[i]));
+}
+
+// ---- ゲーム要素(実績・レベル・おすすめ・振り返り・都道府県) ----
 
 /** 記録が変わったときだけ作り直す */
-let gameCache: { cov: Coverage; dates: Record["dates"]; n: number; ctx: GameContext } | null = null;
+let gameCache: { cov: Coverage; dates: Record["dates"]; declared: Record["declared"]; n: number; ctx: GameContext } | null = null;
 function gameContext(): GameContext {
   const n = Object.keys(datasets).length;
-  if (gameCache?.cov !== record.coverage || gameCache.dates !== record.dates || gameCache.n !== n) {
-    gameCache = { cov: record.coverage, dates: record.dates, n, ctx: buildContext(datasets, coverageFor, record.dates) };
+  if (
+    gameCache?.cov !== record.coverage ||
+    gameCache.dates !== record.dates ||
+    gameCache.declared !== record.declared ||
+    gameCache.n !== n
+  ) {
+    gameCache = {
+      cov: record.coverage,
+      dates: record.dates,
+      declared: record.declared,
+      n,
+      ctx: buildContext(datasets, coverageFor, record.dates),
+    };
   }
   return gameCache.ctx;
 }
@@ -93,7 +135,7 @@ const today = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
-type GameTab = "achievements" | "challenges" | "review" | "prefs";
+type GameTab = "achievements" | "suggest" | "review" | "prefs";
 let gameTab: GameTab = "achievements";
 /** 都道府県の形(地図の色分け用)。データがなければ undefined */
 let prefShapes: PrefShapes | undefined;
@@ -125,8 +167,8 @@ function renderGame() {
   else if (data) {
     const summary = g.ctx[active]!;
     body.innerHTML =
-      gameTab === "challenges"
-        ? challengesView(g.ctx, today(), { kind: active, data, summary, coverage: coverage() }, routeName)
+      gameTab === "suggest"
+        ? suggestionsView({ kind: active, data, summary, coverage: coverage() }, routeName)
         : gameTab === "prefs"
           ? prefsView(summary, active, prefFill, !!prefShapes)
           : reviewView(summary, today(), routeName, active);
@@ -174,20 +216,33 @@ function order(ref: string): number {
   return routeOrder.index.get(ref) ?? Infinity;
 }
 
+const catLabel = (c: Category) => (REFERENCE_CATS.includes(c) ? `${CATEGORY_LABELS[c]}(参考・自己申告)` : CATEGORY_LABELS[c]);
+
+/** 点線国道を走ったかの申告のチェックボックス */
+const declareBox = (ref: string) =>
+  `<label class="declare" title="点線国道はログでは判定せず、自己申告で記録します"><input type="checkbox" data-declare="${ref}"${
+    record.declared.get(ref)?.on ? " checked" : ""
+  }> 点線区間を走った</label>`;
+
 function render() {
+  keepScroll(renderNow);
+}
+
+function renderNow() {
   if (!data) return;
   const stats = computeStats(data, coverage());
+  const hasReference = stats.byCategory.dotted.total > 0;
   $("overall").innerHTML = `<h2>総合制覇率</h2><div class="big">${percent(stats.overall).toFixed(2)}%</div>
     <p class="muted">${km(stats.overall.done)} / ${km(stats.overall.total)} km(重複区間は1回だけ数えています${
       active === "expressway" ? "。上下線はどちらかを走れば制覇" : ""
-    })</p>`;
+    }${hasReference ? "。点線国道は参考として別に数えています" : ""})</p>`;
   breakdownItems = new Map();
   $("categories").innerHTML =
     "<h2>種別ごと</h2>" +
     (Object.keys(CATEGORY_LABELS) as Category[])
       .filter((c) => stats.byCategory[c].total > 0)
       .map((c) => {
-        const head = row(CATEGORY_LABELS[c], stats.byCategory[c]);
+        const head = row(catLabel(c), stats.byCategory[c]);
         if (!BREAKDOWN_CATS.includes(c)) return head;
         // 開いているときだけ内訳を作る(バイパスは数百路線ある)
         const items = openCats.has(c) ? categoryBreakdown(data!, coverage(), c) : [];
@@ -195,11 +250,12 @@ function render() {
           .map((item) => {
             const key = `${c}:${item.key}`;
             breakdownItems.set(key, item);
-            return `<li data-item="${key}">${row(item.refs.map(routeName).join("・"), item.progress)}</li>`;
+            const declare = REFERENCE_CATS.includes(c) ? declareBox(item.key) : "";
+            return `<li data-item="${key}">${row(item.refs.map(routeName).join("・"), item.progress)}${declare}</li>`;
           })
           .join("");
         return `<details data-cat="${c}"${openCats.has(c) ? " open" : ""}><summary>${head}</summary>
-          <ol class="breakdown">${list}</ol></details>`;
+          <ol class="breakdown" data-scroll="cat:${c}">${list}</ol></details>`;
       })
       .join("");
 
@@ -239,7 +295,9 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
       .map(
         (c) =>
           `<button type="button" class="detail-cat${c === detailCat ? " active" : ""}" data-detail-cat="${c}"
-            title="地図でこの区間を縁取る">${row(CATEGORY_LABELS[c], route.byCategory[c]!)}</button>`,
+            title="地図でこの区間を縁取る">${row(catLabel(c), route.byCategory[c]!)}</button>${
+            REFERENCE_CATS.includes(c) ? declareBox(selected!) : ""
+          }`,
       )
       .join("")}
     <p class="muted">通過した区間 ${passed.toLocaleString("ja-JP")} / ${segs.length.toLocaleString("ja-JP")}<br>
@@ -254,7 +312,7 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
 function overlapList(ref: string): string {
   const items = overlapsOf(data!, coverage(), ref);
   if (items.length === 0) return "";
-  return `<details class="overlaps" open><summary>重複している国道(${items.length})</summary><ul>
+  return `<details class="overlaps" open><summary>重複している国道(${items.length})</summary><ul data-scroll="overlaps">
     ${items
       .map(
         (o) => `<li><a href="#" data-jump="${o.key}">${routeName(o.key)}</a>
@@ -384,7 +442,7 @@ async function importFiles(files: File[], opts: { save: boolean; logEntry: boole
       const day = logDate(track, file);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
-      record = await store.add({ coverage: result, dates, logs });
+      record = await store.add({ coverage: result, dates, logs, declared: new Map() });
       for (const id of result.keys()) passed.add(id);
       showTrack(map, track);
     } catch (e) {
@@ -500,7 +558,15 @@ $("categories").addEventListener(
   },
   true,
 );
+// 点線国道の自己申告(内訳と国道詳細のチェックボックス)
+for (const id of ["categories", "detail"]) {
+  $(id).addEventListener("change", (e) => {
+    const box = e.target as HTMLInputElement;
+    if (box.dataset.declare) declareDotted(box.dataset.declare, box.checked);
+  });
+}
 $("categories").addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).closest(".declare")) return;
   const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-item]");
   const item = li && breakdownItems.get(li.dataset.item!);
   if (item) select(item.refs[0], item.segIds);
