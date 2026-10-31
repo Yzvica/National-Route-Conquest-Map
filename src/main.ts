@@ -1,5 +1,6 @@
 import "./style.css";
-import { addRoutes, createMap, fitRoute, paintCoverage, showSelected, showTrack } from "./map";
+import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
+import { addRoutes, createMap, fitSegments, paintCoverage, showFocus, showSelected, showTrack } from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { computeStats, percent, type Progress } from "./stats";
@@ -14,6 +15,12 @@ const storePromise = openStore();
 let data: RouteData | null = null;
 /** 選んでいる国道番号 */
 let selected: string | null = null;
+/** 種別ごとの内訳で開いているもの(描き直しても開いたままにする) */
+const openCats = new Set<Category>();
+/** 内訳の行(data-item)から、その区間を引けるようにしておく */
+let breakdownItems = new Map<string, BreakdownItem>();
+/** 内訳を出す種別。現道は路線一覧と同じになるので出さない */
+const BREAKDOWN_CATS: Category[] = ["bypass", "dotted", "ferry", "overlap"];
 
 const map = createMap($("map"));
 const km = (m: number) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 1 });
@@ -31,11 +38,26 @@ function render() {
   const stats = computeStats(data, record.coverage);
   $("overall").innerHTML = `<h2>総合制覇率</h2><div class="big">${percent(stats.overall).toFixed(2)}%</div>
     <p class="muted">${km(stats.overall.done)} / ${km(stats.overall.total)} km(重複区間は1回だけ数えています)</p>`;
+  breakdownItems = new Map();
   $("categories").innerHTML =
     "<h2>種別ごと</h2>" +
     (Object.keys(CATEGORY_LABELS) as Category[])
       .filter((c) => stats.byCategory[c].total > 0)
-      .map((c) => row(CATEGORY_LABELS[c], stats.byCategory[c]))
+      .map((c) => {
+        const head = row(CATEGORY_LABELS[c], stats.byCategory[c]);
+        if (!BREAKDOWN_CATS.includes(c)) return head;
+        // 開いているときだけ内訳を作る(バイパスは数百路線ある)
+        const items = openCats.has(c) ? categoryBreakdown(data!, record.coverage, c) : [];
+        const list = items
+          .map((item) => {
+            const key = `${c}:${item.key}`;
+            breakdownItems.set(key, item);
+            return `<li data-item="${key}">${row(item.refs.map(routeName).join("・"), item.progress)}</li>`;
+          })
+          .join("");
+        return `<details data-cat="${c}"${openCats.has(c) ? " open" : ""}><summary>${head}</summary>
+          <ol class="breakdown">${list}</ol></details>`;
+      })
       .join("");
 
   const filter = $<HTMLInputElement>("route-filter").value.trim();
@@ -74,26 +96,44 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
       .join("")}
     <p class="muted">通過した区間 ${passed.toLocaleString("ja-JP")} / ${segs.length.toLocaleString("ja-JP")}<br>
       ${dates.length ? `初めて ${dates[0]} / 最後 ${dates[dates.length - 1]}` : "まだ通過していません"}</p>
+    ${overlapList(selected)}
     <p class="legend"><span class="sw done"></span>走行済み <span class="sw part"></span>一部 <span class="sw todo"></span>未踏破</p>
     <button id="detail-fit" type="button">全体を表示</button>`;
   box.hidden = false;
 }
 
-/** 詳細の枠に路線が隠れないよう、その分の余白をとって全体を映す */
-function fitSelected() {
+/** 選んだ国道と重なっているほかの国道。名前を押すとその国道へ、「場所」で重なっている区間を映す */
+function overlapList(ref: string): string {
+  const items = overlapsOf(data!, record.coverage, ref);
+  if (items.length === 0) return "";
+  return `<details class="overlaps" open><summary>重複している国道(${items.length})</summary><ul>
+    ${items
+      .map(
+        (o) => `<li><a href="#" data-jump="${o.key}">${routeName(o.key)}</a>
+          <span class="muted">${km(o.progress.total)} km・${percent(o.progress).toFixed(0)}%</span>
+          <button type="button" class="link" data-show="${o.key}">場所</button></li>`,
+      )
+      .join("")}</ul></details>`;
+}
+
+/** 詳細の枠に路線が隠れないよう、その分の余白をとって全体(または ids の区間)を映す */
+function fitSelected(ids?: string[]) {
   if (!data || !selected) return;
   const box = $("detail");
   const pad = { top: 40, bottom: 40, left: 40, right: 40 };
   // スマホでは枠が地図の外にあるので余白は要らない
   if (getComputedStyle(box).position === "absolute") pad.right += Math.min(box.offsetWidth, $("map").clientWidth / 2);
   map.resize(); // スマホでは枠が出た分だけ地図が縮むので、先に大きさを合わせる
-  fitRoute(map, data, selected, pad);
+  const want = ids ? new Set(ids) : null;
+  const ref = selected;
+  fitSegments(map, data.segments.filter((s) => (want ? want.has(s.id) : s.routes.includes(ref))), pad);
 }
 
-function select(ref: string | null, fit: boolean) {
+function select(ref: string | null, fit: boolean | string[]) {
   selected = ref;
   render();
-  if (fit) fitSelected();
+  if (data) showFocus(map, data, Array.isArray(fit) ? fit : []);
+  if (fit) fitSelected(Array.isArray(fit) ? fit : undefined);
 }
 
 async function loadData() {
@@ -200,9 +240,38 @@ $("routes").addEventListener("click", (e) => {
   if (li?.dataset.ref) select(li.dataset.ref, true);
 });
 $("detail").addEventListener("click", (e) => {
-  const id = (e.target as HTMLElement).id;
-  if (id === "detail-close") select(null, false);
-  if (id === "detail-fit") fitSelected();
+  const el = e.target as HTMLElement;
+  if (el.id === "detail-close") select(null, false);
+  if (el.id === "detail-fit") fitSelected();
+  if (el.dataset.jump) {
+    e.preventDefault();
+    select(el.dataset.jump, true);
+  }
+  if (el.dataset.show && data && selected) {
+    const shared = overlapsOf(data, record.coverage, selected).find((o) => o.key === el.dataset.show);
+    if (shared) {
+      showFocus(map, data, shared.segIds);
+      fitSelected(shared.segIds);
+    }
+  }
+});
+// 種別ごとの内訳: 開いたら中身を作り、行を押したらその国道を選んでその種別の区間を映す
+$("categories").addEventListener(
+  "toggle",
+  (e) => {
+    const d = e.target as HTMLDetailsElement;
+    const cat = d.dataset.cat as Category | undefined;
+    if (!cat || d.open === openCats.has(cat)) return;
+    if (d.open) openCats.add(cat);
+    else openCats.delete(cat);
+    if (d.open) render();
+  },
+  true,
+);
+$("categories").addEventListener("click", (e) => {
+  const li = (e.target as HTMLElement).closest<HTMLElement>("li[data-item]");
+  const item = li && breakdownItems.get(li.dataset.item!);
+  if (item) select(item.refs[0], item.segIds);
 });
 
 $("export").addEventListener("click", () => {

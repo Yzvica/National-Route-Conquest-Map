@@ -57,6 +57,20 @@ button.danger { color: var(--accent); }
 .detail-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .detail-head h2 { margin: 0; }
 #detail-close { padding: 2px 10px; font-size: 18px; line-height: 1; }
+#categories details > summary { list-style: none; cursor: pointer; }
+#categories details > summary::-webkit-details-marker { display: none; }
+#categories details > summary .row > span:first-child::before { content: "▸ "; color: var(--muted); }
+#categories details[open] > summary .row > span:first-child::before { content: "▾ "; }
+.breakdown { list-style: none; margin: 0 0 8px 12px; padding: 0 0 0 8px; border-left: 2px solid var(--line); max-height: 320px; overflow-y: auto; }
+.breakdown li { cursor: pointer; font-size: 13px; }
+.breakdown li .row { margin: 4px 0; }
+.breakdown li:hover { background: var(--bar); }
+#detail .overlaps summary { cursor: pointer; font-size: 14px; margin: 8px 0 4px; }
+#detail .overlaps ul { list-style: none; margin: 0; padding: 0; max-height: 160px; overflow-y: auto; font-size: 13px; }
+#detail .overlaps li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+#detail .overlaps a { color: var(--accent); }
+#detail .overlaps .muted { flex: 1; }
+button.link { padding: 1px 8px; font-size: 12px; }
 .legend { font-size: 13px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .sw { display: inline-block; width: 18px; height: 5px; border-radius: 3px; margin-left: 6px; }
 .sw.done { background: #d93025; }
