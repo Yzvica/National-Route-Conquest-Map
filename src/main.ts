@@ -56,6 +56,13 @@ function row(label: string, p: Progress): string {
     <span class="muted">${km(p.done)} / ${km(p.total)} km</span></div>`;
 }
 
+/** 高速道路はデータの並び(種別ごと・名前順)で出す */
+let routeOrder: { data: RouteData; index: Map<string, number> } | null = null;
+function order(ref: string): number {
+  if (routeOrder?.data !== data) routeOrder = { data: data!, index: new Map(Object.keys(data!.routes).map((r, i) => [r, i])) };
+  return routeOrder.index.get(ref) ?? Infinity;
+}
+
 function render() {
   if (!data) return;
   const stats = computeStats(data, coverage());
@@ -88,7 +95,7 @@ function render() {
   const filter = $<HTMLInputElement>("route-filter").value.trim();
   const refs = [...stats.byRoute.keys()]
     .filter((r) => !filter || (active === "kokudo" ? r.startsWith(filter) : routeName(r).includes(filter)))
-    .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    .sort(active === "kokudo" ? (a, b) => Number(a) - Number(b) || a.localeCompare(b) : (a, b) => order(a) - order(b));
   $("routes").innerHTML = refs
     .map((r) => `<li data-ref="${r}"${r === selected ? ' class="selected"' : ""}>${row(routeName(r), stats.byRoute.get(r)!.overall)}</li>`)
     .join("");

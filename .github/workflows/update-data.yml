@@ -1,6 +1,6 @@
-# OSM から国道データを作り直し、リリース "route-data" に routes.json として置く。
+# OSM から国道・高速道路のデータを作り直し、リリース "route-data" に routes.json / expressways.json として置く。
 # データは大きいのでリポジトリには入れない。Actions タブから手動で実行する。
-name: 国道データを更新
+name: 国道・高速道路のデータを更新
 
 on:
   workflow_dispatch:
@@ -35,9 +35,11 @@ jobs:
           pip install osmium
           curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
+          osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           rm japan.osm.pbf
           python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json
           python3 scripts/build_routes.py --input raw.json --out routes.json
+          python3 scripts/build_expressways.py expressway.osm.pbf --out expressways.json
 
       - name: Overpass API から取得して変換
         if: inputs.source == 'overpass'
@@ -52,7 +54,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -lh routes.json
+          ls -lh routes.json expressways.json || true
           gh release view route-data >/dev/null 2>&1 || \
             gh release create route-data --title "国道データ" --notes "build_routes.py で生成した国道データ"
           gh release upload route-data routes.json --clobber
+          # 高速道路は Geofabrik から作ったときだけできる
+          if [ -f expressways.json ]; then gh release upload route-data expressways.json --clobber; fi

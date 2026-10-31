@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""OSM の抽出ファイルから高速道路・都市高速・自動車専用道路・有料道路を取り出し、
+アプリ用の public/data/expressways.json を作る。
+
+  osmium tags-filter japan-latest.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o hw.osm.pbf
+  python3 scripts/build_expressways.py hw.osm.pbf --out public/data/expressways.json
+
+- 路線は道路の名前ごとにまとめる(OSM の name)
+- IC・JCT のランプ(motorway_link)は数えない
+- 上下線が別の線で描かれているところは、反対向きの区間を組(pair)にする。
+  アプリはどちらかを走れば両方走ったことにし、長さは半分ずつ数える
+
+pyosmium が必要です(pip install osmium)。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import sys
+import unicodedata
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+import osmium
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_routes import SEGMENT_LENGTH, SIMPLIFY_METERS, dist, rnd, simplify, split_line  # noqa: E402
+
+OUT = Path(__file__).resolve().parent.parent / "public" / "data" / "expressways.json"
+
+# 都市高速を運営する会社・公社と、名前の頭
+URBAN_OPERATORS = ("首都高速道路", "阪神高速道路", "名古屋高速道路公社", "福岡北九州高速道路公社", "広島高速道路公社")
+URBAN_NAME = re.compile(r"^(首都高速|首都高|阪神高速|名古屋高速|名古屋都市高速|福岡高速|北九州高速|福岡都市高速|北九州都市高速|広島高速)")
+# 高速自動車国道(と、それと一体で呼ばれる区間)の名前
+EXPRESSWAY_NAME = re.compile(r"(自動車道|高速道路|高速自動車国道)")
+# 有料道路として数える一般道の種類(駐車場の通路などは除く)
+TOLL_HIGHWAYS = {"trunk", "primary", "secondary", "tertiary", "unclassified"}
+# 上下線を組にするときの距離(m)。まず近いもの同士、残りは離れていても組にする
+PAIR_NEAR, PAIR_FAR = 80.0, 800.0
+
+
+def classify(tags: dict) -> str | None:
+    hw = tags.get("highway")
+    name = tags.get("name", "")
+    operator = tags.get("operator", "")
+    if hw == "motorway":
+        if any(o in operator for o in URBAN_OPERATORS) or URBAN_NAME.search(name):
+            return "urban"
+        if EXPRESSWAY_NAME.search(name):
+            return "expressway"
+        return "motorroad"
+    if tags.get("motorroad") == "yes" and hw in ("trunk", "primary"):
+        return "motorroad"
+    if tags.get("toll") == "yes" and hw in TOLL_HIGHWAYS:
+        return "toll"
+    return None
+
+
+WEAK_NAME = re.compile(r"(橋|高架橋|トンネル|隧道)$")
+SKIP_NAME = re.compile(r"(^国道\d+号線?$|インター線$|専用|^\d+cc|ランプ|JCT|出口|入口)")
+MIN_ROUTE_LEN = 500.0  # m。これより短い路線は、ほかの道の切れ端とみなして数えない
+
+
+def road_name(tags: dict) -> str:
+    """路線の名前。「東北中央自動車道;相馬福島道路」のような併記は最初の名前、「(無料区間)」などの注記は除く"""
+    name = unicodedata.normalize("NFKC", tags.get("name", "")).split(";")[0]
+    name = re.sub(r"\s+", "", name)  # 「アネスト岩田 ターンパイク箱根」と空白なしをそろえる
+    name = re.sub(r"[（(][^）)]*[）)]$", "", name)
+    name = re.sub(r"(内回り|外回り|上り|下り|[右左]ルート)$", "", name)  # 上下線で名前が違うもの
+    name = re.sub(r"(\d+号)線(?=.)", r"\1", name)  # 名古屋高速3号線大高線 → 3号大高線
+    name = re.sub(r"^首都高速道路", "首都高速", name)
+    return re.sub(r"(\d+号)$", r"\1線", name)  # 広島高速2号 → 2号線
+
+
+class Ways(osmium.SimpleHandler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ways: list[dict] = []
+
+    def way(self, w: osmium.osm.Way) -> None:
+        tags = dict(w.tags)
+        cat = classify(tags)
+        if not cat:
+            return
+        coords = [(n.lon, n.lat) for n in w.nodes if n.location.valid()]
+        if len(coords) < 2:
+            return
+        ends = (w.nodes[0].ref, w.nodes[len(w.nodes) - 1].ref)
+        self.ways.append({"id": w.id, "tags": tags, "cat": cat, "coords": coords, "ends": ends, "name": road_name(tags)})
+
+
+def inherit_names(ways: list[dict]) -> None:
+    """橋やトンネルの名前しか付いていない道は、つながっている道の名前をもらう"""
+    by_node: dict[int, list[dict]] = defaultdict(list)
+    for w in ways:
+        for n in w["ends"]:
+            by_node[n].append(w)
+    weak = [w for w in ways if not w["name"] or WEAK_NAME.search(w["name"])]
+    for _ in range(20):  # 橋とトンネルが続くところは、名前が少しずつ伝わる
+        changed = False
+        for w in weak:
+            for n in w["ends"]:
+                for o in by_node[n]:
+                    if o is not w and o["name"] and not WEAK_NAME.search(o["name"]):
+                        if w["name"] != o["name"]:
+                            w["name"], changed = o["name"], True
+                        break
+                else:
+                    continue
+                break
+        weak = [w for w in weak if not w["name"] or WEAK_NAME.search(w["name"])]
+        if not changed:
+            break
+
+
+def bearing_vec(coords: list[tuple[float, float]]) -> tuple[float, float]:
+    (x1, y1), (x2, y2) = coords[0], coords[-1]
+    dx = (x2 - x1) * math.cos(math.radians((y1 + y2) / 2))
+    dy = y2 - y1
+    n = math.hypot(dx, dy) or 1.0
+    return dx / n, dy / n
+
+
+def mid(coords: list[tuple[float, float]]) -> tuple[float, float]:
+    return coords[len(coords) // 2]
+
+
+def find_pairs(segments: list[dict], raw: dict[str, list[tuple[float, float]]], oneway: set[str]) -> None:
+    """同じ路線で、向きが逆の一方通行の区間を組にする"""
+    cell = PAIR_FAR / 111_000  # 度。ざっくりした格子で近くを探す
+    grid: dict[tuple[str, int, int], list[int]] = defaultdict(list)
+    info = []
+    for i, s in enumerate(segments):
+        c = raw[s["id"]]
+        m = mid(c)
+        info.append((m, bearing_vec(c)))
+        if s["id"] in oneway:
+            grid[(s["routes"][0], int(m[0] / cell), int(m[1] / cell))].append(i)
+
+    def candidates(i: int, limit: float, free_only: bool) -> int | None:
+        s = segments[i]
+        (m, v) = info[i]
+        gx, gy = int(m[0] / cell), int(m[1] / cell)
+        best, best_d = None, limit
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get((s["routes"][0], gx + dx, gy + dy), []):
+                    if j == i or (free_only and "pair" in segments[j]):
+                        continue
+                    m2, v2 = info[j]
+                    if v[0] * v2[0] + v[1] * v2[1] > -0.5:  # 逆向きでない
+                        continue
+                    d = dist(m, m2)
+                    if d < best_d:
+                        best, best_d = j, d
+        return best
+
+    for limit, free_only in ((PAIR_NEAR, False), (PAIR_FAR, True)):
+        for i, s in enumerate(segments):
+            if s["id"] not in oneway or "pair" in s:
+                continue
+            j = candidates(i, limit, free_only)
+            if j is None:
+                continue
+            s["pair"] = segments[j]["id"]
+            segments[j].setdefault("pair", s["id"])
+
+
+def build(ways: list[dict]) -> dict:
+    routes: dict[str, dict] = {}
+    route_cat: dict[str, defaultdict] = defaultdict(lambda: defaultdict(float))
+    segments: list[dict] = []
+    tunnels: list[dict] = []
+    raw: dict[str, list[tuple[float, float]]] = {}
+    oneway: set[str] = set()
+    for w in ways:
+        tags, coords = w["tags"], w["coords"]
+        name = w["name"]
+        if not name or SKIP_NAME.search(name):
+            continue
+        routes.setdefault(name, {"name": name})
+        is_oneway = tags.get("oneway") in ("yes", "-1") or (tags.get("highway") == "motorway" and tags.get("oneway") != "no")
+        if tags.get("oneway") == "-1":
+            coords = coords[::-1]
+        tunnel_id = None
+        if tags.get("tunnel") not in (None, "no"):
+            tunnel_id = f"t{w['id']}"
+            length = sum(dist(coords[i - 1], coords[i]) for i in range(1, len(coords)))
+            tunnels.append({"id": tunnel_id, "a": rnd(coords[0]), "b": rnd(coords[-1]), "len": round(length)})
+        for i, piece in enumerate(split_line(coords, SEGMENT_LENGTH)):
+            sid = f"w{w['id']}-{i}"
+            length = round(sum(dist(piece[j - 1], piece[j]) for j in range(1, len(piece))), 1)
+            seg = {"id": sid, "routes": [name], "cats": [w["cat"]], "len": length,
+                   "coords": [rnd(p) for p in simplify(piece, SIMPLIFY_METERS)]}
+            if tunnel_id:
+                seg["tunnel"] = tunnel_id
+            segments.append(seg)
+            raw[sid] = piece
+            route_cat[name][w["cat"]] += length
+            if is_oneway:
+                oneway.add(sid)
+
+    # 短すぎるもの(橋やトンネルの名前のまま残ったものは少し長くても)は、ほかの道の切れ端として数えない
+    short = {r for r, c in route_cat.items() if sum(c.values()) < (1500 if WEAK_NAME.search(r) else MIN_ROUTE_LEN)}
+    if short:
+        segments = [s for s in segments if s["routes"][0] not in short]
+        keep_t = {s.get("tunnel") for s in segments}
+        tunnels = [t for t in tunnels if t["id"] in keep_t]
+        for r in short:
+            routes.pop(r, None)
+            route_cat.pop(r, None)
+
+    # 路線の種別は一番長いものにそろえる(高速の一部だけ名前の付き方が違う、などで分かれないように)
+    main_cat = {r: max(c.items(), key=lambda kv: kv[1])[0] for r, c in route_cat.items()}
+    for s in segments:
+        s["cats"] = [main_cat[s["routes"][0]]]
+
+    find_pairs(segments, raw, oneway)
+    order = ["expressway", "urban", "motorroad", "toll"]
+    return {
+        "version": 1,
+        "kind": "expressway",
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "routes": dict(sorted(routes.items(), key=lambda kv: (order.index(main_cat[kv[0]]), kv[0]))),
+        "segments": segments,
+        "tunnels": tunnels,
+    }
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("pbf", type=Path)
+    ap.add_argument("--out", type=Path, default=OUT)
+    args = ap.parse_args()
+
+    h = Ways()
+    h.apply_file(str(args.pbf), locations=True, idx="flex_mem")
+    inherit_names(h.ways)
+    data = build(h.ways)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+    segs = data["segments"]
+    paired = sum(1 for s in segs if "pair" in s)
+    km = sum(s["len"] * (0.5 if "pair" in s else 1) for s in segs) / 1000
+    by_cat: dict[str, float] = defaultdict(float)
+    for s in segs:
+        by_cat[s["cats"][0]] += s["len"] * (0.5 if "pair" in s else 1) / 1000
+    print(f"{len(data['routes'])} 路線 / {len(segs)} 区間(上下線の組 {paired}) / 道路として {km:,.0f} km → {args.out}", file=sys.stderr)
+    for c, v in sorted(by_cat.items(), key=lambda kv: -kv[1]):
+        print(f"  {c}: {v:,.0f} km", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

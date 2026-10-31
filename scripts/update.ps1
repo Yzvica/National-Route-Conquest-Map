@@ -1,4 +1,4 @@
-﻿# MiniPC(Windows)で最新のコードと国道データを取り込み、アプリを作り直す。
+﻿# MiniPC(Windows)で最新のコードと国道・高速道路のデータを取り込み、アプリを作り直す。
 # 国道データ(リリース route-data)の取得に GitHub CLI(gh)のログインが必要です。
 #   powershell -ExecutionPolicy Bypass -File scripts\update.ps1
 $ErrorActionPreference = "Stop"
@@ -12,6 +12,9 @@ function Run($exe, [string[]]$argList) {
 Run git @("pull", "--ff-only")
 Run npm @("ci")
 Run gh @("release", "download", "route-data", "-p", "routes.json", "-D", "public/data", "--clobber")
+# 高速道路のデータ。まだ作っていなければ国道だけで動く
+& gh release download route-data -p expressways.json -D public/data --clobber
+if ($LASTEXITCODE -ne 0) { Write-Host "高速道路のデータ(expressways.json)はまだありません。国道だけで続けます。" }
 Run npm @("run", "build")
 
 if (Get-ScheduledTask -TaskName "KokudoMap" -ErrorAction SilentlyContinue) {
