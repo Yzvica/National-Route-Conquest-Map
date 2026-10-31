@@ -33,6 +33,11 @@ REFS_PER_QUERY = 25
 SEGMENT_LENGTH = 200.0  # m。判定と表示の最小単位
 SIMPLIFY_METERS = 3.0  # 区間の形をこの誤差まで間引いてファイルを小さくする
 DOTTED_HIGHWAYS = {"path", "track", "footway", "steps", "bridleway", "cycleway", "pedestrian"}
+# 車道に沿って別の線で描かれた歩道・自転車道・人道トンネル(関門トンネルなど)は、国道のリレーションに
+# 入っていても点線国道ではないので除く。これらの種類で、区間のほとんどが同じ国道の車道のすぐ脇にあるもの
+SIDEWALK_HIGHWAYS = {"footway", "cycleway", "pedestrian", "path", "steps"}
+SIDEWALK_DIST = 25.0  # m。車道からこれ以内なら脇を通っているとみなす
+SIDEWALK_SHARE = 0.8  # 区間の点のうちこの割合以上が車道の脇なら歩道とみなす
 OUT = Path(__file__).resolve().parent.parent / "public" / "data" / "routes.json"
 
 
@@ -197,7 +202,16 @@ def build(osm: dict) -> dict:
             }
             if tunnel_id:
                 seg["tunnel"] = tunnel_id
+            if "dotted" in cats:
+                # 点線国道は種類を残して、あとで確認できるようにする
+                seg["hw"] = tags.get("highway", "none")
             segments.append(seg)
+
+    segments, dropped = drop_sidewalks(segments)
+    if dropped:
+        print(f"車道沿いの歩道などを点線国道から除きました: {len(dropped)} 区間 / {sum(s['len'] for s in dropped) / 1000:.1f} km", file=sys.stderr)
+    used_tunnels = {s["tunnel"] for s in segments if "tunnel" in s}
+    tunnels = [t for t in tunnels if t["id"] in used_tunnels]
 
     return {
         "version": 1,
@@ -206,6 +220,54 @@ def build(osm: dict) -> dict:
         "segments": segments,
         "tunnels": tunnels,
     }
+
+
+def _point_seg_dist(p, a, b) -> float:
+    kx = 111_320 * math.cos(math.radians(p[1]))
+    ky = 110_540
+    ax, ay = (a[0] - p[0]) * kx, (a[1] - p[1]) * ky
+    bx, by = (b[0] - p[0]) * kx, (b[1] - p[1]) * ky
+    dx, dy = bx - ax, by - ay
+    length = dx * dx + dy * dy
+    t = 0.0 if length == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length))
+    return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def drop_sidewalks(segments: list[dict]) -> tuple[list[dict], list[dict]]:
+    """点線国道のうち、同じ国道の車道のすぐ脇を通る歩道などを除く。(残す区間, 除いた区間) を返す"""
+    cell = 0.002  # 度(約200m)
+    grid: dict[tuple[int, int], list[int]] = {}
+    for i, s in enumerate(segments):
+        if "dotted" in s["cats"] or "ferry" in s["cats"]:
+            continue
+        for p in s["coords"]:
+            grid.setdefault((int(p[0] / cell), int(p[1] / cell)), []).append(i)
+
+    def near_road(p, routes: set[str]) -> bool:
+        gx, gy = int(p[0] / cell), int(p[1] / cell)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for i in grid.get((gx + dx, gy + dy), []):
+                    road = segments[i]
+                    if not routes.intersection(road["routes"]):
+                        continue
+                    c = road["coords"]
+                    if any(_point_seg_dist(p, c[j - 1], c[j]) <= SIDEWALK_DIST for j in range(1, len(c))):
+                        return True
+        return False
+
+    keep, dropped = [], []
+    for s in segments:
+        if "dotted" not in s["cats"] or s.get("hw") not in SIDEWALK_HIGHWAYS:
+            keep.append(s)
+            continue
+        c = s["coords"]
+        # 頂点と各辺の中点で見る
+        pts = list(c) + [((c[j - 1][0] + c[j][0]) / 2, (c[j - 1][1] + c[j][1]) / 2) for j in range(1, len(c))]
+        routes = set(s["routes"])
+        near = sum(1 for p in pts if near_road(p, routes))
+        (dropped if near >= len(pts) * SIDEWALK_SHARE else keep).append(s)
+    return keep, dropped
 
 
 def rnd(p: tuple[float, float]) -> list[float]:

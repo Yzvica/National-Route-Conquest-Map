@@ -4,6 +4,8 @@ import {
   computeLevel,
   cumulative,
   evaluateAchievements,
+  fillMonths,
+  tripTotals,
   monthly,
   nearbyUntouched,
   regionProgress,
@@ -204,5 +206,25 @@ describe("点線国道", () => {
     expect(s.passedSegments).toBe(4);
     const got = evaluateAchievements({ kokudo: s });
     expect(got.find((x) => x.a.id === "dotted-0.2")!.unlocked).toBe(true);
+  });
+});
+
+describe("ログ上の走行距離", () => {
+  it("月・年ごとに足し、月は空いた月を埋める", () => {
+    const t = tripTotals(
+      new Map([
+        ["t1", { date: "2026-01-05", m: 30000 }],
+        ["t2", { date: "2026-01-20", m: 20000 }],
+        ["t3", { date: "2026-03-01", m: 10000 }],
+      ]),
+    );
+    expect(t.total).toBe(60000);
+    expect(t.byYear.get("2026")).toEqual({ m: 60000, count: 3 });
+    expect(fillMonths(t.byMonth, "2026-03-31", "2025-12")).toEqual([
+      ["2025-12", 0],
+      ["2026-01", 50000],
+      ["2026-02", 0],
+      ["2026-03", 10000],
+    ]);
   });
 });

@@ -49,6 +49,8 @@ export interface Segment {
    * どちらかを走れば制覇とし、距離は上下線で半分ずつ数える
    */
   pair?: string;
+  /** 点線国道の区間の OSM の highway の値(path, track など。ないときは "none")。古いデータにはない */
+  hw?: string;
   /** 区間がある都道府県のコード(1〜47)。scripts/add_prefectures.py で付ける。古いデータにはない */
   pref?: number;
   coords: LonLat[];

@@ -43,6 +43,14 @@ describe("点線国道の自己申告", () => {
   });
 });
 
+describe("ログの走行距離", () => {
+  it("同じログは上書きし、おかしな値は無視する", () => {
+    const a = mergeRecord({ coverage: {}, logs: [] }, { trips: { t1: { date: "2026-10-01", m: 1000 }, t2: { date: "x" } } });
+    expect(a.trips).toEqual({ t1: { date: "2026-10-01", m: 1000 } });
+    expect(mergeRecord(a, { trips: { t1: { date: "2026-10-01", m: 1200 } } }).trips).toEqual({ t1: { date: "2026-10-01", m: 1200 } });
+  });
+});
+
 describe("/api/record", () => {
   let server;
   let base;
@@ -63,7 +71,7 @@ describe("/api/record", () => {
     expect(rec.logs).toHaveLength(2);
 
     await fetch(base, { method: "DELETE" });
-    expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [], declared: {} });
+    expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [], declared: {}, trips: {} });
   });
 });
 

@@ -28,9 +28,9 @@ const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg"]);
 function loadRecord() {
   try {
     const j = JSON.parse(readFileSync(RECORD, "utf8"));
-    return { coverage: j.coverage ?? {}, dates: j.dates ?? {}, logs: j.logs ?? [], declared: j.declared ?? {} };
+    return { coverage: j.coverage ?? {}, dates: j.dates ?? {}, logs: j.logs ?? [], declared: j.declared ?? {}, trips: j.trips ?? {} };
   } catch {
-    return { coverage: {}, dates: {}, logs: [], declared: {} };
+    return { coverage: {}, dates: {}, logs: [], declared: {}, trips: {} };
   }
 }
 
@@ -64,7 +64,12 @@ export function mergeRecord(base, add) {
     if (!d || typeof d.on !== "boolean" || typeof d.at !== "string") continue;
     if (!declared[ref] || d.at > declared[ref].at) declared[ref] = { on: d.on, at: d.at };
   }
-  return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])], declared };
+  // ログごとの走行距離。同じログ(同じキー)は上書きする
+  const trips = { ...(base.trips ?? {}) };
+  for (const [key, t] of Object.entries(add.trips ?? {})) {
+    if (t && typeof t.date === "string" && typeof t.m === "number" && t.m >= 0) trips[key] = { date: t.date, m: t.m };
+  }
+  return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])], declared, trips };
 }
 
 // --- 走行ログ ---
@@ -134,7 +139,7 @@ export function createApp() {
           return json(res, 200, merged);
         }
         if (req.method === "DELETE") {
-          const empty = { coverage: {}, dates: {}, logs: [], declared: {} };
+          const empty = { coverage: {}, dates: {}, logs: [], declared: {}, trips: {} };
           saveRecord(empty);
           return json(res, 200, empty);
         }

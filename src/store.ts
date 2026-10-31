@@ -1,3 +1,4 @@
+import type { Trip } from "./trips";
 import type { Coverage } from "./types";
 
 export interface LogEntry {
@@ -22,6 +23,8 @@ export interface Record {
   logs: LogEntry[];
   /** 国道番号 → 点線国道を走ったかの自己申告 */
   declared: Map<string, Declared>;
+  /** ログごとの走行距離(tripKey → 日付と距離)。振り返りでログ上の走行距離を出すのに使う */
+  trips: Map<string, Trip>;
 }
 
 interface RecordJson {
@@ -29,6 +32,7 @@ interface RecordJson {
   dates?: { [id: string]: PassDates };
   logs: LogEntry[];
   declared?: { [ref: string]: Declared };
+  trips?: { [key: string]: Trip };
 }
 
 const KEY = "nrcm:coverage:v1";
@@ -37,20 +41,23 @@ const API = `${import.meta.env.BASE_URL}api/record`;
 
 const DATES_KEY = "nrcm:dates:v1";
 const DECLARED_KEY = "nrcm:declared:v1";
+const TRIPS_KEY = "nrcm:trips:v1";
 
-export const emptyRecord = (): Record => ({ coverage: new Map(), dates: new Map(), logs: [], declared: new Map() });
+export const emptyRecord = (): Record => ({ coverage: new Map(), dates: new Map(), logs: [], declared: new Map(), trips: new Map() });
 
 const toRecord = (j: RecordJson): Record => ({
   coverage: new Map(Object.entries(j.coverage ?? {})),
   dates: new Map(Object.entries(j.dates ?? {})),
   logs: j.logs ?? [],
   declared: new Map(Object.entries(j.declared ?? {})),
+  trips: new Map(Object.entries(j.trips ?? {})),
 });
 const toJson = (r: Record): RecordJson => ({
   coverage: Object.fromEntries(r.coverage),
   dates: Object.fromEntries(r.dates),
   logs: r.logs,
   declared: Object.fromEntries(r.declared),
+  trips: Object.fromEntries(r.trips),
 });
 
 /**
@@ -126,6 +133,7 @@ class LocalStore implements RecordStore {
         coverage: JSON.parse(localStorage.getItem(KEY) ?? "{}"),
         dates: JSON.parse(localStorage.getItem(DATES_KEY) ?? "{}"),
         declared: JSON.parse(localStorage.getItem(DECLARED_KEY) ?? "{}"),
+        trips: JSON.parse(localStorage.getItem(TRIPS_KEY) ?? "{}"),
         logs: JSON.parse(localStorage.getItem(LOGS_KEY) ?? "[]"),
       });
     } catch {
@@ -140,6 +148,7 @@ class LocalStore implements RecordStore {
       localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(merged.coverage)));
       localStorage.setItem(DATES_KEY, JSON.stringify(Object.fromEntries(merged.dates)));
       localStorage.setItem(DECLARED_KEY, JSON.stringify(Object.fromEntries(merged.declared)));
+      localStorage.setItem(TRIPS_KEY, JSON.stringify(Object.fromEntries(merged.trips)));
       localStorage.setItem(LOGS_KEY, JSON.stringify(merged.logs));
     } catch (e) {
       console.warn("走行記録を保存できませんでした", e);
@@ -161,6 +170,7 @@ class LocalStore implements RecordStore {
       localStorage.removeItem(KEY);
       localStorage.removeItem(DATES_KEY);
       localStorage.removeItem(DECLARED_KEY);
+      localStorage.removeItem(TRIPS_KEY);
       localStorage.removeItem(LOGS_KEY);
     } catch {
       /* 消せなくても表示は空にする */
@@ -178,7 +188,9 @@ export function mergeRecord(base: Record, add: Record): Record {
     const cur = declared.get(ref);
     if (!cur || d.at > cur.at) declared.set(ref, d);
   }
-  return { coverage, dates, logs: [...base.logs, ...add.logs], declared };
+  // 同じログを読み直したら上書きする(二重に数えない)
+  const trips = new Map([...base.trips, ...add.trips]);
+  return { coverage, dates, logs: [...base.logs, ...add.logs], declared, trips };
 }
 
 /** 初めて通った日は早い方、最後に通った日は遅い方を残す(server/server.mjs と同じ規則) */
