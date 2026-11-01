@@ -270,6 +270,7 @@ def drop_far(found: dict[int, dict], geom: Geom, segments: list[dict]) -> dict[s
         groups.setdefault(root(w), []).append(w)
 
     dropped: dict[str, float] = {}
+    dropped_refs: dict[str, float] = {}
     for group in groups.values():
         around: set[str] = set()
         for w in group:
@@ -283,7 +284,14 @@ def drop_far(found: dict[int, dict], geom: Geom, segments: list[dict]) -> dict[s
                 km = sum(dist(pts[i - 1], pts[i]) for i in range(1, len(pts))) / 1000
                 if not keep:
                     dropped[f.get("rule", "?")] = dropped.get(f.get("rule", "?"), 0) + km
+                for r in f["refs"]:
+                    if r not in keep:
+                        key = f"{r}号"
+                        dropped_refs[key] = dropped_refs.get(key, 0) + km
                 f["refs"] = keep
+    top = sorted(dropped_refs.items(), key=lambda kv: -kv[1])[:30]
+    if top:
+        print("離れているので外した国道ごとの距離: " + ", ".join(f"{r} {v:.1f}km" for r, v in top), file=sys.stderr)
     return dropped
 
 
