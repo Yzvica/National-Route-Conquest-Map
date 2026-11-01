@@ -1,4 +1,4 @@
-// リリース route-data のファイルを、1MB ずつに分けて同時に取ってくる(scripts/update.ps1 から使う)。
+// リリース route-data のファイルを、256KB ずつに分けて同時に取ってくる(scripts/update.ps1 から使う)。
 //   node scripts/download_release.mjs <保存先フォルダ> <ファイル名>
 // MiniPC の回線では GitHub のファイル配信サーバーへの1本あたりの速度が数KB/秒まで落ちることがあり、
 // gh release download(1本で取る)だと 58MB の routes.json に2時間かかって途中で切れた(2026-11-01)。
@@ -10,11 +10,11 @@ import { join } from "node:path";
 
 const REPO = process.env.ROUTE_DATA_REPO ?? "Yzvica/National-Route-Conquest-Map";
 const TAG = "route-data";
-const CHUNK = 1024 * 1024;
+const CHUNK = 256 * 1024;
 const PARALLEL = 32;
 const TRIES = 8;
-/** 1つの部分をこの時間(ミリ秒)で取れなければやり直す */
-const CHUNK_TIMEOUT = 90_000;
+/** 1つの部分をこの時間(ミリ秒)で取れなければやり直す(1本あたり数KB/秒まで落ちても取れる長さにする) */
+const CHUNK_TIMEOUT = 300_000;
 /** 配信先の署名付き URL は数分で切れるので、この時間がたったら取り直す */
 const URL_TTL = 4 * 60_000;
 
