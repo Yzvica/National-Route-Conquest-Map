@@ -62,7 +62,13 @@ button.danger { color: var(--accent); }
 #detail .detail-cat { display: block; width: calc(100% + 12px); padding: 0 6px; margin: 0 -6px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; text-align: left; font: inherit; }
 #detail .detail-cat:hover { background: var(--bar); }
 #detail .detail-cat.active { border-color: #ffd400; box-shadow: inset 4px 0 0 #ffd400; }
-#detail-close { padding: 2px 10px; font-size: 18px; line-height: 1; }
+#detail-close, #detail-fold { padding: 2px 10px; font-size: 18px; line-height: 1; }
+.detail-head h2 { flex: 1; }
+#detail-fold { display: none; }
+#map-restore {
+  display: none; position: absolute; left: 10px; top: 10px; z-index: 5; padding: 8px 12px;
+  background: var(--bg); color: var(--fg); box-shadow: 0 2px 10px rgb(0 0 0 / 0.25);
+}
 #categories details > summary { list-style: none; cursor: pointer; }
 #categories details > summary::-webkit-details-marker { display: none; }
 #categories details > summary .row > span:first-child::before { content: "▸ "; color: var(--muted); }
@@ -153,9 +159,16 @@ button.link { padding: 1px 8px; font-size: 12px; }
     position: static; width: 100%; max-width: none; max-height: 30%; flex: none;
     border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; padding: 8px 12px;
   }
+  #detail { max-height: 35%; }
   #detail .big { font-size: 22px; }
-  #detail .row, #detail .detail-cat { display: none; }
+  #detail .row { margin: 3px 0; font-size: 13px; }
   #detail p { margin: 4px 0; }
+  #detail-fold { display: inline-block; }
+  /* 地図だけ表示: 地図の何もないところを押すと、下の一覧を隠して上の詳細を1行にたたむ */
+  body.map-only #panel { display: none; }
+  body.map-only #detail > :not(.detail-head, .big, .bar) { display: none; }
+  body.map-only #detail .big { font-size: 18px; }
+  body.map-only #map-restore { display: block; }
   #app { flex-direction: column-reverse; }
   .chart .tick { font-size: 18px; }
   #panel { width: 100%; height: 45%; border-right: 0; border-top: 1px solid var(--line); }

@@ -326,6 +326,7 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
   const dates = segs.flatMap((s) => record.dates.get(s.id) ?? []).sort();
   const p = route.overall;
   box.innerHTML = `<div class="detail-head"><h2>${routeName(selected)}</h2>
+      <button id="detail-fold" type="button" aria-label="${mapOnly() ? "詳細を開く" : "地図を広く表示"}">${mapOnly() ? "▾" : "▴"}</button>
       <button id="detail-close" type="button" aria-label="閉じる">×</button></div>
     <div class="big">${percent(p).toFixed(1)}%</div>
     <div class="bar"><span style="width:${percent(p)}%"></span></div>
@@ -599,6 +600,32 @@ document.addEventListener("visibilitychange", async () => {
   render();
 });
 
+// スマホ: 地図の何もないところを押すと、一覧と詳細をたたんで地図を広く見せる(もう一度押すと戻す)
+const mobile = window.matchMedia("(max-width: 720px)");
+const mapOnly = () => document.body.classList.contains("map-only");
+function setMapOnly(on: boolean) {
+  document.body.classList.toggle("map-only", on);
+  const fold = document.getElementById("detail-fold");
+  if (fold) {
+    fold.textContent = on ? "▾" : "▴";
+    fold.setAttribute("aria-label", on ? "詳細を開く" : "地図を広く表示");
+  }
+  map.resize();
+}
+map.on("click", (e) => {
+  if (!mobile.matches) return;
+  const roads = map.getStyle().layers.filter((l) => /^(overview|routes)-|^selected$/.test(l.id)).map((l) => l.id);
+  if (roads.length && map.queryRenderedFeatures(e.point, { layers: roads }).length) return;
+  setMapOnly(!mapOnly());
+});
+$("map-restore").addEventListener("click", (e) => {
+  e.stopPropagation();
+  setMapOnly(false);
+});
+mobile.addEventListener("change", () => {
+  if (!mobile.matches && mapOnly()) setMapOnly(false);
+});
+
 $("route-filter").addEventListener("input", render);
 $("routes").addEventListener("click", (e) => {
   const li = (e.target as HTMLElement).closest("li");
@@ -607,6 +634,7 @@ $("routes").addEventListener("click", (e) => {
 $("detail").addEventListener("click", (e) => {
   const el = e.target as HTMLElement;
   if (el.id === "detail-close") select(null, false);
+  if (el.id === "detail-fold") setMapOnly(!mapOnly());
   if (el.id === "detail-fit") fitSelected();
   // 種別の行: その種別の区間を黄色く縁取って映す。もう一度押すと戻す
   const catBtn = el.closest<HTMLElement>("[data-detail-cat]");
