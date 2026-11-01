@@ -75,7 +75,8 @@ jobs:
           done
           files=()
           for f in routes.json expressways.json; do [ -f "$f" ] && files+=("$f"); done
-          python3 scripts/add_prefectures.py pref.osm.pbf "${files[@]}" --out prefectures.json
+          gh release download route-data -p prefectures.json -O prefectures-prev.json || echo "前回の prefectures.json はありません"
+          python3 scripts/add_prefectures.py pref.osm.pbf "${files[@]}" --out prefectures.json --fallback prefectures-prev.json
 
       - name: Overpass API から取得して変換
         if: inputs.source == 'overpass'
