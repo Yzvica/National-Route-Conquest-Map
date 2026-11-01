@@ -22,10 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # 混んでいて 502/504 を返すことがあるので、順に試す
+# (2026-11 時点で kumi.systems・private.coffee は応答せず、osm.ch はスイスのデータしかないので使わない)
 ENDPOINTS = [
+    "https://overpass.openstreetmap.fr/api/interpreter",
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
 # 国道の番号は 1〜58 と 101〜507。一度に全部頼むと断られやすいので分けて取る
 ALL_REFS = [str(n) for n in [*range(1, 59), *range(101, 508)]]
