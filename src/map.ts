@@ -133,51 +133,116 @@ function addLineLayers(
   }, before);
 }
 
+interface OverviewTopology {
+  /** 区間ごとの、国道・種別をまとめたキー(走行状況は含まない) */
+  keys: string[];
+  /** 区間ごとの両端の番号(同じ国道・種別で同じ座標の端は同じ番号) */
+  start: Int32Array;
+  end: Int32Array;
+  /** 端の番号 → その端を持つ区間 */
+  byEnd: number[][];
+}
+
+/** 区間のつながり(記録によらない)。データごとに一度だけ作る */
+const topologyCache = new WeakMap<RouteData, OverviewTopology>();
+function topologyOf(data: RouteData): OverviewTopology {
+  const hit = topologyCache.get(data);
+  if (hit) return hit;
+  const segs = data.segments;
+  const keys = segs.map(
+    (s) =>
+      `${s.routes.join(",")}|${s.cats.includes("dotted") ? 1 : 0}${s.cats.includes("ferry") ? 1 : 0}${s.cats.includes("old") ? 1 : 0}`,
+  );
+  // 文字列のキーを作ると遅いので、座標は 1e-5 度単位の整数にして数値のキーで引く
+  const keyIds = new Map<string, number>();
+  const kid = keys.map((k) => {
+    let id = keyIds.get(k);
+    if (id === undefined) keyIds.set(k, (id = keyIds.size));
+    return id;
+  });
+  /** 座標 → [キーの番号, 端の番号, キーの番号, 端の番号, ...] */
+  const ids = new Map<number, number[]>();
+  const byEnd: number[][] = [];
+  const endId = (k: number, c: LonLat, i: number) => {
+    const pos = Math.round(c[0] * 1e5) * 1e7 + Math.round(c[1] * 1e5);
+    let list = ids.get(pos);
+    if (!list) ids.set(pos, (list = []));
+    let id = -1;
+    for (let n = 0; n < list.length; n += 2) if (list[n] === k) id = list[n + 1];
+    if (id < 0) {
+      id = byEnd.length;
+      list.push(k, id);
+      byEnd.push([]);
+    }
+    byEnd[id].push(i);
+    return id;
+  };
+  const start = new Int32Array(segs.length);
+  const end = new Int32Array(segs.length);
+  segs.forEach((s, i) => {
+    start[i] = endId(kid[i], s.coords[0], i);
+    end[i] = endId(kid[i], s.coords[s.coords.length - 1], i);
+  });
+  const t = { keys, start, end, byEnd };
+  topologyCache.set(data, t);
+  return t;
+}
+
 /**
  * 端点でつながっていて、国道・種別・走行状況(未走行/一部/走行済み)が同じ区間を1本の線にまとめる。
  * 約36万区間が数千本になり、引いた縮尺でも速く、消えずに描ける。
+ * つながり方はデータごとに一度だけ調べ、記録が変わったときは走行状況だけ見直す
  */
 export function buildOverview(data: RouteData, coverage: Coverage) {
   const segs = data.segments;
-  const keys = segs.map((s) => {
-    const r = coverage.get(s.id) ?? 0;
-    return `${s.routes.join(",")}|${s.cats.includes("dotted") ? 1 : 0}${s.cats.includes("ferry") ? 1 : 0}${s.cats.includes("old") ? 1 : 0}|${r >= 1 ? 2 : r > 0 ? 1 : 0}`;
-  });
-  const pt = (c: LonLat) => `${c[0]},${c[1]}`;
-  const ends = new Map<string, number[]>();
-  const addEnd = (k: string, i: number) => {
-    const list = ends.get(k);
-    if (list) list.push(i);
-    else ends.set(k, [i]);
-  };
-  segs.forEach((s, i) => {
-    addEnd(`${keys[i]}@${pt(s.coords[0])}`, i);
-    addEnd(`${keys[i]}@${pt(s.coords[s.coords.length - 1])}`, i);
-  });
+  const { keys, start, end, byEnd } = topologyOf(data);
+  const state = new Uint8Array(segs.length);
+  for (let i = 0; i < segs.length; i++) {
+    const r = coverage.get(segs[i].id) ?? 0;
+    state[i] = r >= 1 ? 2 : r > 0 ? 1 : 0;
+  }
   const used = new Uint8Array(segs.length);
-  const next = (k: string, c: LonLat) => ends.get(`${k}@${pt(c)}`)?.find((j) => !used[j]);
+  /** 端 e につながる、まだ使っていない同じ走行状況の区間 */
+  const next = (e: number, s: number) => byEnd[e].find((j) => !used[j] && state[j] === s);
 
   const features = [];
   for (let i = 0; i < segs.length; i++) {
     if (used[i]) continue;
     used[i] = 1;
-    const k = keys[i];
+    const s = state[i];
     let line: LonLat[] = [...segs[i].coords];
-    // 後ろへ、次に前へ伸ばす
-    for (let j = next(k, line[line.length - 1]); j !== undefined; j = next(k, line[line.length - 1])) {
+    // 後ろへ、次に前へ伸ばす。tail / head は線の端の番号
+    let tail = end[i];
+    for (let j = next(tail, s); j !== undefined; j = next(tail, s)) {
       used[j] = 1;
       const c = segs[j].coords;
-      line.push(...(pt(c[0]) === pt(line[line.length - 1]) ? c.slice(1) : [...c].reverse().slice(1)));
+      if (start[j] === tail) {
+        for (let k = 1; k < c.length; k++) line.push(c[k]);
+        tail = end[j];
+      } else {
+        for (let k = c.length - 2; k >= 0; k--) line.push(c[k]);
+        tail = start[j];
+      }
     }
-    for (let j = next(k, line[0]); j !== undefined; j = next(k, line[0])) {
+    let head = start[i];
+    const before: LonLat[] = [];
+    for (let j = next(head, s); j !== undefined; j = next(head, s)) {
       used[j] = 1;
       const c = segs[j].coords;
-      line = (pt(c[c.length - 1]) === pt(line[0]) ? c.slice(0, -1) : [...c].reverse().slice(0, -1)).concat(line);
+      // 前に足す分は逆順にためておき、最後にまとめてつなぐ
+      if (end[j] === head) {
+        for (let k = c.length - 2; k >= 0; k--) before.push(c[k]);
+        head = start[j];
+      } else {
+        for (let k = 1; k < c.length; k++) before.push(c[k]);
+        head = end[j];
+      }
     }
-    const [routes, kind, state] = k.split("|");
+    if (before.length) line = before.reverse().concat(line);
+    const [routes, kind] = keys[i].split("|");
     features.push({
       type: "Feature" as const,
-      properties: { routes, dotted: kind[0] === "1", ferry: kind[1] === "1", old: kind[2] === "1", s: Number(state) },
+      properties: { routes, dotted: kind[0] === "1", ferry: kind[1] === "1", old: kind[2] === "1", s },
       geometry: { type: "LineString" as const, coordinates: line },
     });
   }
