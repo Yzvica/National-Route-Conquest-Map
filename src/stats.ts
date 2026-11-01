@@ -51,7 +51,19 @@ function add(p: Progress, len: number, ratio: number) {
   p.done += len * ratio;
 }
 
+/** 最後に集計した記録と結果(データごと)。画面を描き直すたびに36万区間を数え直さないため */
+const statsCache = new WeakMap<RouteData, { coverage: Coverage; stats: Stats }>();
+
+/** 集計する。同じデータ・同じ記録(同じ Map)なら前の結果を返すので、結果は書き換えないこと */
 export function computeStats(data: RouteData, coverage: Coverage): Stats {
+  const hit = statsCache.get(data);
+  if (hit?.coverage === coverage) return hit.stats;
+  const stats = countStats(data, coverage);
+  statsCache.set(data, { coverage, stats });
+  return stats;
+}
+
+function countStats(data: RouteData, coverage: Coverage): Stats {
   const stats: Stats = {
     overall: empty(),
     byCategory: Object.fromEntries((Object.keys(CATEGORY_LABELS) as Category[]).map((c) => [c, empty()])) as Record<

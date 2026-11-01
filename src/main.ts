@@ -53,7 +53,9 @@ let breakdownItems = new Map<string, BreakdownItem>();
 const BREAKDOWN_CATS: Category[] = (Object.keys(CATEGORY_LABELS) as Category[]).filter((c) => c !== "main");
 
 const map = createMap($("map"));
-const km = (m: number) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 1 });
+// toLocaleString は呼ぶたびに書式を作り直して遅い(一覧の描き直しで数百回呼ぶ)ので、書式は一度だけ作る
+const kmFormat = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 1 });
+const km = (m: number) => kmFormat.format(m / 1000);
 const routeName = (ref: string) => data?.routes[ref]?.name ?? (active === "kokudo" ? `国道${ref}号` : ref);
 
 /** 上下線のどちらかを走れば両方走ったことにし、点線国道は自己申告に置き換えた記録 */
@@ -403,19 +405,24 @@ function showDataset(kind: DatasetKind) {
     clearRoutes(map);
     for (const id of ["overall", "categories", "routes"]) $(id).innerHTML = "";
     $("detail").hidden = true;
-    status.textContent = `${DATASET_LABELS[kind]}のデータ(data/${DATA_FILES[kind]})がまだありません`;
+    status.textContent = expresswayReady && kind === "expressway" && !(kind in datasets)
+      ? `${DATASET_LABELS[kind]}のデータを読み込み中です。少しお待ちください`
+      : `${DATASET_LABELS[kind]}のデータ(data/${DATA_FILES[kind]})がまだありません`;
     return;
   }
   addRoutes(map, data, (id) => record.dates.get(id), (ref) => select(ref, false));
   render();
 }
 
+/** 高速道路のデータを読み終わるまで待つ(ログの判定は両方のデータがそろってから行う) */
+let expresswayReady: Promise<void> | null = null;
+
 map.on("load", async () => {
   try {
     const store = await storePromise;
-    const [kokudo, expressway, rec, shapes] = await Promise.all([
+    // 高速道路のデータ(約27MB)は国道を表示してから読む。最初に地図が出るまでを短くするため
+    const [kokudo, rec, shapes] = await Promise.all([
       loadData("kokudo"),
-      loadData("expressway").catch(() => undefined),
       store.load(),
       fetch(`${import.meta.env.BASE_URL}data/prefectures.json`)
         .then((r) => (r.ok && r.headers.get("content-type")?.includes("json") ? (r.json() as Promise<PrefShapes>) : undefined))
@@ -423,15 +430,23 @@ map.on("load", async () => {
     ]);
     prefShapes = shapes;
     datasets.kokudo = kokudo;
-    datasets.expressway = expressway;
     record = rec;
     $("rematch").hidden = !store.shared;
-    showDataset(active);
-    status.textContent =
+    const statusText = (expressway?: RouteData) =>
       `国道データ: ${Object.keys(kokudo.routes).length} 路線` +
-      (expressway ? ` / 高速道路: ${Object.keys(expressway.routes).length} 路線` : "") +
+      (expressway ? ` / 高速道路: ${Object.keys(expressway.routes).length} 路線` : " / 高速道路のデータを読み込み中…") +
       `(${kokudo.generatedAt.slice(0, 10)} 時点)` +
       (store.shared ? " / 記録は MiniPC に保存されます" : " / 記録はこのブラウザに保存されます");
+    if (active === "kokudo") showDataset(active);
+    status.textContent = statusText();
+    let done = () => {};
+    expresswayReady = new Promise((ok) => (done = ok));
+    const expressway = await loadData("expressway").catch(() => undefined);
+    datasets.expressway = expressway;
+    done();
+    if (active === "expressway") showDataset(active);
+    else render(); // 実績やレベルに高速道路の分を足す
+    status.textContent = statusText(expressway).replace(" / 高速道路のデータを読み込み中…", "");
   } catch (e) {
     status.textContent = (e as Error).message;
   }
@@ -471,6 +486,10 @@ async function importFiles(
   opts: { save: boolean; logEntry: boolean; replace?: boolean } = { save: true, logEntry: true },
 ) {
   if (!data) return;
+  if (expresswayReady) {
+    status.textContent = "高速道路のデータを読み込み中です。読み終わったら判定します…";
+    await expresswayReady;
+  }
   const store = await storePromise;
   const before = gameState();
   const passed = new Set<string>();

@@ -107,10 +107,18 @@ const gzCache = new Map();
 
 function sendFile(req, res, path) {
   const ext = extname(path);
-  const headers = { "Content-Type": TYPES[ext] ?? "application/octet-stream" };
+  const st = statSync(path);
+  // 国道データ(数十MB)を開くたびに送り直さないよう、変わっていなければ 304 を返す。
+  // ブラウザには毎回確かめさせる(no-cache)ので、update.bat でデータを入れ替えればすぐ新しいものになる
+  const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+  const headers = { "Content-Type": TYPES[ext] ?? "application/octet-stream", ETag: etag, "Cache-Control": "no-cache" };
+  if (req.headers["if-none-match"] === etag) {
+    res.writeHead(304, headers);
+    return res.end();
+  }
   // 国道データ(約50MB)は gzip で送ると1/6になる。一度圧縮したら使い回す
   if (COMPRESSIBLE.has(ext) && /\bgzip\b/.test(req.headers["accept-encoding"] ?? "")) {
-    const mtime = statSync(path).mtimeMs;
+    const mtime = st.mtimeMs;
     let hit = gzCache.get(path);
     if (!hit || hit.mtime !== mtime) gzCache.set(path, (hit = { mtime, body: gzipSync(readFileSync(path)) }));
     res.writeHead(200, { ...headers, "Content-Encoding": "gzip", Vary: "Accept-Encoding" });

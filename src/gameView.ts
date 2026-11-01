@@ -20,8 +20,14 @@ import type { Trip } from "./trips";
 import type { Progress } from "./stats";
 import type { Coverage, DatasetKind, RouteData } from "./types";
 
-const km = (m: number, digits = 1) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: digits });
-const num = (n: number, digits = 0) => n.toLocaleString("ja-JP", { maximumFractionDigits: digits });
+// toLocaleString は呼ぶたびに書式を作り直して遅いので、桁数ごとに一度だけ作る
+const formats = new Map<number, Intl.NumberFormat>();
+const num = (n: number, digits = 0) => {
+  let f = formats.get(digits);
+  if (!f) formats.set(digits, (f = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: digits })));
+  return f.format(n);
+};
+const km = (m: number, digits = 1) => num(m / 1000, digits);
 export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 export function levelCard(lv: Level, unlocked: number, total: number, regionTitle?: string): string {

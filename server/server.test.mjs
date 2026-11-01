@@ -104,3 +104,24 @@ describe("/api/logs", () => {
     expect((await fetch(`${base}/..%2Frecord.json`)).status).toBe(404);
   });
 });
+
+describe("配信", () => {
+  let server;
+  let base;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    base = `http://127.0.0.1:${server.address().port}`;
+  });
+  afterAll(() => server.close());
+
+  it("変わっていないファイルは 304 で返し、送り直さない", async () => {
+    const first = await fetch(`${base}/index.html`);
+    if (first.status === 404) return; // dist がない(ビルド前)ときは確かめられない
+    const etag = first.headers.get("etag");
+    expect(etag).toBeTruthy();
+    expect(first.headers.get("cache-control")).toBe("no-cache");
+    const again = await fetch(`${base}/index.html`, { headers: { "If-None-Match": etag } });
+    expect(again.status).toBe(304);
+  });
+});
