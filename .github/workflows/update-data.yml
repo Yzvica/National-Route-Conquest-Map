@@ -14,7 +14,7 @@ on:
       target:
         description: "作り直すデータ(both: 両方 / kokudo: 国道だけ / expressway: 高速道路だけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
         type: choice
-        options: [both, kokudo, expressway, pref]
+        options: [both, kokudo, expressway, pref, survey-old]
         default: both
       refs:
         description: "overpass のときの対象国道番号(空欄なら全部。例: 1 20 246)"
@@ -34,8 +34,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: 旧道の書かれ方を調べる(調査用。リリースは変えない)
+        if: inputs.target == 'survey-old'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+          pip install osmium
+          curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          osmium tags-filter japan.osm.pbf r/network=JP:national w/old_ref w/old_name w/name w/alt_name w/official_name w/loc_name w/note -o named.osm.pbf
+          rm japan.osm.pbf
+          python3 scripts/survey_old_roads.py named.osm.pbf | tee survey.txt
+
       - name: Geofabrik から日本の OSM データを取得して抽出
-        if: inputs.source != 'overpass'
+        if: inputs.source != 'overpass' && inputs.target != 'survey-old'
         env:
           TARGET: ${{ inputs.target }}
           GH_TOKEN: ${{ github.token }}
@@ -72,6 +82,7 @@ jobs:
           python3 scripts/build_routes.py "${args[@]}" --out routes.json
 
       - name: リリースに置く
+        if: inputs.target != 'survey-old'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
