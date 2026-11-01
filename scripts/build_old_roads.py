@@ -55,8 +55,8 @@ def norm(v: str) -> str:
     return unicodedata.normalize("NFKC", v)
 
 
-def classify(tags) -> tuple[set[str], bool, str]:
-    """(旧道の国道番号, 番号のない旧道か, 表示用の名前)。旧道でなければ番号は空・False"""
+def classify(tags) -> tuple[set[str], bool, str, str]:
+    """(旧道の国道番号, 番号のない旧道か, 表示用の名前, 拾った理由)。旧道でなければ番号は空・False"""
     refs: set[str] = set()
     old_ref = norm(tags.get("old_ref", "") or "")
     old_hw = (tags.get("old_highway") or tags.get("was:highway") or "trunk").split(";")
@@ -68,6 +68,8 @@ def classify(tags) -> tuple[set[str], bool, str]:
         m = OLD_REF.fullmatch(part) or (re.fullmatch(r"(\d{1,3})", part) if digits_ok else None)
         if m:
             refs.add(str(int(m.group(1))))
+    by_ref = bool(refs)
+    by_name = False
     unnumbered = False
     label = ""
     for k in NAME_KEYS:
@@ -77,12 +79,14 @@ def classify(tags) -> tuple[set[str], bool, str]:
         found = {str(int(m.group(1))) for pat in NUMBERED for m in pat.finditer(v)}
         if found:
             refs |= found
+            by_name = True
             label = label or v
         elif UNNUMBERED.search(v):
             unnumbered = True
             label = label or v
     refs &= VALID_REFS
-    return refs, unnumbered and not refs, label or norm(tags.get("name", "") or "")
+    rule = "name" if by_name else "old_ref" if by_ref else "unnumbered"
+    return refs, unnumbered and not refs, label or norm(tags.get("name", "") or ""), rule
 
 
 class Rels(osmium.SimpleHandler):
@@ -110,11 +114,12 @@ class Find(osmium.SimpleHandler):
             return
         if "old_ref" not in tags and not any("旧" in (tags.get(k) or "") for k in NAME_KEYS):
             return
-        refs, unnumbered, label = classify(tags)
+        refs, unnumbered, label, rule = classify(tags)
         if refs or unnumbered:
             self.found[w.id] = {
                 "refs": sorted(refs, key=int),
                 "unnumbered": unnumbered,
+                "rule": rule,
                 "name": label,
                 "tunnel": tags.get("tunnel") not in (None, "no"),
             }
@@ -216,6 +221,72 @@ def assign_unnumbered(found: dict[int, dict], geom: Geom, grid: RouteGrid) -> in
     return assigned
 
 
+FAR_CELL = 0.01  # 度(約1km)。旧道がこの格子で隣り合うところまで今の国道に近づいていなければ、その国道の旧道とはみなさない
+
+
+def drop_far(found: dict[int, dict], geom: Geom, segments: list[dict]) -> dict[str, float]:
+    """旧道の候補のうち、同じ番号の今の国道から離れたところにあるものの番号を外す。
+
+    old_ref が県道の旧番号だったり、「旧国道1号」が昔の番号の付け方での名前だったりして、
+    今の国道と関係ない場所の道を拾うことがある。バイパスに置き換わった旧道は今の国道につながって
+    いるので、つながっている候補の道のまとまりのどこかが、同じ番号の今の国道から約1〜2km以内に
+    あることを条件にする。理由ごとの外した距離(km)を返す
+    """
+    near: dict[tuple[int, int], set[str]] = {}
+    for s in segments:
+        if "old" in s["cats"] or "ferry" in s["cats"]:
+            continue
+        for p in s["coords"]:
+            near.setdefault((int(p[0] / FAR_CELL), int(p[1] / FAR_CELL)), set()).update(s["routes"])
+
+    def refs_around(p) -> set[str]:
+        gx, gy = int(p[0] / FAR_CELL), int(p[1] / FAR_CELL)
+        out: set[str] = set()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                out |= near.get((gx + dx, gy + dy), set())
+        return out
+
+    # 端の点でつながっている候補をまとめる
+    ids = [w for w, f in found.items() if f["refs"] and w in geom.ways]
+    parent = {w: w for w in ids}
+
+    def root(w: int) -> int:
+        while parent[w] != w:
+            parent[w] = parent[parent[w]]
+            w = parent[w]
+        return w
+
+    by_node: dict[int, int] = {}
+    for w in ids:
+        _, a, b = geom.ways[w]
+        for n in (a, b):
+            if n in by_node:
+                parent[root(w)] = root(by_node[n])
+            else:
+                by_node[n] = w
+    groups: dict[int, list[int]] = {}
+    for w in ids:
+        groups.setdefault(root(w), []).append(w)
+
+    dropped: dict[str, float] = {}
+    for group in groups.values():
+        around: set[str] = set()
+        for w in group:
+            for p in geom.ways[w][0]:
+                around |= refs_around(p)
+        for w in group:
+            f = found[w]
+            keep = [r for r in f["refs"] if r in around]
+            if len(keep) < len(f["refs"]):
+                pts = geom.ways[w][0]
+                km = sum(dist(pts[i - 1], pts[i]) for i in range(1, len(pts))) / 1000
+                if not keep:
+                    dropped[f.get("rule", "?")] = dropped.get(f.get("rule", "?"), 0) + km
+                f["refs"] = keep
+    return dropped
+
+
 def build_segments(found: dict[int, dict], geom: Geom, routes: dict) -> tuple[list[dict], list[dict]]:
     segments, tunnels = [], []
     for wid, f in found.items():
@@ -264,11 +335,15 @@ def main() -> None:
     geom = Geom()
     geom.apply_file(cand, locations=True, idx="flex_mem")
     data = json.loads(Path(routes_path).read_text())
-    # 作り直すときのために、前に加えた旧道(とそのトンネル)は除いておく
-    data["segments"] = [s for s in data["segments"] if "old" not in s["cats"]]
+    # 作り直すときのために、前にこのスクリプトで加えた旧道(とそのトンネル)は除いておく。
+    # build_routes.py が旧道のリレーションから作った旧道は残す
+    data["segments"] = [s for s in data["segments"] if not ("old" in s["cats"] and s.get("src") != "rel")]
     used = {s["tunnel"] for s in data["segments"] if "tunnel" in s}
     data["tunnels"] = [t for t in data["tunnels"] if t["id"] in used]
 
+    dropped = drop_far(found, geom, data["segments"])
+    if dropped:
+        print("今の国道から離れているので旧道から外した: " + ", ".join(f"{k} {v:,.1f} km" for k, v in sorted(dropped.items())), file=sys.stderr)
     grid = RouteGrid(data["segments"])
     assigned = assign_unnumbered(found, geom, grid)
     segments, tunnels = build_segments(found, geom, data["routes"])

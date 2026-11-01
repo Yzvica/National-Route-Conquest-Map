@@ -270,6 +270,8 @@ def old_road_segments(el: dict, coords: list[tuple[float, float]], refs: list[st
             "cats": ["old"],
             "len": round(sum(dist(piece[j - 1], piece[j]) for j in range(1, len(piece))), 1),
             "coords": [rnd(p) for p in simplify(piece, SIMPLIFY_METERS)],
+            # 旧道のリレーションから作ったもの。build_old_roads.py で作り直すときに消さない
+            "src": "rel",
         }
         if name:
             seg["name"] = name
