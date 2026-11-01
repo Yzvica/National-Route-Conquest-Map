@@ -23,8 +23,7 @@ if (-not (Get-NetFirewallRule -DisplayName "KokudoMap" -ErrorAction SilentlyCont
         -Action Allow -Profile Private | Out-Null
 }
 
-Stop-ScheduledTask -TaskName "KokudoMap" -ErrorAction SilentlyContinue
-& (Join-Path $PSScriptRoot "stop-port.ps1") $port
+& (Join-Path $PSScriptRoot "stop-server.ps1") $port
 Start-ScheduledTask -TaskName "KokudoMap"
 $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -in "Dhcp", "Manual" -and $_.IPAddress -notlike "169.*" } |
     Select-Object -First 1).IPAddress

@@ -25,8 +25,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "都道府県のデータ(prefectures.json
 Run npm @("run", "build")
 
 if (Get-ScheduledTask -TaskName "KokudoMap" -ErrorAction SilentlyContinue) {
-    Stop-ScheduledTask -TaskName "KokudoMap"
-    & (Join-Path $PSScriptRoot "stop-port.ps1") 8080
+    & (Join-Path $PSScriptRoot "stop-server.ps1") 8080
     Start-ScheduledTask -TaskName "KokudoMap"
     Write-Host "更新して、サーバーを再起動しました。"
 } else {
