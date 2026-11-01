@@ -758,7 +758,7 @@ export function buildContext(
   dates: Map<string, PassDates>,
 ): GameContext {
   const c: GameContext = {};
-  for (const kind of ["kokudo", "expressway"] as DatasetKind[]) {
+  for (const kind of ["kokudo", "expressway"] as const) {
     const d = datasets[kind];
     if (d) c[kind] = summarize(d, coverageOf(d), dates);
   }

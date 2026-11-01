@@ -1,7 +1,8 @@
-# OSM から国道・高速道路のデータを作り直し、リリース "route-data" に routes.json / expressways.json として置く。
+# OSM から国道・高速道路・都道府県道のデータを作り直し、リリース "route-data" に
+# routes.json / expressways.json / prefroads.tar.gz(都道府県ごとのファイルをまとめたもの)として置く。
 # 各区間には都道府県を付け、地図の色分け用の都道府県の形 prefectures.json も置く。
 # データは大きいのでリポジトリには入れない。Actions タブから手動で実行する。
-name: 国道・高速道路のデータを更新
+name: 国道・高速道路・都道府県道のデータを更新
 
 on:
   workflow_dispatch:
@@ -12,9 +13,9 @@ on:
         options: [geofabrik, overpass]
         default: geofabrik
       target:
-        description: "作り直すデータ(both: 両方 / kokudo: 国道だけ / expressway: 高速道路だけ / old: 今の国道データに旧道を付け直すだけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
+        description: "作り直すデータ(both: 全部 / kokudo: 国道だけ / expressway: 高速道路だけ / prefroad: 都道府県道だけ / old: 今の国道データに旧道を付け直すだけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
         type: choice
-        options: [both, kokudo, expressway, old, pref]
+        options: [both, kokudo, expressway, prefroad, old, pref]
         default: both
       detail:
         description: "確認用: 旧道を一覧でログに出す国道番号(空欄なら出さない。例: 1 2)"
@@ -55,6 +56,9 @@ jobs:
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
+          if [ "$TARGET" = both ] || [ "$TARGET" = prefroad ]; then
+            osmium tags-filter japan.osm.pbf "r/network=JP:prefectural*" w/highway=secondary,tertiary -o prefroad.osm.pbf
+          fi
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ] || [ "$TARGET" = old ]; then
             osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
           fi
@@ -81,6 +85,11 @@ jobs:
           files=()
           for f in routes.json expressways.json; do [ -f "$f" ] && files+=("$f"); done
           gh release download route-data -p prefectures.json -O prefectures-prev.json || echo "前回の prefectures.json はありません"
+          # 都道府県道は都道府県ごとのファイルにして、1つにまとめる(アプリは選んだ都道府県だけ読む)
+          if [ -f prefroad.osm.pbf ]; then
+            python3 scripts/build_pref_roads.py prefroad.osm.pbf kokudo.osm.pbf pref.osm.pbf --fallback prefectures-prev.json --out-dir prefroads
+            tar -czf prefroads.tar.gz prefroads
+          fi
           python3 scripts/add_prefectures.py pref.osm.pbf "${files[@]}" --out prefectures.json --fallback prefectures-prev.json
 
       - name: Overpass API から取得して変換
@@ -97,10 +106,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -lh routes.json expressways.json prefectures.json || true
+          ls -lh routes.json expressways.json prefectures.json prefroads.tar.gz || true
           gh release view route-data >/dev/null 2>&1 || \
             gh release create route-data --title "国道データ" --notes "build_routes.py で生成した国道データ"
-          # 作ったものだけ置く(高速道路と都道府県は Geofabrik から作ったときだけできる)
-          for f in routes.json expressways.json prefectures.json; do
+          # 作ったものだけ置く(高速道路・都道府県道・都道府県は Geofabrik から作ったときだけできる)
+          for f in routes.json expressways.json prefectures.json prefroads.tar.gz; do
             if [ -f "$f" ]; then gh release upload route-data "$f" --clobber; fi
           done

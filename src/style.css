@@ -188,3 +188,13 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .declare-row .declare { margin: 0; }
 .dotted-info { font-size: 12px; }
 .dotted-info a { color: var(--accent); }
+
+/* 都道府県道: 表示する都道府県を選ぶ欄 */
+.pref-picker { margin: 0 0 12px; }
+.pref-picker summary { cursor: pointer; }
+.pref-picker p { margin: 6px 0; font-size: 12px; }
+.pref-pick { max-height: 40vh; overflow-y: auto; }
+.pref-pick fieldset { border: none; border-top: 1px solid var(--line); margin: 0; padding: 4px 0 6px; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.pref-pick legend { font-size: 12px; color: var(--muted); padding: 0 4px 0 0; }
+.pref-pick label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap; }
+.pref-pick label .muted { font-size: 11px; }

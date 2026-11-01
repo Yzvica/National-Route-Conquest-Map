@@ -18,7 +18,7 @@ import {
 import { prefName } from "./prefs";
 import type { Trip } from "./trips";
 import type { Progress } from "./stats";
-import type { Coverage, DatasetKind, RouteData } from "./types";
+import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData } from "./types";
 
 // toLocaleString は呼ぶたびに書式を作り直して遅いので、桁数ごとに一度だけ作る
 const formats = new Map<number, Intl.NumberFormat>();
@@ -106,7 +106,7 @@ export function suggestionsView(
   active: { kind: DatasetKind; data: RouteData; summary: DatasetSummary; coverage: Coverage },
   name: (ref: string) => string,
 ): string {
-  const label = active.kind === "kokudo" ? "国道" : "高速道路";
+  const label = DATASET_LABELS[active.kind];
   return `<h3>あと少しで制覇できる${label}</h3>
     ${suggestionList(almostConquered(active.summary), name, active.kind, (s) => `あと ${km(s.total * CONQUER_RATIO - s.done)} km(${num((s.done / s.total) * 100)}%)`)}
     <h3>よく走るあたりから近い、未踏の${label}</h3>
@@ -206,7 +206,7 @@ export function reviewView(
   name: (ref: string) => string,
   kind: DatasetKind,
 ): string {
-  const label = kind === "kokudo" ? "国道" : "高速道路";
+  const label = DATASET_LABELS[kind];
   const years = yearly(s);
   const t = tripTotals(trips);
   const firstTrip = [...t.byMonth.keys()].sort()[0];
@@ -268,7 +268,7 @@ function prefRow(label: string, p: Progress, attrs: string) {
 }
 
 export function prefsView(s: DatasetSummary, kind: DatasetKind, fillOn: boolean, hasShapes: boolean): string {
-  const label = kind === "kokudo" ? "国道" : "高速道路";
+  const label = DATASET_LABELS[kind];
   if (!s.byPref) {
     return `<p>道路データにまだ都道府県が付いていません。</p>
       <p class="muted">GitHub の Actions で「国道・高速道路のデータを更新」を target = pref で実行し、
