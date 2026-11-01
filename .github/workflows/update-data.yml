@@ -41,7 +41,7 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
           pip install osmium
           date
-          curl -fsSL --retry 3 --speed-limit 200000 --speed-time 60 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          bash scripts/download_japan.sh japan.osm.pbf
           ls -lh japan.osm.pbf; date
 
       - name: 旧道の調査 2/3 絞り込み
@@ -68,7 +68,7 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
           pip install osmium shapely
-          curl -fsSL --retry 3 --speed-limit 200000 --speed-time 60 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          bash scripts/download_japan.sh japan.osm.pbf
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
