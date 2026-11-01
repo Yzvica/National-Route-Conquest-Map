@@ -19,6 +19,7 @@ pyosmium が必要です(pip install osmium)。
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -59,7 +60,10 @@ def classify(tags) -> tuple[set[str], bool, str, str]:
     """(旧道の国道番号, 番号のない旧道か, 表示用の名前, 拾った理由)。旧道でなければ番号は空・False"""
     refs: set[str] = set()
     old_ref = norm(tags.get("old_ref", "") or "")
-    old_hw = (tags.get("old_highway") or tags.get("was:highway") or "trunk").split(";")
+    # old_ref が数字だけのものは、県道の旧番号のこともある(old_highway のない数字だけの old_ref が
+    # 約2,800kmあり、1号・2号などで関係ない道が旧道になった)。old_highway / was:highway が trunk(国道)と
+    # はっきり書かれているものだけ国道の番号とみなす
+    old_hw = (tags.get("old_highway") or tags.get("was:highway") or "").split(";")
     digits_ok = "trunk" in old_hw
     for part in old_ref.split(";"):
         part = part.strip()
@@ -366,6 +370,16 @@ def main() -> None:
         for r in s["routes"]:
             per_route[r] = per_route.get(r, 0) + s["len"] / 1000
     print(f"旧道 {len(segments)} 区間 / {km:,.1f} km / {len(per_route)} 路線(番号のない旧道 {assigned} 本に番号を付けた) → {routes_path}", file=sys.stderr)
+    if os.environ.get("OLD_ROADS_DETAIL"):
+        # 確認用: 指定した国道の旧道を、理由・名前・場所つきで出す(例: OLD_ROADS_DETAIL="1 2")
+        want = set(os.environ["OLD_ROADS_DETAIL"].split())
+        for wid, f in sorted(found.items()):
+            refs = [r for r in f["refs"] if r in want]
+            if refs and wid in geom.ways:
+                pts = geom.ways[wid][0]
+                km_w = sum(dist(pts[i - 1], pts[i]) for i in range(1, len(pts))) / 1000
+                mid = pts[len(pts) // 2]
+                print(f"  旧道 {','.join(refs)}号 way/{wid} {f.get('rule')} {km_w:.2f}km {f['name']} @{mid[1]:.4f},{mid[0]:.4f}", file=sys.stderr)
     top = sorted(per_route.items(), key=lambda kv: -kv[1])[:30]
     print("旧道の長い国道: " + ", ".join(f"{r}号 {v:.1f}km" for r, v in top), file=sys.stderr)
 
