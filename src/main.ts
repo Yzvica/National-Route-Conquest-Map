@@ -462,8 +462,6 @@ let prefSelection: number[] = loadPrefSelection() ?? [];
 /** 都道府県道のデータを、どの都道府県の組み合わせで作ったか(同じなら作り直さない) */
 let prefLoadedKey: string | null = null;
 let prefLoading = false;
-/** 都道府県の選択の欄を開いているか */
-let prefPickerOpen = false;
 
 function loadPrefFile(code: number): Promise<RouteData | undefined> {
   let p = prefFiles.get(code);
@@ -491,18 +489,17 @@ async function loadPrefIndex() {
   prefIndex = idx;
   if (!idx) return;
   if (loadPrefSelection() === null) {
-    // 初めて開いたときは、国道をよく走っている都道府県(最大5つ)を選んでおく
+    // 初めて開いたときは、国道をいちばん走っている都道府県を選んでおく
     const byPref = gameContext().kokudo?.byPref;
     prefSelection = byPref
       ? [...byPref]
           .filter(([code, p]) => p.done > 0 && idx.prefs[code])
           .sort((a, b) => b[1].done - a[1].done)
-          .slice(0, 5)
+          .slice(0, 1)
           .map(([code]) => code)
-          .sort((a, b) => a - b)
       : [];
   }
-  prefSelection = prefSelection.filter((code) => idx.prefs[code]);
+  prefSelection = prefSelection.filter((code) => idx.prefs[code]).slice(0, 1);
 }
 
 /** 選んだ都道府県のファイルを読んで、都道府県道のデータを作り直す */
@@ -540,53 +537,38 @@ function prefroadStatus(): string {
   return "都道府県道のデータを読めませんでした";
 }
 
-/** 都道府県道のタブで、表示する都道府県を選ぶ欄 */
+/** 都道府県道のタブで、表示する都道府県を選ぶ欄(1つずつ選ぶ。データが多いので一度に1都道府県だけ読む) */
 function renderPrefPicker() {
   const box = $("pref-picker");
   box.hidden = active !== "prefroad" || !prefIndex;
   const idx = prefIndex;
   if (box.hidden || !idx) return;
+  const current = prefSelection[0];
   const groups = REGIONS.map((r) => {
-    const items: string[] = [];
+    const opts: string[] = [];
     for (let code = r.from; code <= r.to; code++) {
       const info = idx.prefs[code];
-      items.push(
-        `<label${info ? "" : ' class="muted"'}><input type="checkbox" data-pref-pick="${code}"${
-          prefSelection.includes(code) ? " checked" : ""
-        }${info ? "" : " disabled"}>${prefName(code)}${
-          info ? `<span class="muted">${Math.round(info.km).toLocaleString("ja-JP")}km</span>` : ""
-        }</label>`,
+      if (!info) continue;
+      opts.push(
+        `<option value="${code}"${code === current ? " selected" : ""}>${prefName(code)}(${Math.round(info.km).toLocaleString("ja-JP")} km)</option>`,
       );
     }
-    return `<fieldset><legend>${r.name}</legend>${items.join("")}</fieldset>`;
+    return opts.length ? `<optgroup label="${r.name}">${opts.join("")}</optgroup>` : "";
   }).join("");
-  const chosen = prefSelection.length ? prefSelection.map(prefName).join("・") : "未選択";
-  const mb = prefSelection.reduce((a, code) => a + (idx.prefs[code]?.bytes ?? 0), 0) / 1e6;
-  box.innerHTML = `<details${prefPickerOpen || prefSelection.length === 0 ? " open" : ""}>
-    <summary>表示する都道府県: <b>${chosen}</b>${prefLoading ? "(読み込み中…)" : ""}</summary>
-    <p class="muted">選んだ都道府県のデータだけを読み込みます(今の選択で約 ${mb.toFixed(0)}MB)。たくさん選ぶと重くなります。
-      走行ログの判定は、選んでいない都道府県の分も行います。</p>
-    <div class="pref-pick">${groups}</div></details>`;
+  const mb = current ? (idx.prefs[current]?.bytes ?? 0) / 1e6 : 0;
+  box.innerHTML = `<label class="pref-select">表示する都道府県
+      <select id="pref-select">${current ? "" : '<option value="" selected>選んでください</option>'}${groups}</select></label>
+    <p class="muted">${current ? `約 ${mb.toFixed(0)}MB${prefLoading ? "を読み込み中…" : ""}。` : ""}走行ログの判定は、表示していない都道府県の分も行います。</p>`;
 }
 
 $("pref-picker").addEventListener("change", (e) => {
-  const box = e.target as HTMLInputElement;
-  if (!box.dataset.prefPick) return;
-  const code = Number(box.dataset.prefPick);
-  prefSelection = box.checked
-    ? [...new Set([...prefSelection, code])].sort((a, b) => a - b)
-    : prefSelection.filter((c) => c !== code);
+  const sel = e.target as HTMLSelectElement;
+  if (sel.id !== "pref-select" || !sel.value) return;
+  prefSelection = [Number(sel.value)];
   savePrefSelection();
   dropUnselectedPrefFiles();
   void reloadPrefRoads();
 });
-$("pref-picker").addEventListener(
-  "toggle",
-  (e) => {
-    if ((e.target as HTMLElement).tagName === "DETAILS") prefPickerOpen = (e.target as HTMLDetailsElement).open;
-  },
-  true,
-);
 
 /** 国道・高速道路・都道府県道を切り替える */
 function showDataset(kind: DatasetKind) {
