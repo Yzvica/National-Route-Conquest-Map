@@ -22,7 +22,7 @@ import type { Coverage, DatasetKind, RouteData } from "./types";
 
 const km = (m: number, digits = 1) => (m / 1000).toLocaleString("ja-JP", { maximumFractionDigits: digits });
 const num = (n: number, digits = 0) => n.toLocaleString("ja-JP", { maximumFractionDigits: digits });
-const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 export function levelCard(lv: Level, unlocked: number, total: number, regionTitle?: string): string {
   const pct = ((lv.xp - lv.from) / (lv.to - lv.from)) * 100;

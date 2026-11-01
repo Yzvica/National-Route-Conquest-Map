@@ -53,6 +53,8 @@ export interface Segment {
   pair?: string;
   /** 点線国道の区間の OSM の highway の値(path, track など。ないときは "none")。古いデータにはない */
   hw?: string;
+  /** 旧道の区間の OSM での名前(「旧国道1号」「○○旧道」など)。名前のない旧道や、ほかの種別にはない */
+  name?: string;
   /** 区間がある都道府県のコード(1〜47)。scripts/add_prefectures.py で付ける。古いデータにはない */
   pref?: number;
   coords: LonLat[];

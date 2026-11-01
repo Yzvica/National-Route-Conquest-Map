@@ -1,7 +1,7 @@
 import "./style.css";
 import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
 import { buildContext, computeLevel, evaluateAchievements, regionTitle, type GameContext } from "./game";
-import { achievementsView, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
+import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
 import {
   addRoutes,
   clearRoutes,
@@ -245,13 +245,17 @@ function dottedInfo(segIds: string[]): string {
   if (!data) return "";
   const want = new Set(segIds);
   const kinds = new Set<string>();
-  for (const s of data.segments) if (want.has(s.id) && s.hw) kinds.add(HW_LABELS[s.hw] ?? s.hw);
+  for (const s of data.segments) {
+    if (!want.has(s.id)) continue;
+    if (s.hw) kinds.add(HW_LABELS[s.hw] ?? s.hw);
+    if (s.name && kinds.size < 4) kinds.add(s.name);
+  }
   const ways = [...new Set(segIds.map((id) => id.split("-")[0].slice(1)))];
   const links = ways
     .slice(0, 3)
     .map((w, i) => `<a href="https://www.openstreetmap.org/way/${w}" target="_blank" rel="noopener">OSM${ways.length > 1 ? i + 1 : ""}</a>`)
     .join(" ");
-  return `<span class="dotted-info muted">${kinds.size ? `${[...kinds].join("・")} / ` : ""}${links}${ways.length > 3 ? " …" : ""}</span>`;
+  return `<span class="dotted-info muted">${kinds.size ? `${esc([...kinds].join("・"))} / ` : ""}${links}${ways.length > 3 ? " …" : ""}</span>`;
 }
 
 function render() {
@@ -280,7 +284,11 @@ function renderNow() {
           .map((item) => {
             const key = `${c}:${item.key}`;
             breakdownItems.set(key, item);
-            const declare = REFERENCE_CATS.includes(c) ? `<div class="declare-row">${declareBox(item.key)}${dottedInfo(item.segIds)}</div>` : "";
+            const declare = REFERENCE_CATS.includes(c)
+              ? `<div class="declare-row">${declareBox(item.key)}${dottedInfo(item.segIds)}</div>`
+              : c === "old"
+                ? `<div class="declare-row">${dottedInfo(item.segIds)}</div>`
+                : "";
             return `<li data-item="${key}">${row(item.refs.map(routeName).join("・"), item.progress)}${declare}</li>`;
           })
           .join("");
