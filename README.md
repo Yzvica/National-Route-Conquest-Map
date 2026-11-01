@@ -107,6 +107,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 ```
 
 - 新しいコードや国道データを取り込むときは、フォルダ直下の `update.bat` をダブルクリックします(`scripts\update.ps1` を管理者で実行し、自動起動していればサーバーも再起動します)
+  国道データなどはリリースから `scripts/download_release.mjs` で取ります。回線によって GitHub のファイル配信が極端に遅いことがあるので、1MBずつに分けて同時に取ります
 - サーバーが落ちても10秒後に自動で立ち上げ直します。落ちた記録とエラーは `data\server.log` に残ります
 - `data\record.json` をコピーしておけばバックアップになります。画面の「記録を書き出す」でも保存できます
 - `npm run dev` で開いたときなど、サーバーがない場合はブラウザの中に保存します
