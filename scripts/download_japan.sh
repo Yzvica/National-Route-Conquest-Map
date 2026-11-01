@@ -4,10 +4,10 @@
 set -u
 out="$1"
 MAX_AGE_DAYS=${MAX_AGE_DAYS:-21}
+# openstreetmap.fr のファイルでは東京都の境界が作れないことがある(add_prefectures.py が前回の形で補う)
 urls=(
   https://download.geofabrik.de/asia/japan-latest.osm.pbf
   https://download.openstreetmap.fr/extracts/asia/japan-latest.osm.pbf
-  https://ftp.fau.de/osm-planet/extracts/geofabrik/asia/japan-latest.osm.pbf
 )
 
 fresh() {

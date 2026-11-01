@@ -18,6 +18,7 @@ from pathlib import Path
 
 import osmium
 import shapely
+import shapely.geometry
 from shapely.geometry import mapping
 
 # JIS X 0401 の都道府県コード順
@@ -65,15 +66,25 @@ class AreaHandler(osmium.SimpleHandler):
         self.shapes.setdefault(code, []).append(geom)
 
 
-def load_prefectures(src: str) -> dict[int, shapely.Geometry]:
+def load_prefectures(src: str, fallback: Path | None = None) -> dict[int, shapely.Geometry]:
     h = AreaHandler()
     h.apply_file(src, locations=True, idx="flex_mem")
     shapes = {code: shapely.union_all(gs) for code, gs in h.shapes.items()}
-    missing = [PREFS[i] for i in range(47) if i + 1 not in shapes]
+    missing = [i + 1 for i in range(47) if i + 1 not in shapes]
+    if missing and fallback and fallback.exists():
+        # OSM の行政界が一時的に壊れていることがある(2026-11-01 に東京都の境界が作れなかった)。
+        # そのときは前回作った形(約500mまで間引いたもの)で代わりにする
+        prev = json.loads(fallback.read_text())
+        for f in prev.get("features", []):
+            code = f["properties"]["code"]
+            if code in missing:
+                shapes[code] = shapely.geometry.shape(f["geometry"])
+                print(f"  {PREFS[code - 1]} は前回の形を使います", file=sys.stderr)
+        missing = [c for c in missing if c not in shapes]
     if missing:
-        # 抽出ファイルが壊れている・古いときに起きる(ミラーのファイルで東京都が欠けたことがある)。
-        # そのまま置くと地図の色分けが欠けるので止める
-        sys.exit(f"境界が見つからなかった都道府県があります: {' '.join(missing)}。OSM ファイルを取り直してください")
+        # そのまま置くと地図の色分けや都道府県の判定が欠けるので止める
+        names = " ".join(PREFS[c - 1] for c in missing)
+        sys.exit(f"境界が見つからなかった都道府県があります: {names}。OSM ファイルを取り直してください")
     return shapes
 
 
@@ -137,9 +148,10 @@ def main() -> None:
     ap.add_argument("boundaries", help="行政界(admin_level=4)を含む .osm.pbf / .osm")
     ap.add_argument("data", nargs="*", type=Path, help="pref を付ける routes.json / expressways.json(上書きします)")
     ap.add_argument("--out", type=Path, help="都道府県の形(prefectures.json)の出力先")
+    ap.add_argument("--fallback", type=Path, help="境界が作れなかった都道府県に使う、前回の prefectures.json")
     args = ap.parse_args()
 
-    shapes = load_prefectures(args.boundaries)
+    shapes = load_prefectures(args.boundaries, args.fallback)
     if not shapes:
         sys.exit("都道府県の境界が1つも見つかりませんでした")
     for path in args.data:
