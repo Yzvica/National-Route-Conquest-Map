@@ -1,5 +1,5 @@
 import "./style.css";
-import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
+import { categoryBreakdown, nicknamesOf, overlapsOf, type BreakdownItem } from "./breakdown";
 import {
   buildContext,
   computeLevel,
@@ -385,10 +385,26 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
       .join("")}
     <p class="muted">通過した区間 ${passed.toLocaleString("ja-JP")} / ${segs.length.toLocaleString("ja-JP")}<br>
       ${dates.length ? `初めて ${dates[0]} / 最後 ${dates[dates.length - 1]}` : "まだ通過していません"}</p>
+    ${nicknameList(selected)}
     ${overlapList(selected)}
     <p class="legend"><span class="sw done"></span>走行済み <span class="sw part"></span>一部 <span class="sw todo"></span>未踏破</p>
     <button id="detail-fit" type="button">全体を表示</button>`;
   box.hidden = false;
+}
+
+/** 選んだ路線の区間の通称(都道府県道の「三宿通り」など)。「場所」でその区間を映す */
+function nicknameList(ref: string): string {
+  if (active !== "prefroad") return "";
+  const items = nicknamesOf(data!, coverage(), ref);
+  if (items.length === 0) return "";
+  return `<details class="overlaps" open><summary>区間の通称(${items.length})</summary><ul data-scroll="nicknames">
+    ${items
+      .map(
+        (o) => `<li>${esc(o.key)}
+          <span class="muted">${km(o.progress.total)} km・${percent(o.progress).toFixed(0)}%</span>
+          <button type="button" class="link" data-nick="${esc(o.key)}">場所</button></li>`,
+      )
+      .join("")}</ul></details>`;
 }
 
 /** 選んだ国道と重なっているほかの国道。名前を押すとその国道へ、「場所」で重なっている区間を映す */
@@ -855,6 +871,13 @@ $("detail").addEventListener("click", (e) => {
   if (el.dataset.jump) {
     e.preventDefault();
     select(el.dataset.jump, true);
+  }
+  if (el.dataset.nick && data && selected) {
+    const item = nicknamesOf(data, coverage(), selected).find((o) => o.key === el.dataset.nick);
+    if (item) {
+      showFocus(map, data, item.segIds);
+      fitSelected(item.segIds);
+    }
   }
   if (el.dataset.show && data && selected) {
     const shared = overlapsOf(data, coverage(), selected).find((o) => o.key === el.dataset.show);

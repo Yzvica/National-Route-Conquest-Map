@@ -18,6 +18,7 @@
   路線ごとに長いほうにそろえる。2路線以上が重なる区間には重複(overlap)も付ける
 - 区間の ID は "p<wayId>-<番号>"。国道・高速道路のデータ("w…")と記録がまざらないように頭を変えている
 - 上下線が別の線になっているところは、高速道路と同じく組(pair)にする
+- 区間に通称(「三宿通り」など、OSM の name・loc_name・alt_name)があれば name に入れる
 
 pyosmium と shapely が必要です(pip install osmium shapely)。
 """
@@ -54,6 +55,8 @@ ROMAJI = [
 PREF_PREFIX = "|".join(sorted({p[:-1] if p != "北海道" else "北海" for p in PREFS}, key=len, reverse=True))
 ROAD_NAME = re.compile(rf"^(?:({PREF_PREFIX})?(都|道|府|県))道(\d+)号")
 NUMERIC_REF = re.compile(r"^\d{1,4}$")
+# 通称として出さない名前(橋・トンネルの名前、国道や路線番号だけの名前)
+NOT_NICKNAME = re.compile(r"(橋|高架橋|トンネル|隧道)$|国道")
 # 道路として数えない種類(歩道・小道・ランプ・工事中など)
 SKIP_HIGHWAYS = {
     "footway", "path", "steps", "cycleway", "pedestrian", "bridleway", "track", "corridor", "elevator",
@@ -84,6 +87,15 @@ def pref_of_name(name: str) -> int | None:
         if name.startswith(p + "道"):
             return i + 1
     return None
+
+
+def nickname(tags) -> str:
+    """区間の通称(「三宿通り」など)。name・loc_name・alt_name のうち、路線の正式な名前や橋の名前でない最初のもの"""
+    for key in ("name", "loc_name", "alt_name"):
+        n = norm(tags.get(key, ""))
+        if n and not ROAD_NAME.match(n) and not NOT_NICKNAME.search(n):
+            return n
+    return ""
 
 
 def norm(s: str) -> str:
@@ -175,6 +187,7 @@ class Ways(osmium.SimpleHandler):
             "oneway": oneway in ("yes", "-1"),
             "tunnel": tags.get("tunnel") not in (None, "no"),
             "name": name,
+            "nick": nickname(tags),
         })
 
 
@@ -220,6 +233,8 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
         sid = f"p{w['id']}-{i}"
         length = round(sum(dist(piece[j - 1], piece[j]) for j in range(1, len(piece))), 1)
         seg = {"id": sid, "routes": keys, "len": length, "coords": [rnd(p) for p in simplify(piece, SIMPLIFY_METERS)]}
+        if w["nick"]:
+            seg["name"] = w["nick"]
         if w["tunnel"]:
             tid = f"pt{w['id']}"
             seg["tunnel"] = tid
