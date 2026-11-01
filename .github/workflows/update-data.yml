@@ -34,18 +34,31 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 旧道の書かれ方を調べる(調査用。リリースは変えない)
+      - name: 旧道の調査 1/3 OSM データを取得
         if: inputs.target == 'survey-old'
+        timeout-minutes: 20
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
           pip install osmium
-          curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          date
+          curl -fsSL --retry 3 --speed-limit 200000 --speed-time 60 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          ls -lh japan.osm.pbf; date
+
+      - name: 旧道の調査 2/3 絞り込み
+        if: inputs.target == 'survey-old'
+        timeout-minutes: 20
+        run: |
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
-          rm japan.osm.pbf
-          python3 scripts/survey_old_roads.py kokudo.osm.pbf hw.osm.pbf ids.txt
-          osmium getid -r hw.osm.pbf -i ids.txt -o cand.osm.pbf
-          python3 scripts/survey_old_roads.py --report ids.txt.json cand.osm.pbf
+          rm japan.osm.pbf; ls -lh *.pbf; date
+
+      - name: 旧道の調査 3/3 集計(リリースは変えない)
+        if: inputs.target == 'survey-old'
+        timeout-minutes: 30
+        run: |
+          python3 -u scripts/survey_old_roads.py kokudo.osm.pbf hw.osm.pbf ids.txt; date
+          osmium getid -r hw.osm.pbf -i ids.txt -o cand.osm.pbf; date
+          python3 -u scripts/survey_old_roads.py --report ids.txt.json cand.osm.pbf
 
       - name: Geofabrik から日本の OSM データを取得して抽出
         if: inputs.source != 'overpass' && inputs.target != 'survey-old'
@@ -55,7 +68,7 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
           pip install osmium shapely
-          curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          curl -fsSL --retry 3 --speed-limit 200000 --speed-time 60 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
