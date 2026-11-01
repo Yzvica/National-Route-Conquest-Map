@@ -68,11 +68,14 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
     // 点線国道(参考・自己申告)と旧道(今の国道ではない)は、制覇・都道府県・振り返りには数えない
     if (isSeparate(s)) continue;
     const r = ratioOf(coverage, s.id);
-    if (s.pref) {
-      let p = byPref.get(s.pref);
-      if (!p) byPref.set(s.pref, (p = { total: 0, done: 0 }));
-      p.total += s.len * segmentWeight(s);
-      p.done += s.len * segmentWeight(s) * r;
+    // 都道府県の境をまたぐ区間は、それぞれの都道府県にある割合で距離を分ける
+    // (走った割合は区間の中で一様とみなす)
+    const parts = s.prefs ?? (s.pref ? [[s.pref, 1] as [number, number]] : []);
+    for (const [code, share] of parts) {
+      let p = byPref.get(code);
+      if (!p) byPref.set(code, (p = { total: 0, done: 0 }));
+      p.total += s.len * segmentWeight(s) * share;
+      p.done += s.len * segmentWeight(s) * share * r;
     }
     if (r <= 0) continue;
     passedSegments++;

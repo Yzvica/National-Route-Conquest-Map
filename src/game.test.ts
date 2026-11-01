@@ -175,6 +175,19 @@ describe("都道府県", () => {
     expect(regionTitle({ prefs: { byPref: all.byPref! } })).toBe("関東の覇者");
   });
 
+  it("都道府県の境をまたぐ区間は、それぞれの県にある分だけ数える", () => {
+    // a の 3割は東京(13)、7割は神奈川
+    const split: RouteData = {
+      ...withPref,
+      segments: withPref.segments.map((s) => (s.id === "a" ? { ...s, prefs: [[14, 0.7], [13, 0.3]] } : s)),
+    };
+    const s = summarize(split, new Map([["a", 1]]), dates);
+    expect(s.byPref!.get(13)!.total).toBeCloseTo(300);
+    expect(s.byPref!.get(13)!.done).toBeCloseTo(300);
+    expect(s.byPref!.get(14)!.total).toBeCloseTo(3700);
+    expect(s.byPref!.get(14)!.done).toBeCloseTo(700);
+  });
+
   it("都道府県のないデータでは集計しない", () => {
     expect(summarize(data, new Map(), dates).byPref).toBeUndefined();
     expect(regionTitle({})).toBeUndefined();

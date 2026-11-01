@@ -70,6 +70,13 @@ describe("/api/record", () => {
     expect(rec.coverage).toEqual({ a: 1, b: 0.5 });
     expect(rec.logs).toHaveLength(2);
 
+    // 判定し直した結果で、通った区間だけを置き換える(ログの履歴は残す)
+    await fetch(base, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ coverage: { a: 0.8 }, dates: { a: ["2026-10-01", "2026-10-01"] }, logs: [] }) });
+    const replaced = await (await fetch(base)).json();
+    expect(replaced.coverage).toEqual({ a: 0.8 });
+    expect(replaced.dates).toEqual({ a: ["2026-10-01", "2026-10-01"] });
+    expect(replaced.logs).toHaveLength(2);
+
     await fetch(base, { method: "DELETE" });
     expect(await (await fetch(base)).json()).toEqual({ coverage: {}, dates: {}, logs: [], declared: {}, trips: {} });
   });

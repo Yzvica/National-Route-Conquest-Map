@@ -6,16 +6,19 @@
   osmium tags-filter japan-latest.osm.pbf r/admin_level=4 -o pref.osm.pbf
   python3 scripts/add_prefectures.py pref.osm.pbf routes.json expressways.json --out prefectures.json
 
-区間の中ほどの点で判定し、どの都道府県にも入らない区間(海上区間など)は一番近い都道府県にする。
-pyosmium と shapely が必要です(pip install osmium shapely)。
+区間ごとに、どの都道府県にあるかを付ける。都道府県の境をまたぐ区間は、それぞれの都道府県にある割合(prefs)も付け、
+県別の距離はその割合で分けて数える。どの都道府県にも入らない区間(海上区間など)は一番近い都道府県にする。
+pyosmium と shapely(numpy も入ります)が必要です(pip install osmium shapely)。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
+import numpy
 import osmium
 import shapely
 from shapely.geometry import mapping
@@ -32,6 +35,10 @@ PREFS = [
 ]
 # 地図の色分け用の形は、この誤差(度。約0.005度 ≒ 500m)まで間引いて軽くする
 SIMPLIFY_DEG = 0.005
+# 都道府県の境をまたぐ区間は、この間隔(m)の点で、どの都道府県にどれだけあるかを調べる
+SPLIT_STEP = 5.0
+# 区間のうちこの割合より少ししか入っていない都道府県は数えない(境界のわずかなずれ)
+MIN_SHARE = 0.03
 
 
 def pref_code(tags: osmium.osm.TagList) -> int | None:
@@ -84,31 +91,94 @@ def midpoint(coords: list[list[float]]) -> tuple[float, float]:
     return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
 
 
-def assign(shapes: dict[int, shapely.Geometry], data: dict) -> dict[int, int]:
-    """data の各区間に pref を付け、都道府県ごとの区間数を返す"""
-    codes = list(shapes)
-    tree = shapely.STRtree([shapes[c] for c in codes])
-    segs = data["segments"]
-    points = shapely.points([midpoint(s["coords"]) for s in segs])
-    found = [-1] * len(segs)
+def locate(tree: shapely.STRtree, points) -> list[int]:
+    """各点が入っている都道府県(tree の番号)。どこにも入らなければ -1"""
+    found = [-1] * len(points)
     src, dst = tree.query(points, predicate="within")
     for i, j in zip(src.tolist(), dst.tolist()):
         if found[i] < 0:
             found[i] = j
-    rest = [i for i, f in enumerate(found) if f < 0]
+    return found
+
+
+def assign(shapes: dict[int, shapely.Geometry], data: dict) -> dict[int, int]:
+    """data の各区間に pref を付け、都道府県ごとの区間数を返す。
+
+    区間(約200m)の両端と中ほどが同じ都道府県なら、その都道府県にする。
+    都道府県の境をまたぐ区間は SPLIT_STEP m おきの点で調べ、それぞれの都道府県にある割合を
+    prefs([[コード, 割合], ...])に入れる。県別の距離はこの割合で分ける。pref は割合が一番大きい都道府県。
+    どこにも入らない区間(海の上・境界のすき間)は、中ほどの点に一番近い都道府県にする。
+    """
+    codes = list(shapes)
+    tree = shapely.STRtree([shapes[c] for c in codes])
+    segs = data["segments"]
+    mids = shapely.points([midpoint(s["coords"]) for s in segs])
+    ends = locate(tree, shapely.points([p for s in segs for p in (s["coords"][0], s["coords"][-1])]))
+    mid_found = locate(tree, mids)
+
+    shares: list[dict[int, float] | None] = [None] * len(segs)
+    border = []
+    for i in range(len(segs)):
+        a, b, m = ends[2 * i], ends[2 * i + 1], mid_found[i]
+        if a == b == m and m >= 0:
+            shares[i] = {m: 1.0}
+        else:
+            border.append(i)
+
+    # 境をまたぐ区間は細かく点を取って、それぞれの都道府県にある割合を出す
+    if border:
+        lines = numpy.array([shapely.LineString(segs[i]["coords"]) for i in border], dtype=object)
+        counts = [max(2, math.ceil(segs[i]["len"] / SPLIT_STEP)) for i in border]
+        owner = [k for k, n in enumerate(counts) for _ in range(n)]
+        fracs = [(j + 0.5) / n for n in counts for j in range(n)]
+        pts = shapely.line_interpolate_point(lines[owner], fracs, normalized=True)
+        found = locate(tree, pts)
+        hits: list[dict[int, int]] = [{} for _ in border]
+        for k, f in zip(owner, found):
+            if f >= 0:
+                hits[k][f] = hits[k].get(f, 0) + 1
+        for k, i in enumerate(border):
+            n = sum(hits[k].values())
+            if n:
+                shares[i] = {f: c / n for f, c in hits[k].items()}
+
+    rest = [i for i, sh in enumerate(shares) if sh is None]
     if rest:
         # どこにも入らない(海の上・境界のすき間)ものは一番近い都道府県にする
-        src, dst = tree.query_nearest(points[rest], return_distance=False)
-        for i, j in zip(src.tolist(), dst.tolist()):
-            if found[rest[i]] < 0:
-                found[rest[i]] = j
-    counts: dict[int, int] = {}
-    for s, f in zip(segs, found):
-        code = codes[f]
-        s["pref"] = code
-        counts[code] = counts.get(code, 0) + 1
-    print(f"  {len(segs)} 区間のうち {len(rest)} 区間は境界の外なので近い都道府県にしました", file=sys.stderr)
-    return counts
+        src, dst = tree.query_nearest(mids[rest], return_distance=False)
+        for k, j in zip(src.tolist(), dst.tolist()):
+            if shares[rest[k]] is None:
+                shares[rest[k]] = {j: 1.0}
+
+    counts_by_pref: dict[int, int] = {}
+    split = 0
+    for s, sh in zip(segs, shares):
+        parts = split_shares({codes[f]: v for f, v in sh.items()})
+        s["pref"] = parts[0][0]
+        if len(parts) > 1:
+            s["prefs"] = [[c, v] for c, v in parts]
+            split += 1
+        else:
+            s.pop("prefs", None)
+        counts_by_pref[s["pref"]] = counts_by_pref.get(s["pref"], 0) + 1
+    print(
+        f"  {len(segs)} 区間のうち、{split} 区間は都道府県の境で分け、{len(rest)} 区間は境界の外なので近い都道府県にしました",
+        file=sys.stderr,
+    )
+    return counts_by_pref
+
+
+def split_shares(shares: dict[int, float]) -> list[tuple[int, float]]:
+    """割合を大きい順に並べ、MIN_SHARE 未満のものは除いて、合計が1になるよう小数2桁に丸める"""
+    items = sorted(shares.items(), key=lambda kv: -kv[1])
+    items = [kv for kv in items if kv[1] >= MIN_SHARE] or items[:1]
+    total = sum(v for _, v in items)
+    out = [(c, round(v / total, 2)) for c, v in items]
+    out = [(c, v) for c, v in out if v > 0]
+    if len(out) > 1:
+        # 丸めの誤差は一番大きいものに寄せる
+        out[0] = (out[0][0], round(1 - sum(v for _, v in out[1:]), 2))
+    return out if len(out) > 1 else [(out[0][0], 1.0)]
 
 
 def rnd(x):

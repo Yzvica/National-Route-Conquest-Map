@@ -57,6 +57,11 @@ export interface Segment {
   name?: string;
   /** 区間がある都道府県のコード(1〜47)。scripts/add_prefectures.py で付ける。古いデータにはない */
   pref?: number;
+  /**
+   * 都道府県の境をまたぐ区間だけにある、都道府県ごとの割合 [[コード, 割合], ...](割合の合計は1)。
+   * 県別の距離はこの割合で分ける。古いデータにはない
+   */
+  prefs?: [number, number][];
   coords: LonLat[];
 }
 
