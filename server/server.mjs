@@ -41,6 +41,15 @@ function saveRecord(rec) {
   renameSync(`${RECORD}.tmp`, RECORD);
 }
 
+/** 置き換える前の記録を data/backup/record-<時刻>.json に残す(戻せるように) */
+function backupRecord() {
+  if (!existsSync(RECORD)) return;
+  const dir = join(dirname(RECORD), "backup");
+  mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  writeFileSync(join(dir, `record-${stamp}.json`), readFileSync(RECORD));
+}
+
 const isDates = (d) => Array.isArray(d) && d.length === 2 && d.every((x) => typeof x === "string");
 
 /**
@@ -135,6 +144,15 @@ export function createApp() {
         if (req.method === "GET") return json(res, 200, loadRecord());
         if (req.method === "POST") {
           const merged = mergeRecord(loadRecord(), JSON.parse(await readBody(req)));
+          saveRecord(merged);
+          return json(res, 200, merged);
+        }
+        // 保存したログで判定し直した結果で、通った区間(coverage・dates)を置き換える。
+        // 判定の誤り(交差した道路を走ったことにしていたなど)を消すため。ほかの記録は POST と同じく足す
+        if (req.method === "PUT") {
+          const cur = loadRecord();
+          backupRecord();
+          const merged = mergeRecord({ ...cur, coverage: {}, dates: {} }, JSON.parse(await readBody(req)));
           saveRecord(merged);
           return json(res, 200, merged);
         }

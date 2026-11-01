@@ -97,4 +97,16 @@ export class PointGrid<T> {
     }
     return false;
   }
+
+  /** radius メートル以内に、pred を満たす点があるか */
+  some(p: LonLat, radius: number, pred: (v: T) => boolean): boolean {
+    const [x, y] = this.cellOf(p);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const cell = this.cells.get(this.key(x + dx, y + dy));
+        if (cell?.some((e) => pred(e.v) && distance(p, e.p) <= radius)) return true;
+      }
+    }
+    return false;
+  }
 }

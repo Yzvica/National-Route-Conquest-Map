@@ -69,6 +69,11 @@ export interface RecordStore {
   load(): Promise<Record>;
   /** 追加分を保存し、ほかの端末の分も含めた最新の記録を返す */
   add(added: Record): Promise<Record>;
+  /**
+   * 通った区間(coverage・dates)を次の記録で置き換え、ほかのもの(ログの履歴・自己申告・走行距離)は足す。
+   * 保存したログで判定し直したとき、前の判定の誤りを消すのに使う
+   */
+  replaceCoverage(next: Record): Promise<Record>;
   clear(): Promise<void>;
   /** 走行ログそのものを残す(MiniPC のときだけ。あとで判定し直すため) */
   saveLog(name: string, text: string): Promise<void>;
@@ -98,6 +103,16 @@ class ServerStore implements RecordStore {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(toJson(added)),
+    });
+    if (!res.ok) throw new Error(`記録を保存できませんでした(${res.status})`);
+    return toRecord(await res.json());
+  }
+
+  async replaceCoverage(next: Record) {
+    const res = await fetch(API, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(toJson(next)),
     });
     if (!res.ok) throw new Error(`記録を保存できませんでした(${res.status})`);
     return toRecord(await res.json());
@@ -142,8 +157,15 @@ class LocalStore implements RecordStore {
   }
 
   async add(added: Record) {
+    return this.save(mergeRecord(await this.load(), added));
+  }
+
+  async replaceCoverage(next: Record) {
     const cur = await this.load();
-    const merged = mergeRecord(cur, added);
+    return this.save(mergeRecord({ ...cur, coverage: new Map(), dates: new Map() }, next));
+  }
+
+  private save(merged: Record) {
     try {
       localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(merged.coverage)));
       localStorage.setItem(DATES_KEY, JSON.stringify(Object.fromEntries(merged.dates)));

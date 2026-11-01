@@ -270,7 +270,7 @@ export function prefsView(s: DatasetSummary, kind: DatasetKind, fillOn: boolean,
   }
   const regions = regionProgress(s.byPref);
   const visited = [...s.byPref.values()].filter((p) => p.done > 0).length;
-  return `<p class="muted">今開いているタブ(${label})の都道府県ごとの制覇率です。都道府県は区間の中ほどの位置で決めています。
+  return `<p class="muted">今開いているタブ(${label})の都道府県ごとの制覇率です。距離は都道府県の中にある分だけを数えています(境をまたぐ道路は県境で分けています)。
       足跡のある都道府県 ${visited} / ${s.byPref.size}</p>
     ${hasShapes ? `<button type="button" id="pref-fill" aria-pressed="${fillOn}">${fillOn ? "地図の色分けをやめる" : "🗺️ 地図を都道府県で色分けする"}</button>
       <p class="legend pref-legend">0% <span class="ramp"></span> 100%<span class="muted">(少し走っただけでも色が付くよう、低い側を細かく塗り分けています。地図の県を押すと制覇率が出ます)</span></p>` : ""}

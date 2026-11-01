@@ -19,7 +19,7 @@ import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { trackLength, tripKey } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
-import { emptyRecord, exportBackup, importBackup, openStore, type Record } from "./store";
+import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type Record } from "./store";
 import {
   CATEGORY_LABELS,
   DATASET_LABELS,
@@ -464,13 +464,19 @@ function matchAll(track: TrackPoint[]): Coverage {
 /**
  * ログを判定して記録に足す。save なら MiniPC にログも残す(あとで判定し直せるように)。
  * logEntry が false のときは読み込み履歴を増やさない(判定し直し用)。
+ * replace なら、今の通った区間の記録を、これらのログで判定した結果で置き換える(前の判定の誤りを消す)。
  */
-async function importFiles(files: File[], opts: { save: boolean; logEntry: boolean } = { save: true, logEntry: true }) {
+async function importFiles(
+  files: File[],
+  opts: { save: boolean; logEntry: boolean; replace?: boolean } = { save: true, logEntry: true },
+) {
   if (!data) return;
   const store = await storePromise;
   const before = gameState();
   const passed = new Set<string>();
   const failed: string[] = [];
+  // 置き換えるときは、全部のログを判定し終えてからまとめて保存する
+  let pending = emptyRecord();
   for (const [i, file] of files.entries()) {
     status.textContent = `${file.name} を判定中…(${i + 1} / ${files.length})`;
     try {
@@ -481,21 +487,34 @@ async function importFiles(files: File[], opts: { save: boolean; logEntry: boole
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
       const trips = new Map([[tripKey(track, day), { date: day, m: Math.round(trackLength(track)) }]]);
-      record = await store.add({ coverage: result, dates, logs, declared: new Map(), trips });
+      const added = { coverage: result, dates, logs, declared: new Map(), trips };
+      if (opts.replace) pending = mergeRecord(pending, added);
+      else record = await store.add(added);
       for (const id of result.keys()) passed.add(id);
       showTrack(map, track);
     } catch (e) {
       failed.push(`${file.name}: ${(e as Error).message}`);
     }
   }
+  let note = "";
+  if (opts.replace) {
+    // 読めなかったログがあると、その分の記録が消えてしまうので、置き換えずに足すだけにする
+    if (failed.length === 0) record = await store.replaceCoverage(pending);
+    else {
+      record = await store.add(pending);
+      note = "(読めないログがあったので、前の記録は消さずに足しました)";
+    }
+  }
   const ok = files.length - failed.length;
   status.textContent =
-    `${ok} ファイルを読み込み、${passed.size} 区間を通過しました` + (failed.length ? `(読めなかったもの: ${failed.join(" / ")})` : "");
+    `${ok} ファイルを読み込み、${passed.size} 区間を通過しました` +
+    note +
+    (failed.length ? `(読めなかったもの: ${failed.join(" / ")})` : "");
   render();
   announce(before);
 }
 
-// MiniPC に保存してあるログをすべて判定し直す(高速道路のデータを足したあとなど)
+// MiniPC に保存してあるログをすべて判定し直す(高速道路のデータを足したあと・判定の方法を直したあとなど)
 $("rematch").addEventListener("click", async () => {
   const store = await storePromise;
   const saved = await store.listLogs();
@@ -503,10 +522,19 @@ $("rematch").addEventListener("click", async () => {
     status.textContent = "保存してあるログがまだありません(これから読み込むログは保存されます)";
     return;
   }
-  if (!confirm(`保存してある ${saved.length} 件のログで判定し直します。少し時間がかかります。よろしいですか?`)) return;
+  const unsaved = record.logs.length > saved.length ? `\n記録上は ${record.logs.length} 回読み込んでいるので、保存していないログがあるかもしれません。` : "";
+  if (
+    !confirm(
+      `保存してある ${saved.length} 件のログで判定し直し、通った区間の記録を作り直します。` +
+        `前の判定の誤り(交差した道路を走ったことにしていたなど)は消えますが、` +
+        `保存していないログ(ログを残す前に読み込んだものなど)で付いた記録も消えます。${unsaved}\n` +
+        `今の記録は MiniPC の data/backup に控えを残します。よろしいですか?`,
+    )
+  )
+    return;
   const files: File[] = [];
   for (const l of saved) files.push(new File([await store.loadLog(l.id)], l.name, { lastModified: Number(l.id.split("-")[0]) || Date.now() }));
-  await importFiles(files, { save: false, logEntry: false });
+  await importFiles(files, { save: false, logEntry: false, replace: true });
 });
 
 $<HTMLInputElement>("file").addEventListener("change", async (ev) => {
