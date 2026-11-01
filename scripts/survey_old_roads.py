@@ -62,6 +62,50 @@ class Ways(osmium.SimpleHandler):
             self.found[w.id] = (w.id in self.members, hw, hits)
 
 
+class WayNodes(Ways):
+    """--full 用: 旧道らしい way の点の ID も覚えておく"""
+
+    def __init__(self, members: set[int]) -> None:
+        super().__init__(members)
+        self.nodes: dict[int, list[int]] = {}
+
+    def way(self, w) -> None:
+        before = len(self.found)
+        super().way(w)
+        if len(self.found) > before:
+            self.nodes[w.id] = [n.ref for n in w.nodes]
+
+
+class NodeLocs(osmium.SimpleHandler):
+    def __init__(self, wanted: set[int]) -> None:
+        super().__init__()
+        self.wanted = wanted
+        self.locs: dict[int, tuple[float, float]] = {}
+
+    def node(self, n) -> None:
+        if n.id in self.wanted:
+            self.locs[n.id] = (n.location.lon, n.location.lat)
+
+
+def full_lengths(src: str, members: set[int]) -> tuple[dict, dict[int, float]]:
+    """osmium-tool なしで、日本全体のファイルから直接調べる(Windows の MiniPC 用。少し遅い)"""
+    import time
+
+    t = time.time()
+    ways = WayNodes(members)
+    ways.apply_file(src)
+    print(f"候補 {len(ways.found)} 本({time.time() - t:.0f}秒)", file=sys.stderr)
+    wanted = {n for ns in ways.nodes.values() for n in ns}
+    locs = NodeLocs(wanted)
+    locs.apply_file(src)
+    print(f"点 {len(locs.locs)} 個({time.time() - t:.0f}秒)", file=sys.stderr)
+    km = {}
+    for wid, ns in ways.nodes.items():
+        pts = [locs.locs[n] for n in ns if n in locs.locs]
+        km[wid] = sum(dist(pts[i - 1], pts[i]) for i in range(1, len(pts))) / 1000
+    return {str(k): v for k, v in ways.found.items()}, km
+
+
 class Lengths(osmium.SimpleHandler):
     """2回目: 見つけた way だけを含むファイルで長さを測る"""
 
@@ -77,8 +121,14 @@ class Lengths(osmium.SimpleHandler):
 def main() -> None:
     # 使い方: survey_old_roads.py kokudo.osm.pbf hw.osm.pbf ids.txt  → ids.txt を osmium getid に渡す
     #         survey_old_roads.py --report found.json cand.osm.pbf
+    #         survey_old_roads.py --full japan-latest.osm.pbf > survey.txt  (osmium-tool なしで直接)
     import json
-    if sys.argv[1] != "--report":
+    if sys.argv[1] == "--full":
+        rels = Rels()
+        rels.apply_file(sys.argv[2])
+        found, km_by_way = full_lengths(sys.argv[2], rels.members)
+        j = {"found": found, "rel_tags": rels.rel_tags.most_common(50)}
+    elif sys.argv[1] != "--report":
         kokudo, hw, ids = sys.argv[1:4]
         rels = Rels()
         rels.apply_file(kokudo)
@@ -86,14 +136,16 @@ def main() -> None:
         ways.apply_file(hw)
         with open(ids, "w") as f:
             f.writelines(f"w{i}\n" for i in ways.found)
-        with open(ids + ".json", "w") as f:
+        with open(ids + ".json", "w", encoding="utf-8") as f:
             json.dump({"found": {str(k): v for k, v in ways.found.items()}, "rel_tags": rels.rel_tags.most_common(50)}, f, ensure_ascii=False)
         print(f"候補 {len(ways.found)} 本", file=sys.stderr)
         return
-    found_path, cand = sys.argv[2:4]
-    j = json.load(open(found_path))
-    lens = Lengths()
-    lens.apply_file(cand, locations=True, idx="flex_mem")
+    else:
+        found_path, cand = sys.argv[2:4]
+        j = json.load(open(found_path, encoding="utf-8"))
+        lens = Lengths()
+        lens.apply_file(cand, locations=True, idx="flex_mem")
+        km_by_way = lens.km
     km_ = defaultdict(float)
     n = Counter()
 
@@ -102,7 +154,7 @@ def main() -> None:
         n[(table, value[:60])] += 1
 
     for wid, (current, hw, hits) in j["found"].items():
-        km = lens.km.get(int(wid), 0.0)
+        km = km_by_way.get(int(wid), 0.0)
         suffix = "(現国道)" if current else ""
         for table, v in hits:
             add(table + suffix, v, km)
