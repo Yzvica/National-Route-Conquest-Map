@@ -57,7 +57,7 @@ jobs:
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
           if [ "$TARGET" = both ] || [ "$TARGET" = prefroad ]; then
-            osmium tags-filter japan.osm.pbf "r/network=JP:prefectural*" w/highway=secondary,tertiary -o prefroad.osm.pbf
+            osmium tags-filter japan.osm.pbf "r/network=JP:prefectural*" w/highway=primary,secondary,tertiary -o prefroad.osm.pbf
           fi
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ] || [ "$TARGET" = old ]; then
             osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
