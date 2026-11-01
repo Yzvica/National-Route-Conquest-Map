@@ -3,7 +3,7 @@ export type LonLat = [number, number];
 
 /**
  * 区間の種別。1区間が複数持つことがある(例: バイパス かつ 重複)。
- * main〜old は国道(old は国道指定を外れた旧ルート)、expressway〜toll は高速道路のデータで使う
+ * main〜old は国道(old は国道指定を外れた旧ルート)、expressway〜toll は高速道路、major・general は都道府県道のデータで使う
  */
 export type Category =
   | "main"
@@ -15,6 +15,8 @@ export type Category =
   | "urban"
   | "motorroad"
   | "toll"
+  | "major"
+  | "general"
   | "overlap";
 
 export const CATEGORY_LABELS: Record<Category, string> = {
@@ -27,19 +29,21 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   urban: "都市高速",
   motorroad: "自動車専用道路",
   toll: "有料道路",
+  major: "主要地方道",
+  general: "一般都道府県道",
   overlap: "重複区間",
 };
 
 /** どの道路のデータか */
-export type DatasetKind = "kokudo" | "expressway";
+export type DatasetKind = "kokudo" | "expressway" | "prefroad";
 
-export const DATASET_LABELS: Record<DatasetKind, string> = { kokudo: "国道", expressway: "高速道路" };
+export const DATASET_LABELS: Record<DatasetKind, string> = { kokudo: "国道", expressway: "高速道路", prefroad: "都道府県道" };
 
 /** 判定の最小単位。OSM の way を約200mごとに切ったもの */
 export interface Segment {
-  /** "w<wayId>-<index>" 。データを作り直しても way が変わらなければ同じ ID */
+  /** "w<wayId>-<index>"(都道府県道は "p<wayId>-<index>")。データを作り直しても way が変わらなければ同じ ID */
   id: string;
-  /** この区間が属する国道番号(重複区間なら複数) */
+  /** この区間が属する国道番号(重複区間なら複数)。高速道路は名前、都道府県道は "13-413" のような「都道府県コード-番号」 */
   routes: string[];
   cats: Category[];
   /** トンネル内なら、そのトンネル(way)の ID */
@@ -53,7 +57,10 @@ export interface Segment {
   pair?: string;
   /** 点線国道の区間の OSM の highway の値(path, track など。ないときは "none")。古いデータにはない */
   hw?: string;
-  /** 旧道の区間の OSM での名前(「旧国道1号」「○○旧道」など)。名前のない旧道や、ほかの種別にはない */
+  /**
+   * 旧道の区間の OSM での名前(「旧国道1号」「○○旧道」など)。都道府県道では区間の通称(「三宿通り」など)。
+   * 名前のない区間や、ほかの種別にはない
+   */
   name?: string;
   /** 旧道のうち、旧道のリレーションから作ったものは "rel"(データを作るときだけ使う) */
   src?: "rel";
@@ -83,6 +90,24 @@ export interface RouteData {
   routes: Record<string, { name: string }>;
   segments: Segment[];
   tunnels: Tunnel[];
+}
+
+/** 都道府県道の一覧(prefroads/index.json)。都道府県ごとのファイルは prefroads/01.json 〜 47.json */
+export interface PrefRoadIndex {
+  version: number;
+  generatedAt: string;
+  /** cells の格子の大きさ(度) */
+  cell: number;
+  prefs: {
+    [code: string]: {
+      name: string;
+      routes: number;
+      km: number;
+      bytes: number;
+      /** その都道府県の都道府県道が通る格子(経度の番号 * 1000 + 緯度の番号) */
+      cells: number[];
+    };
+  };
 }
 
 export interface TrackPoint {

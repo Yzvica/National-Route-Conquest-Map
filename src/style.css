@@ -188,3 +188,9 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .declare-row .declare { margin: 0; }
 .dotted-info { font-size: 12px; }
 .dotted-info a { color: var(--accent); }
+
+/* 都道府県道: 表示する都道府県を選ぶ欄 */
+.pref-picker { margin: 0 0 12px; }
+.pref-select { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.pref-select select { flex: 1; padding: 6px; font-size: 14px; }
+.pref-picker p { margin: 6px 0 0; font-size: 12px; }

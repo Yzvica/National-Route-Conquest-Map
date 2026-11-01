@@ -35,7 +35,7 @@ function onLayers(map: maplibregl.Map, layers: string[], fn: (e: maplibregl.MapL
 }
 
 const routeLabel = (data: RouteData, ref: string) =>
-  data.routes[ref]?.name ?? (data.kind === "expressway" ? ref : `国道${ref}号`);
+  data.routes[ref]?.name ?? (data.kind === "expressway" || data.kind === "prefroad" ? ref : `国道${ref}号`);
 
 /** 地図から道路の線をすべて消す(データを切り替える前に呼ぶ) */
 export function clearRoutes(map: maplibregl.Map) {

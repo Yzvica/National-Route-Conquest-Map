@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { categoryBreakdown, overlapsOf } from "./breakdown";
+import { categoryBreakdown, nicknamesOf, overlapsOf } from "./breakdown";
 import type { RouteData, Segment } from "./types";
 
 const seg = (id: string, routes: string[], cats: Segment["cats"], len = 100): Segment => ({
@@ -45,6 +45,32 @@ describe("overlapsOf", () => {
     expect(items.map((i) => [i.key, i.progress.total, i.segIds])).toEqual([
       ["4", 150, ["c", "d"]],
       ["14", 100, ["e"]],
+    ]);
+  });
+});
+
+describe("nicknamesOf", () => {
+  it("区間の通称ごとに、長い順にまとめる", () => {
+    const seg = (id: string, name: string | undefined, len: number) => ({
+      id,
+      routes: ["13-413"],
+      cats: ["major" as const],
+      len,
+      name,
+      coords: [] as [number, number][],
+    });
+    const data = {
+      version: 1,
+      kind: "prefroad" as const,
+      generatedAt: "",
+      routes: {},
+      segments: [seg("p1-0", "三宿通り", 100), seg("p1-1", "三宿通り", 100), seg("p2-0", "淡島通り", 300), seg("p3-0", undefined, 50)],
+      tunnels: [],
+    };
+    const items = nicknamesOf(data, new Map([["p1-0", 1]]), "13-413");
+    expect(items.map((i) => [i.key, i.progress.total, i.progress.done])).toEqual([
+      ["淡島通り", 300, 0],
+      ["三宿通り", 200, 100],
     ]);
   });
 });

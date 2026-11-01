@@ -1,4 +1,4 @@
-﻿# MiniPC(Windows)で最新のコードと国道・高速道路のデータを取り込み、アプリを作り直す。
+﻿# MiniPC(Windows)で最新のコードと国道・高速道路・都道府県道のデータを取り込み、アプリを作り直す。
 # 国道データ(リリース route-data)の取得に GitHub CLI(gh)のログインが必要です。
 #   powershell -ExecutionPolicy Bypass -File scripts\update.ps1
 $ErrorActionPreference = "Stop"
@@ -22,6 +22,15 @@ if ($LASTEXITCODE -ne 0) { Write-Host "高速道路のデータ(expressways.json
 # 都道府県の形(地図の色分け用)。なくても動く
 & node scripts/download_release.mjs public/data prefectures.json
 if ($LASTEXITCODE -ne 0) { Write-Host "都道府県のデータ(prefectures.json)を取れませんでした。今あるもの(なければ都道府県別の表示なし)で続けます。" }
+# 都道府県道(都道府県ごとのファイルを1つにまとめたもの)。なくても国道・高速道路は動く
+& node scripts/download_release.mjs public/data prefroads.tar.gz
+if ($LASTEXITCODE -eq 0) {
+    if (Test-Path public/data/prefroads) { Remove-Item -Recurse -Force public/data/prefroads }
+    Run tar @("-xzf", "public/data/prefroads.tar.gz", "-C", "public/data")
+    Remove-Item public/data/prefroads.tar.gz
+} else {
+    Write-Host "都道府県道のデータ(prefroads.tar.gz)を取れませんでした。今あるもの(なければ都道府県道なし)で続けます。"
+}
 Run npm @("run", "build")
 
 if (Get-ScheduledTask -TaskName "KokudoMap" -ErrorAction SilentlyContinue) {

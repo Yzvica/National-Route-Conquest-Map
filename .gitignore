@@ -4,3 +4,5 @@ scripts/__pycache__/
 scripts/cache/
 public/data/*.json
 data/
+public/data/prefroads/
+public/data/*.tar.gz

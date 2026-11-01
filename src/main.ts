@@ -1,6 +1,14 @@
 import "./style.css";
-import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
-import { buildContext, computeLevel, evaluateAchievements, regionTitle, type GameContext } from "./game";
+import { categoryBreakdown, nicknamesOf, overlapsOf, type BreakdownItem } from "./breakdown";
+import {
+  buildContext,
+  computeLevel,
+  evaluateAchievements,
+  regionTitle,
+  summarize,
+  type DatasetSummary,
+  type GameContext,
+} from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
 import {
   addRoutes,
@@ -17,6 +25,8 @@ import {
 } from "./map";
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
+import { REGIONS, prefName } from "./prefs";
+import { comparePrefRefs, mergePrefData, prefFileName, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength, tripKey } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type Record } from "./store";
@@ -26,6 +36,7 @@ import {
   type Category,
   type Coverage,
   type DatasetKind,
+  type PrefRoadIndex,
   type RouteData,
   type TrackPoint,
 } from "./types";
@@ -35,9 +46,13 @@ const status = $("status");
 
 let record: Record = emptyRecord();
 const storePromise = openStore();
-/** 読み込んだ道路データ(国道・高速道路) */
+/** 読み込んだ道路データ(国道・高速道路と、都道府県道は選んだ都道府県の分をまとめたもの) */
 const datasets: Partial<{ [K in DatasetKind]: RouteData }> = {};
-const DATA_FILES: { [K in DatasetKind]: string } = { kokudo: "routes.json", expressway: "expressways.json" };
+const DATA_FILES: { [K in DatasetKind]: string } = {
+  kokudo: "routes.json",
+  expressway: "expressways.json",
+  prefroad: "prefroads/index.json",
+};
 /** 画面に出しているデータ */
 let active: DatasetKind = "kokudo";
 let data: RouteData | null = null;
@@ -57,6 +72,7 @@ const map = createMap($("map"));
 const kmFormat = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 1 });
 const km = (m: number) => kmFormat.format(m / 1000);
 const routeName = (ref: string) => data?.routes[ref]?.name ?? (active === "kokudo" ? `国道${ref}号` : ref);
+const BASE = import.meta.env.BASE_URL;
 
 /** 上下線のどちらかを走れば両方走ったことにし、点線国道は自己申告に置き換えた記録 */
 const coverage = (): Coverage => (data ? coverageFor(data) : record.coverage);
@@ -125,6 +141,18 @@ function gameContext(): GameContext {
   return gameCache.ctx;
 }
 
+/** 今開いているタブの集計。都道府県道は実績・レベルに入れないので、ここで別に作る */
+let prefSummaryCache: { data: RouteData; cov: Coverage; dates: Record["dates"]; s: DatasetSummary } | null = null;
+function activeSummary(): DatasetSummary | undefined {
+  if (!data) return undefined;
+  if (active !== "prefroad") return gameContext()[active];
+  const cov = coverage();
+  if (prefSummaryCache?.data !== data || prefSummaryCache.cov !== cov || prefSummaryCache.dates !== record.dates) {
+    prefSummaryCache = { data, cov, dates: record.dates, s: summarize(data, cov, record.dates) };
+  }
+  return prefSummaryCache.s;
+}
+
 function gameState() {
   const ctx = gameContext();
   const achievements = evaluateAchievements(ctx);
@@ -149,7 +177,7 @@ let prefFill = false;
 let paintedPrefs: unknown = undefined;
 function paintPrefs() {
   if (!prefShapes) return;
-  const byPref = (prefFill && data ? gameContext()[active]?.byPref : undefined) ?? null;
+  const byPref = (prefFill && data ? activeSummary()?.byPref : undefined) ?? null;
   if (byPref === paintedPrefs) return;
   paintedPrefs = byPref;
   showPrefFill(map, prefShapes, byPref);
@@ -168,7 +196,7 @@ function renderGame() {
   const body = $("game-body");
   if (gameTab === "achievements") body.innerHTML = achievementsView(g.achievements, g.level);
   else if (data) {
-    const summary = g.ctx[active]!;
+    const summary = activeSummary()!;
     body.innerHTML =
       gameTab === "suggest"
         ? suggestionsView({ kind: active, data, summary, coverage: coverage() }, routeName)
@@ -270,8 +298,12 @@ function renderNow() {
   const separate = SEPARATE_CATS.filter((c) => stats.byCategory[c].total > 0).map((c) => CATEGORY_LABELS[c]);
   $("overall").innerHTML = `<h2>総合制覇率</h2><div class="big">${percent(stats.overall).toFixed(2)}%</div>
     <p class="muted">${km(stats.overall.done)} / ${km(stats.overall.total)} km(重複区間は1回だけ数えています${
-      active === "expressway" ? "。上下線はどちらかを走れば制覇" : ""
-    }${separate.length ? `。${separate.join("・")}は別枠で数えています` : ""})</p>`;
+      active !== "kokudo" ? "。上下線はどちらかを走れば制覇" : ""
+    }${separate.length ? `。${separate.join("・")}は別枠で数えています` : ""}${
+      active === "prefroad"
+        ? `。表示している都道府県(${prefSelection.map(prefName).join("・")})だけの集計で、国道と重なる区間は国道で数えます。実績・レベルには入れていません`
+        : ""
+    })</p>`;
   breakdownItems = new Map();
   $("categories").innerHTML =
     "<h2>種別ごと</h2>" +
@@ -300,9 +332,19 @@ function renderNow() {
       .join("");
 
   const filter = $<HTMLInputElement>("route-filter").value.trim();
+  const matches = (r: string) =>
+    active === "kokudo"
+      ? r.startsWith(filter)
+      : routeName(r).includes(filter) || (active === "prefroad" && String(splitPrefRef(r)[1]) === filter);
   const refs = [...stats.byRoute.keys()]
-    .filter((r) => !filter || (active === "kokudo" ? r.startsWith(filter) : routeName(r).includes(filter)))
-    .sort(active === "kokudo" ? (a, b) => Number(a) - Number(b) || a.localeCompare(b) : (a, b) => order(a) - order(b));
+    .filter((r) => !filter || matches(r))
+    .sort(
+      active === "kokudo"
+        ? (a, b) => Number(a) - Number(b) || a.localeCompare(b)
+        : active === "prefroad"
+          ? comparePrefRefs
+          : (a, b) => order(a) - order(b),
+    );
   $("routes").innerHTML = refs
     .map((r) => `<li data-ref="${r}"${r === selected ? ' class="selected"' : ""}>${row(routeName(r), stats.byRoute.get(r)!.overall)}</li>`)
     .join("");
@@ -343,17 +385,33 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
       .join("")}
     <p class="muted">通過した区間 ${passed.toLocaleString("ja-JP")} / ${segs.length.toLocaleString("ja-JP")}<br>
       ${dates.length ? `初めて ${dates[0]} / 最後 ${dates[dates.length - 1]}` : "まだ通過していません"}</p>
+    ${nicknameList(selected)}
     ${overlapList(selected)}
     <p class="legend"><span class="sw done"></span>走行済み <span class="sw part"></span>一部 <span class="sw todo"></span>未踏破</p>
     <button id="detail-fit" type="button">全体を表示</button>`;
   box.hidden = false;
 }
 
+/** 選んだ路線の区間の通称(都道府県道の「三宿通り」など)。「場所」でその区間を映す */
+function nicknameList(ref: string): string {
+  if (active !== "prefroad") return "";
+  const items = nicknamesOf(data!, coverage(), ref);
+  if (items.length === 0) return "";
+  return `<details class="overlaps" open><summary>区間の通称(${items.length})</summary><ul data-scroll="nicknames">
+    ${items
+      .map(
+        (o) => `<li>${esc(o.key)}
+          <span class="muted">${km(o.progress.total)} km・${percent(o.progress).toFixed(0)}%</span>
+          <button type="button" class="link" data-nick="${esc(o.key)}">場所</button></li>`,
+      )
+      .join("")}</ul></details>`;
+}
+
 /** 選んだ国道と重なっているほかの国道。名前を押すとその国道へ、「場所」で重なっている区間を映す */
 function overlapList(ref: string): string {
   const items = overlapsOf(data!, coverage(), ref);
   if (items.length === 0) return "";
-  return `<details class="overlaps" open><summary>重複している国道(${items.length})</summary><ul data-scroll="overlaps">
+  return `<details class="overlaps" open><summary>重複している${active === "kokudo" ? "国道" : "路線"}(${items.length})</summary><ul data-scroll="overlaps">
     ${items
       .map(
         (o) => `<li><a href="#" data-jump="${o.key}">${routeName(o.key)}</a>
@@ -384,31 +442,176 @@ function select(ref: string | null, fit: boolean | string[]) {
   if (fit) fitSelected(Array.isArray(fit) ? fit : undefined);
 }
 
-async function loadData(kind: DatasetKind) {
+async function loadData(kind: "kokudo" | "expressway") {
   const res = await fetch(`${import.meta.env.BASE_URL}data/${DATA_FILES[kind]}`);
   if (!res.ok) throw new Error(`${DATASET_LABELS[kind]}のデータ(data/${DATA_FILES[kind]})がありません。README の手順で作成してください。`);
   return (await res.json()) as RouteData;
 }
 
-/** 国道と高速道路を切り替える */
+// ---- 都道府県道 ----
+
+/** 都道府県道の一覧(prefroads/index.json)。読み込み前は undefined、データがなければ null */
+let prefIndex: PrefRoadIndex | null | undefined;
+let prefIndexReady: Promise<void> | null = null;
+/** 読み込んだ都道府県ごとのファイル(画面の表示とログの判定で使い回す) */
+const prefFiles = new Map<number, Promise<RouteData | undefined>>();
+const PREF_SELECTION_KEY = "kokudo-map:prefroad-selection";
+
+function loadPrefSelection(): number[] | null {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(PREF_SELECTION_KEY) ?? "null");
+    return Array.isArray(v) ? v.filter((c): c is number => Number.isInteger(c) && c >= 1 && c <= 47) : null;
+  } catch {
+    return null;
+  }
+}
+function savePrefSelection() {
+  try {
+    localStorage.setItem(PREF_SELECTION_KEY, JSON.stringify(prefSelection));
+  } catch {
+    // 保存できなくても、このページを開いている間は選んだものを使う
+  }
+}
+
+/** 都道府県道のタブに出す(読み込む)都道府県。この端末のブラウザに覚えておく */
+let prefSelection: number[] = loadPrefSelection() ?? [];
+/** 都道府県道のデータを、どの都道府県の組み合わせで作ったか(同じなら作り直さない) */
+let prefLoadedKey: string | null = null;
+let prefLoading = false;
+
+function loadPrefFile(code: number): Promise<RouteData | undefined> {
+  let p = prefFiles.get(code);
+  if (!p) {
+    p = fetch(`${BASE}data/${prefFileName(code)}`)
+      .then((r) => (r.ok && r.headers.get("content-type")?.includes("json") ? (r.json() as Promise<RouteData>) : undefined))
+      .catch(() => undefined);
+    prefFiles.set(code, p);
+    void p.then((d) => {
+      if (!d) prefFiles.delete(code);
+    });
+  }
+  return p;
+}
+
+/** 判定のために読んだ、表示していない都道府県のファイルを手放す(メモリを空けるため) */
+function dropUnselectedPrefFiles() {
+  for (const code of [...prefFiles.keys()]) if (!prefSelection.includes(code)) prefFiles.delete(code);
+}
+
+async function loadPrefIndex() {
+  const idx = await fetch(`${BASE}data/${DATA_FILES.prefroad}`)
+    .then((r) => (r.ok && r.headers.get("content-type")?.includes("json") ? (r.json() as Promise<PrefRoadIndex>) : null))
+    .catch(() => null);
+  prefIndex = idx;
+  if (!idx) return;
+  if (loadPrefSelection() === null) {
+    // 初めて開いたときは、国道をいちばん走っている都道府県を選んでおく
+    const byPref = gameContext().kokudo?.byPref;
+    prefSelection = byPref
+      ? [...byPref]
+          .filter(([code, p]) => p.done > 0 && idx.prefs[code])
+          .sort((a, b) => b[1].done - a[1].done)
+          .slice(0, 1)
+          .map(([code]) => code)
+      : [];
+  }
+  prefSelection = prefSelection.filter((code) => idx.prefs[code]).slice(0, 1);
+}
+
+/** 選んだ都道府県のファイルを読んで、都道府県道のデータを作り直す */
+async function reloadPrefRoads() {
+  if (!prefIndex) return;
+  const codes = [...prefSelection];
+  const key = codes.join(",");
+  prefLoadedKey = key;
+  prefLoading = codes.length > 0;
+  if (active === "prefroad") {
+    status.textContent = prefroadStatus();
+    renderPrefPicker();
+  }
+  const files = (await Promise.all(codes.map(loadPrefFile))).filter((d): d is RouteData => !!d);
+  if (prefLoadedKey !== key) return; // 読んでいる間に選び直した
+  prefLoading = false;
+  const merged = files.length ? mergePrefData(files) : undefined;
+  datasets.prefroad = merged;
+  if (active !== "prefroad") return;
+  showDataset("prefroad");
+  if (merged) {
+    const missing = codes.length - files.length;
+    status.textContent =
+      `都道府県道: ${Object.keys(merged.routes).length} 路線(${merged.generatedAt.slice(0, 10)} 時点)` +
+      (missing ? ` / ${missing} 件の都道府県のデータを読めませんでした` : "");
+  }
+}
+
+function prefroadStatus(): string {
+  if (prefIndex === undefined) return "都道府県道の一覧を読み込み中です…";
+  if (prefIndex === null)
+    return `都道府県道のデータ(data/${DATA_FILES.prefroad})がまだありません。GitHub の Actions で「国道・高速道路・都道府県道のデータを更新」を target = prefroad で実行し、MiniPC で update.bat を実行してください`;
+  if (prefLoading) return `都道府県道のデータを読み込み中です…(${prefSelection.map(prefName).join("・")})`;
+  if (prefSelection.length === 0) return "表示する都道府県を選んでください";
+  return "都道府県道のデータを読めませんでした";
+}
+
+/** 都道府県道のタブで、表示する都道府県を選ぶ欄(1つずつ選ぶ。データが多いので一度に1都道府県だけ読む) */
+function renderPrefPicker() {
+  const box = $("pref-picker");
+  box.hidden = active !== "prefroad" || !prefIndex;
+  const idx = prefIndex;
+  if (box.hidden || !idx) return;
+  const current = prefSelection[0];
+  const groups = REGIONS.map((r) => {
+    const opts: string[] = [];
+    for (let code = r.from; code <= r.to; code++) {
+      const info = idx.prefs[code];
+      if (!info) continue;
+      opts.push(
+        `<option value="${code}"${code === current ? " selected" : ""}>${prefName(code)}(${Math.round(info.km).toLocaleString("ja-JP")} km)</option>`,
+      );
+    }
+    return opts.length ? `<optgroup label="${r.name}">${opts.join("")}</optgroup>` : "";
+  }).join("");
+  const mb = current ? (idx.prefs[current]?.bytes ?? 0) / 1e6 : 0;
+  box.innerHTML = `<label class="pref-select">表示する都道府県
+      <select id="pref-select">${current ? "" : '<option value="" selected>選んでください</option>'}${groups}</select></label>
+    <p class="muted">${current ? `約 ${mb.toFixed(0)}MB${prefLoading ? "を読み込み中…" : ""}。` : ""}走行ログの判定は、表示していない都道府県の分も行います。</p>`;
+}
+
+$("pref-picker").addEventListener("change", (e) => {
+  const sel = e.target as HTMLSelectElement;
+  if (sel.id !== "pref-select" || !sel.value) return;
+  prefSelection = [Number(sel.value)];
+  savePrefSelection();
+  dropUnselectedPrefFiles();
+  void reloadPrefRoads();
+});
+
+/** 国道・高速道路・都道府県道を切り替える */
 function showDataset(kind: DatasetKind) {
   active = kind;
   for (const b of $("tabs").querySelectorAll<HTMLButtonElement>("button")) {
     b.setAttribute("aria-selected", String(b.dataset.kind === kind));
   }
   $("routes-title").textContent = kind === "kokudo" ? "国道別" : "路線別";
-  $<HTMLInputElement>("route-filter").placeholder = kind === "kokudo" ? "番号で絞り込み(例: 1)" : "名前で絞り込み(例: 東名)";
+  $<HTMLInputElement>("route-filter").placeholder =
+    kind === "kokudo" ? "番号で絞り込み(例: 1)" : kind === "prefroad" ? "名前か番号で絞り込み(例: 413)" : "名前で絞り込み(例: 東名)";
+  renderPrefPicker();
   $<HTMLInputElement>("route-filter").value = "";
   selected = null;
   openCats.clear();
+  // 都道府県道は、タブを開いたときに選んである都道府県の分を読む
+  if (kind === "prefroad" && prefIndex && prefLoadedKey !== prefSelection.join(",")) void reloadPrefRoads();
   data = datasets[kind] ?? null;
   if (!data) {
     clearRoutes(map);
     for (const id of ["overall", "categories", "routes"]) $(id).innerHTML = "";
     $("detail").hidden = true;
-    status.textContent = expresswayReady && kind === "expressway" && !(kind in datasets)
-      ? `${DATASET_LABELS[kind]}のデータを読み込み中です。少しお待ちください`
-      : `${DATASET_LABELS[kind]}のデータ(data/${DATA_FILES[kind]})がまだありません`;
+    status.textContent =
+      kind === "prefroad"
+        ? prefroadStatus()
+        : expresswayReady && kind === "expressway" && !(kind in datasets)
+          ? `${DATASET_LABELS[kind]}のデータを読み込み中です。少しお待ちください`
+          : `${DATASET_LABELS[kind]}のデータ(data/${DATA_FILES[kind]})がまだありません`;
     return;
   }
   addRoutes(map, data, (id) => record.dates.get(id), (ref) => select(ref, false));
@@ -440,6 +643,10 @@ map.on("load", async () => {
       (store.shared ? " / 記録は MiniPC に保存されます" : " / 記録はこのブラウザに保存されます");
     if (active === "kokudo") showDataset(active);
     status.textContent = statusText();
+    // 都道府県道の一覧(小さい)。都道府県ごとのファイルは、タブを開いたときやログの判定のときに読む
+    prefIndexReady = loadPrefIndex().then(() => {
+      if (active === "prefroad") showDataset(active);
+    });
     let done = () => {};
     expresswayReady = new Promise((ok) => (done = ok));
     const expressway = await loadData("expressway").catch(() => undefined);
@@ -467,12 +674,24 @@ function logDate(track: TrackPoint[], file: File): string {
 
 const isTrackFile = (f: File) => /\.(csv|gpx)$/i.test(f.name);
 
-/** 読み込んだすべてのデータ(国道・高速道路)で判定し、区間ごとに大きいほうをとる */
-function matchAll(track: TrackPoint[]): Coverage {
+/**
+ * 国道・高速道路と、ログが通った都道府県の都道府県道で判定し、区間ごとに大きいほうをとる。
+ * 都道府県道は画面に出していない都道府県の分も判定する(あとでその都道府県を選んだときに記録があるように)
+ */
+async function matchAll(track: TrackPoint[]): Promise<Coverage> {
   const out: Coverage = new Map();
-  for (const d of Object.values(datasets)) {
-    if (!d) continue;
+  const add = (d: RouteData) => {
     for (const [id, r] of matchTrack(d, track)) out.set(id, Math.max(out.get(id) ?? 0, r));
+  };
+  for (const kind of ["kokudo", "expressway"] as const) {
+    const d = datasets[kind];
+    if (d) add(d);
+  }
+  if (prefIndex) {
+    for (const code of prefsOfTrack(prefIndex, track)) {
+      const d = await loadPrefFile(code);
+      if (d) add(d);
+    }
   }
   return out;
 }
@@ -486,11 +705,12 @@ async function importFiles(
   files: File[],
   opts: { save: boolean; logEntry: boolean; replace?: boolean } = { save: true, logEntry: true },
 ) {
-  if (!data) return;
+  if (!datasets.kokudo) return;
   if (expresswayReady) {
     status.textContent = "高速道路のデータを読み込み中です。読み終わったら判定します…";
     await expresswayReady;
   }
+  if (prefIndexReady) await prefIndexReady;
   const store = await storePromise;
   const before = gameState();
   const passed = new Set<string>();
@@ -502,7 +722,7 @@ async function importFiles(
     try {
       const track = await parseTrackFile(file);
       if (opts.save) await store.saveLog(file.name, await file.text()).catch(() => undefined);
-      const result = matchAll(track);
+      const result = await matchAll(track);
       const day = logDate(track, file);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
@@ -525,6 +745,7 @@ async function importFiles(
       note = "(読めないログがあったので、前の記録は消さずに足しました)";
     }
   }
+  dropUnselectedPrefFiles();
   const ok = files.length - failed.length;
   status.textContent =
     `${ok} ファイルを読み込み、${passed.size} 区間を通過しました` +
@@ -650,6 +871,13 @@ $("detail").addEventListener("click", (e) => {
   if (el.dataset.jump) {
     e.preventDefault();
     select(el.dataset.jump, true);
+  }
+  if (el.dataset.nick && data && selected) {
+    const item = nicknamesOf(data, coverage(), selected).find((o) => o.key === el.dataset.nick);
+    if (item) {
+      showFocus(map, data, item.segIds);
+      fitSelected(item.segIds);
+    }
   }
   if (el.dataset.show && data && selected) {
     const shared = overlapsOf(data, coverage(), selected).find((o) => o.key === el.dataset.show);
