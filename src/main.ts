@@ -392,9 +392,8 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
   box.hidden = false;
 }
 
-/** 選んだ路線の区間の通称(都道府県道の「三宿通り」など)。「場所」でその区間を映す */
+/** 選んだ路線の区間の通称(「三宿通り」「青梅街道」など)。「場所」でその区間を映す */
 function nicknameList(ref: string): string {
-  if (active !== "prefroad") return "";
   const items = nicknamesOf(data!, coverage(), ref);
   if (items.length === 0) return "";
   return `<details class="overlaps" open><summary>区間の通称(${items.length})</summary><ul data-scroll="nicknames">

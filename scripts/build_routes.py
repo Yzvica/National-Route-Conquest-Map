@@ -16,6 +16,7 @@ import math
 import re
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -150,6 +151,19 @@ def simplify(pts: list[tuple[float, float]], eps: float) -> list[tuple[float, fl
     return [p for p, k in zip(pts, keep) if k]
 
 
+# 区間の通称として出さない名前: 国道・都道府県道の番号だけの名前、橋・トンネルの名前
+NOT_NICKNAME = re.compile(r"国道|(都|道|府|県)道\d+号|(橋|高架橋|トンネル|隧道)$")
+
+
+def nickname(tags: dict) -> str:
+    """区間の通称(「青梅街道」「○○バイパス」など)。name・loc_name・alt_name のうち、番号だけの名前や橋の名前でない最初のもの"""
+    for key in ("name", "loc_name", "alt_name"):
+        n = re.sub(r"\s+", "", unicodedata.normalize("NFKC", tags.get(key, "") or "")).split(";")[0]
+        if n and not NOT_NICKNAME.search(n):
+            return n
+    return ""
+
+
 def parse_refs(ref: str) -> list[str]:
     """"1;8" のような併記は分け、"E9" のような高速道路の路線記号は除く"""
     parts = (p.strip().replace("号", "") for p in ref.split(";"))
@@ -212,6 +226,7 @@ def build(osm: dict) -> dict:
         if len(refs) > 1:
             cats.append("overlap")
 
+        nick = nickname(tags) if cats[0] in ("main", "bypass") else ""
         tunnel_id = None
         if tags.get("tunnel") not in (None, "no"):
             tunnel_id = f"t{el['id']}"
@@ -231,6 +246,9 @@ def build(osm: dict) -> dict:
             if "dotted" in cats:
                 # 点線国道は種類を残して、あとで確認できるようにする
                 seg["hw"] = tags.get("highway", "none")
+            if nick:
+                # 区間の通称(画面の国道の詳細に一覧で出す)
+                seg["name"] = nick
             segments.append(seg)
 
     if skipped_km:
