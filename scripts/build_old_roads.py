@@ -11,7 +11,8 @@ routes.json に種別 "old" の区間として加える。旧道は今の国道�
 旧道とみなす道(今の国道のリレーションに入っていない道路だけ):
 - old_ref が「国道1号」のように国道の番号を指しているもの
 - 名前(name・old_name・alt_name など)が「旧国道1号」「旧1号」「国道1号旧道」のように番号付きで旧道を表すもの
-- 名前が「旧道」「旧国道」「○○旧道」のように番号のないもの。両端の近くを通る国道の旧道とする
+- 名前が「旧道」「旧国道」だけで番号のないもの。両端の近くを通る国道の旧道とする
+(「国道317号旧道」のような旧道のリレーションに入っている道は build_routes.py で旧道にする)
 
 pyosmium が必要です(pip install osmium)。
 """
@@ -39,12 +40,14 @@ NUMBERED = [
     re.compile(r"国道\s*(\d{1,3})\s*号線?\s*[(（]?\s*旧道"),
     re.compile(r"旧R\s*(\d{1,3})(?!\d)"),
 ]
-# 番号のない旧道の名前(「旧道」「旧国道」「○○旧道」)
-UNNUMBERED = re.compile(r"(旧国道|旧道)(?:[(（].*[)）])?$")
+# 番号のない旧道の名前。「旧道」「旧国道」だけのもの(「つくば真岡線旧道」「県道12号旧道」のような
+# 県道などの旧道もあるので、ほかの言葉が付くものは数えない)
+UNNUMBERED = re.compile(r"^(旧国道|旧道)(?:\s*[(（].*[)）])?$")
 OLD_REF = re.compile(r"(?:国道|R|N)\s*(\d{1,3})\s*号?")
 NEAR = 150.0  # m。番号のない旧道の端が、国道からこれ以内なら、その国道の旧道とする
-# old_ref が数字だけ("1")のときも国道の番号とみなす
-OLD_REF_DIGITS = True
+# old_ref が数字だけ("1")のときも国道の番号とみなす。OSM では国道の旧道にこの書き方が多い
+# (old_highway=trunk と一緒に付いていることが多い)。ただし old_highway / was:highway が付いていて
+# trunk(国道)でないもの(primary = 主要地方道など)は県道の旧番号とみなして除く
 VALID_REFS = {str(n) for n in [*range(1, 59), *range(101, 508)]}
 
 
@@ -56,11 +59,13 @@ def classify(tags) -> tuple[set[str], bool, str]:
     """(旧道の国道番号, 番号のない旧道か, 表示用の名前)。旧道でなければ番号は空・False"""
     refs: set[str] = set()
     old_ref = norm(tags.get("old_ref", "") or "")
+    old_hw = (tags.get("old_highway") or tags.get("was:highway") or "trunk").split(";")
+    digits_ok = "trunk" in old_hw
     for part in old_ref.split(";"):
         part = part.strip()
         if re.search(r"(県道|都道|府道|道道|市道|町道|村道|E\d)", part):
             continue
-        m = OLD_REF.fullmatch(part) or (re.fullmatch(r"(\d{1,3})", part) if OLD_REF_DIGITS else None)
+        m = OLD_REF.fullmatch(part) or (re.fullmatch(r"(\d{1,3})", part) if digits_ok else None)
         if m:
             refs.add(str(int(m.group(1))))
     unnumbered = False
