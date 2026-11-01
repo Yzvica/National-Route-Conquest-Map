@@ -16,6 +16,10 @@ on:
         type: choice
         options: [both, kokudo, expressway, old, pref]
         default: both
+      detail:
+        description: "確認用: 旧道を一覧でログに出す国道番号(空欄なら出さない。例: 1 2)"
+        required: false
+        default: ""
       upload:
         description: "作ったデータをリリースに置く(外すと作るだけで、ログで確認する)"
         type: boolean
@@ -42,6 +46,7 @@ jobs:
         if: inputs.source != 'overpass'
         env:
           TARGET: ${{ inputs.target }}
+          OLD_ROADS_DETAIL: ${{ inputs.detail }}
           GH_TOKEN: ${{ github.token }}
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool

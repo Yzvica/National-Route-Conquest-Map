@@ -55,6 +55,8 @@ export interface Segment {
   hw?: string;
   /** 旧道の区間の OSM での名前(「旧国道1号」「○○旧道」など)。名前のない旧道や、ほかの種別にはない */
   name?: string;
+  /** 旧道のうち、旧道のリレーションから作ったものは "rel"(データを作るときだけ使う) */
+  src?: "rel";
   /** 区間がある都道府県のコード(1〜47)。scripts/add_prefectures.py で付ける。古いデータにはない */
   pref?: number;
   /**
