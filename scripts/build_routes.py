@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import time
 import urllib.error
@@ -22,10 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # 混んでいて 502/504 を返すことがあるので、順に試す
+# (2026-11 時点で kumi.systems・private.coffee は応答せず、osm.ch はスイスのデータしかない。
+#  openstreetmap.fr はデータの更新が 2026-08 で止まっているので、overpass-api.de が失敗したときの予備にする。
+#  maps.mail.ru は失敗が多く、運営元の懸念もあるので使わない)
 ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
 ]
 # 国道の番号は 1〜58 と 101〜507。一度に全部頼むと断られやすいので分けて取る
 ALL_REFS = [str(n) for n in [*range(1, 59), *range(101, 508)]]
@@ -156,18 +159,26 @@ def parse_refs(ref: str) -> list[str]:
 def build(osm: dict) -> dict:
     routes: dict[str, dict] = {}
     way_routes: dict[int, set[str]] = {}
+    # 「国道317号旧道」のような旧道だけのリレーションにしか入っていない way は、今の国道ではなく旧道として数える
+    current_ways: set[int] = set()
     for el in osm["elements"]:
         if el["type"] != "relation":
             continue
-        refs = parse_refs(el.get("tags", {}).get("ref", ""))
+        tags = el.get("tags", {})
+        refs = parse_refs(tags.get("ref", ""))
+        old = is_old_relation(tags)
         for ref in refs:
-            routes.setdefault(ref, {"name": f"国道{ref}号"})
+            if not old:
+                routes.setdefault(ref, {"name": f"国道{ref}号"})
         for m in el.get("members", []):
             if m["type"] == "way" and refs:
                 way_routes.setdefault(m["ref"], set()).update(refs)
+                if not old:
+                    current_ways.add(m["ref"])
 
     segments = []
     tunnels = []
+    old_segments: list[dict] = []
     skipped_km = 0.0
     for el in osm["elements"]:
         if el["type"] != "way" or el["id"] not in way_routes or "geometry" not in el:
@@ -177,6 +188,14 @@ def build(osm: dict) -> dict:
         if len(coords) < 2:
             continue
         cats = []
+        if el["id"] not in current_ways:
+            # 旧道のリレーションだけに入っている道。車で走れない道は数えない
+            if tags.get("highway") in NOT_ROADS or tags.get("highway") in DOTTED_HIGHWAYS or "highway" not in tags:
+                continue
+            refs = sorted((r for r in way_routes[el["id"]] if r in routes), key=int)
+            if refs:
+                old_segments.extend(old_road_segments(el, coords, refs))
+            continue
         if tags.get("route") == "ferry":
             cats.append("ferry")
         elif "highway" not in tags or tags["highway"] in NOT_ROADS:
@@ -189,7 +208,7 @@ def build(osm: dict) -> dict:
             cats.append("bypass")
         else:
             cats.append("main")
-        refs = sorted(way_routes[el["id"]], key=int)
+        refs = sorted((r for r in way_routes[el["id"]] if r in routes), key=int)
         if len(refs) > 1:
             cats.append("overlap")
 
@@ -219,6 +238,9 @@ def build(osm: dict) -> dict:
     segments, dropped = drop_sidewalks(segments)
     if dropped:
         print(f"車道沿いの歩道などを点線国道から除きました: {len(dropped)} 区間 / {sum(s['len'] for s in dropped) / 1000:.1f} km", file=sys.stderr)
+    if old_segments:
+        print(f"旧道のリレーションの道: {sum(s['len'] for s in old_segments) / 1000:.1f} km", file=sys.stderr)
+    segments += old_segments
     used_tunnels = {s["tunnel"] for s in segments if "tunnel" in s}
     tunnels = [t for t in tunnels if t["id"] in used_tunnels]
 
@@ -229,6 +251,30 @@ def build(osm: dict) -> dict:
         "segments": segments,
         "tunnels": tunnels,
     }
+
+
+def is_old_relation(tags: dict) -> bool:
+    """「国道317号旧道」「○○バイパス旧道区間」のような、旧道だけをまとめたリレーションか"""
+    # 「復旧道路」は旧道ではない
+    return re.search(r"(?<!復)旧道", tags.get("name", "")) is not None
+
+
+def old_road_segments(el: dict, coords: list[tuple[float, float]], refs: list[str]) -> list[dict]:
+    """旧道の way を区間に切る(種別 old)。build_old_roads.py と同じ形"""
+    name = el.get("tags", {}).get("name", "")
+    out = []
+    for i, piece in enumerate(split_line(coords, SEGMENT_LENGTH)):
+        seg = {
+            "id": f"w{el['id']}-{i}",
+            "routes": refs,
+            "cats": ["old"],
+            "len": round(sum(dist(piece[j - 1], piece[j]) for j in range(1, len(piece))), 1),
+            "coords": [rnd(p) for p in simplify(piece, SIMPLIFY_METERS)],
+        }
+        if name:
+            seg["name"] = name
+        out.append(seg)
+    return out
 
 
 def _point_seg_dist(p, a, b) -> float:

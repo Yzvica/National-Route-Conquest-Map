@@ -71,7 +71,9 @@ def load_prefectures(src: str) -> dict[int, shapely.Geometry]:
     shapes = {code: shapely.union_all(gs) for code, gs in h.shapes.items()}
     missing = [PREFS[i] for i in range(47) if i + 1 not in shapes]
     if missing:
-        print(f"  境界が見つからなかった都道府県: {' '.join(missing)}", file=sys.stderr)
+        # 抽出ファイルが壊れている・古いときに起きる(ミラーのファイルで東京都が欠けたことがある)。
+        # そのまま置くと地図の色分けが欠けるので止める
+        sys.exit(f"境界が見つからなかった都道府県があります: {' '.join(missing)}。OSM ファイルを取り直してください")
     return shapes
 
 

@@ -12,10 +12,14 @@ on:
         options: [geofabrik, overpass]
         default: geofabrik
       target:
-        description: "作り直すデータ(both: 両方 / kokudo: 国道だけ / expressway: 高速道路だけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
+        description: "作り直すデータ(both: 両方 / kokudo: 国道だけ / expressway: 高速道路だけ / old: 今の国道データに旧道を付け直すだけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
         type: choice
-        options: [both, kokudo, expressway, pref]
+        options: [both, kokudo, expressway, old, pref]
         default: both
+      upload:
+        description: "作ったデータをリリースに置く(外すと作るだけで、ログで確認する)"
+        type: boolean
+        default: true
       refs:
         description: "overpass のときの対象国道番号(空欄なら全部。例: 1 20 246)"
         required: false
@@ -42,14 +46,25 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
           pip install osmium shapely
-          curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          bash scripts/download_japan.sh japan.osm.pbf
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
+          if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ] || [ "$TARGET" = old ]; then
+            osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
+          fi
           rm japan.osm.pbf
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ]; then
             python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json
             python3 scripts/build_routes.py --input raw.json --out routes.json
+          fi
+          # 旧道(国道でなくなった旧ルート)を国道データに加える
+          if [ -f hw.osm.pbf ]; then
+            [ -f routes.json ] || gh release download route-data -p routes.json
+            python3 scripts/build_old_roads.py find kokudo.osm.pbf hw.osm.pbf old-ids.txt
+            osmium getid -r hw.osm.pbf -i old-ids.txt -o old.osm.pbf
+            python3 scripts/build_old_roads.py add old-ids.txt.json old.osm.pbf routes.json
+            rm hw.osm.pbf
           fi
           if [ "$TARGET" = both ] || [ "$TARGET" = expressway ]; then
             python3 scripts/build_expressways.py expressway.osm.pbf --out expressways.json
@@ -72,6 +87,7 @@ jobs:
           python3 scripts/build_routes.py "${args[@]}" --out routes.json
 
       - name: リリースに置く
+        if: inputs.upload
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

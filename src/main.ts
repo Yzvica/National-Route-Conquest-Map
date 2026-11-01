@@ -1,7 +1,7 @@
 import "./style.css";
 import { categoryBreakdown, overlapsOf, type BreakdownItem } from "./breakdown";
 import { buildContext, computeLevel, evaluateAchievements, regionTitle, type GameContext } from "./game";
-import { achievementsView, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
+import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
 import {
   addRoutes,
   clearRoutes,
@@ -18,7 +18,7 @@ import {
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { trackLength, tripKey } from "./trips";
-import { REFERENCE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
+import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, openStore, type Record } from "./store";
 import {
   CATEGORY_LABELS,
@@ -217,7 +217,12 @@ function order(ref: string): number {
   return routeOrder.index.get(ref) ?? Infinity;
 }
 
-const catLabel = (c: Category) => (REFERENCE_CATS.includes(c) ? `${CATEGORY_LABELS[c]}(参考・自己申告)` : CATEGORY_LABELS[c]);
+const catLabel = (c: Category) =>
+  REFERENCE_CATS.includes(c)
+    ? `${CATEGORY_LABELS[c]}(参考・自己申告)`
+    : SEPARATE_CATS.includes(c)
+      ? `${CATEGORY_LABELS[c]}(別枠)`
+      : CATEGORY_LABELS[c];
 
 /** 点線国道を走ったかの申告のチェックボックス */
 const declareBox = (ref: string) =>
@@ -240,13 +245,17 @@ function dottedInfo(segIds: string[]): string {
   if (!data) return "";
   const want = new Set(segIds);
   const kinds = new Set<string>();
-  for (const s of data.segments) if (want.has(s.id) && s.hw) kinds.add(HW_LABELS[s.hw] ?? s.hw);
+  for (const s of data.segments) {
+    if (!want.has(s.id)) continue;
+    if (s.hw) kinds.add(HW_LABELS[s.hw] ?? s.hw);
+    if (s.name && kinds.size < 4) kinds.add(s.name);
+  }
   const ways = [...new Set(segIds.map((id) => id.split("-")[0].slice(1)))];
   const links = ways
     .slice(0, 3)
     .map((w, i) => `<a href="https://www.openstreetmap.org/way/${w}" target="_blank" rel="noopener">OSM${ways.length > 1 ? i + 1 : ""}</a>`)
     .join(" ");
-  return `<span class="dotted-info muted">${kinds.size ? `${[...kinds].join("・")} / ` : ""}${links}${ways.length > 3 ? " …" : ""}</span>`;
+  return `<span class="dotted-info muted">${kinds.size ? `${esc([...kinds].join("・"))} / ` : ""}${links}${ways.length > 3 ? " …" : ""}</span>`;
 }
 
 function render() {
@@ -256,11 +265,11 @@ function render() {
 function renderNow() {
   if (!data) return;
   const stats = computeStats(data, coverage());
-  const hasReference = stats.byCategory.dotted.total > 0;
+  const separate = SEPARATE_CATS.filter((c) => stats.byCategory[c].total > 0).map((c) => CATEGORY_LABELS[c]);
   $("overall").innerHTML = `<h2>総合制覇率</h2><div class="big">${percent(stats.overall).toFixed(2)}%</div>
     <p class="muted">${km(stats.overall.done)} / ${km(stats.overall.total)} km(重複区間は1回だけ数えています${
       active === "expressway" ? "。上下線はどちらかを走れば制覇" : ""
-    }${hasReference ? "。点線国道は参考として別に数えています" : ""})</p>`;
+    }${separate.length ? `。${separate.join("・")}は別枠で数えています` : ""})</p>`;
   breakdownItems = new Map();
   $("categories").innerHTML =
     "<h2>種別ごと</h2>" +
@@ -275,7 +284,11 @@ function renderNow() {
           .map((item) => {
             const key = `${c}:${item.key}`;
             breakdownItems.set(key, item);
-            const declare = REFERENCE_CATS.includes(c) ? `<div class="declare-row">${declareBox(item.key)}${dottedInfo(item.segIds)}</div>` : "";
+            const declare = REFERENCE_CATS.includes(c)
+              ? `<div class="declare-row">${declareBox(item.key)}${dottedInfo(item.segIds)}</div>`
+              : c === "old"
+                ? `<div class="declare-row">${dottedInfo(item.segIds)}</div>`
+                : "";
             return `<li data-item="${key}">${row(item.refs.map(routeName).join("・"), item.progress)}${declare}</li>`;
           })
           .join("");

@@ -35,3 +35,22 @@ describe("上下線", () => {
     expect(effectiveCoverage(plain, cov)).toBe(cov);
   });
 });
+
+describe("旧道", () => {
+  const k = (id: string, cats: Segment["cats"], len: number): Segment => ({ id, routes: ["1"], cats, len, coords: [[0, 0], [0, 0.001]] });
+  const kokudo: RouteData = {
+    version: 1,
+    generatedAt: "",
+    routes: { "1": { name: "国道1号" } },
+    tunnels: [],
+    segments: [k("m", ["main"], 300), k("o", ["old"], 200)],
+  };
+
+  it("総合と路線の制覇率には入れず、種別ごとに別枠で数える", () => {
+    const stats = computeStats(kokudo, new Map([["o", 1]]));
+    expect(stats.overall).toEqual({ total: 300, done: 0 });
+    expect(stats.byRoute.get("1")!.overall).toEqual({ total: 300, done: 0 });
+    expect(stats.byCategory.old).toEqual({ total: 200, done: 200 });
+    expect(stats.byRoute.get("1")!.byCategory.old).toEqual({ total: 200, done: 200 });
+  });
+});

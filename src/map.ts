@@ -60,7 +60,7 @@ export function addRoutes(
   map.addSource("overview", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   const overviewColor = ["match", ["get", "s"], 2, "#d93025", 1, "#f29900", "#9aa0a6"];
   addLineLayers(map, "overview", "overview", overviewColor, { maxzoom: DETAIL_ZOOM });
-  onLayers(map, ["overview-road", "overview-dotted", "overview-ferry"], (e) => {
+  onLayers(map, ["overview-road", "overview-dotted", "overview-ferry", "overview-old"], (e) => {
     const f = e.features?.[0];
     if (!f) return;
     const refs = String(f.properties.routes).split(",");
@@ -98,8 +98,22 @@ function addLineLayers(
     type: "line",
     source,
     ...zoom,
-    filter: ["all", ["!", ["get", "dotted"]], ["!", ["get", "ferry"]]],
+    filter: ["all", ["!", ["get", "dotted"]], ["!", ["get", "ferry"]], ["!", ["get", "old"]]],
     paint: { "line-color": color as never, "line-width": width as never },
+  }, before);
+  // 旧道は今の国道ではないので、細い破線で控えめに描く
+  map.addLayer({
+    id: `${prefix}-old`,
+    type: "line",
+    source,
+    ...zoom,
+    filter: ["all", ["get", "old"], ["!", ["get", "dotted"]]],
+    paint: {
+      "line-color": color as never,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 5, 1, 12, 2.5],
+      "line-dasharray": [3, 1.5],
+      "line-opacity": 0.85,
+    },
   }, before);
   map.addLayer({
     id: `${prefix}-dotted`,
@@ -127,7 +141,7 @@ export function buildOverview(data: RouteData, coverage: Coverage) {
   const segs = data.segments;
   const keys = segs.map((s) => {
     const r = coverage.get(s.id) ?? 0;
-    return `${s.routes.join(",")}|${s.cats.includes("dotted") ? 1 : 0}${s.cats.includes("ferry") ? 1 : 0}|${r >= 1 ? 2 : r > 0 ? 1 : 0}`;
+    return `${s.routes.join(",")}|${s.cats.includes("dotted") ? 1 : 0}${s.cats.includes("ferry") ? 1 : 0}${s.cats.includes("old") ? 1 : 0}|${r >= 1 ? 2 : r > 0 ? 1 : 0}`;
   });
   const pt = (c: LonLat) => `${c[0]},${c[1]}`;
   const ends = new Map<string, number[]>();
@@ -163,7 +177,7 @@ export function buildOverview(data: RouteData, coverage: Coverage) {
     const [routes, kind, state] = k.split("|");
     features.push({
       type: "Feature" as const,
-      properties: { routes, dotted: kind[0] === "1", ferry: kind[1] === "1", s: Number(state) },
+      properties: { routes, dotted: kind[0] === "1", ferry: kind[1] === "1", old: kind[2] === "1", s: Number(state) },
       geometry: { type: "LineString" as const, coordinates: line },
     });
   }
@@ -185,7 +199,13 @@ function addDetail(
       type: "FeatureCollection",
       features: data.segments.map((s) => ({
         type: "Feature",
-        properties: { id: s.id, routes: s.routes.join(","), dotted: s.cats.includes("dotted"), ferry: s.cats.includes("ferry") },
+        properties: {
+          id: s.id,
+          routes: s.routes.join(","),
+          dotted: s.cats.includes("dotted"),
+          ferry: s.cats.includes("ferry"),
+          old: s.cats.includes("old"),
+        },
         geometry: { type: "LineString", coordinates: s.coords },
       })),
     },
@@ -194,7 +214,7 @@ function addDetail(
   const color = ["case", [">=", ratio, 1], "#d93025", [">", ratio, 0], "#f29900", "#9aa0a6"];
   addLineLayers(map, "routes", "routes", color, { minzoom: DETAIL_ZOOM }, "overview-road");
 
-  onLayers(map, ["routes-road", "routes-dotted", "routes-ferry"], (e) => {
+  onLayers(map, ["routes-road", "routes-dotted", "routes-ferry", "routes-old"], (e) => {
     const f = e.features?.[0];
     if (!f) return;
     const names = String(f.properties.routes)
@@ -263,7 +283,7 @@ export function showSelected(map: maplibregl.Map, data: RouteData, ref: string |
         .filter((s) => s.routes.includes(ref))
         .map((s) => ({
           type: "Feature" as const,
-          properties: { r: coverage.get(s.id) ?? 0, dashed: s.cats.includes("dotted") || s.cats.includes("ferry") },
+          properties: { r: coverage.get(s.id) ?? 0, dashed: s.cats.some((c) => c === "dotted" || c === "ferry" || c === "old") },
           geometry: { type: "LineString" as const, coordinates: s.coords },
         }));
   const fc = { type: "FeatureCollection" as const, features };
