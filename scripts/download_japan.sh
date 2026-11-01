@@ -4,10 +4,12 @@
 set -u
 out="$1"
 MAX_AGE_DAYS=${MAX_AGE_DAYS:-21}
+# fau.de は Geofabrik と同じファイルのミラー。openstreetmap.fr は切り抜き方が違い、東京都の境界
+# (離島まで含む行政界)が欠けるので最後にする
 urls=(
   https://download.geofabrik.de/asia/japan-latest.osm.pbf
-  https://download.openstreetmap.fr/extracts/asia/japan-latest.osm.pbf
   https://ftp.fau.de/osm-planet/extracts/geofabrik/asia/japan-latest.osm.pbf
+  https://download.openstreetmap.fr/extracts/asia/japan-latest.osm.pbf
 )
 
 fresh() {
