@@ -43,16 +43,46 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Geofabrik から日本の OSM データを取得して抽出
+      # 日本全体の OSM ファイル(約2.4GB)は、同じ日(UTC)に2回目以降の実行ではキャッシュから使う。
+      # Geofabrik は1日1回更新なので、日付が変わったら取り直す
+      - name: 今日の日付
+        id: day
+        if: inputs.source != 'overpass'
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: 今日取得した日本の OSM ファイルがあれば使う
+        id: osm-cache
+        if: inputs.source != 'overpass'
+        uses: actions/cache/restore@v4
+        with:
+          path: japan.osm.pbf
+          key: japan-osm-${{ steps.day.outputs.day }}
+
+      - name: Geofabrik から日本の OSM データを取得
+        if: inputs.source != 'overpass'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+          pip install osmium shapely
+          if [ -f japan.osm.pbf ]; then
+            echo "今日取得した OSM ファイルをキャッシュから使います"
+            osmium fileinfo -g header.option.osmosis_replication_timestamp japan.osm.pbf || true
+          else
+            bash scripts/download_japan.sh japan.osm.pbf
+          fi
+
+      - name: 日本の OSM ファイルをキャッシュに置く(同じ日の次の実行で使う)
+        if: inputs.source != 'overpass' && steps.osm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: japan.osm.pbf
+          key: japan-osm-${{ steps.day.outputs.day }}
+
+      - name: 日本の OSM データから抽出して作る
         if: inputs.source != 'overpass'
         env:
           TARGET: ${{ inputs.target }}
           OLD_ROADS_DETAIL: ${{ inputs.detail }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
-          pip install osmium shapely
-          bash scripts/download_japan.sh japan.osm.pbf
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
@@ -62,7 +92,7 @@ jobs:
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ] || [ "$TARGET" = old ]; then
             osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
           fi
-          rm japan.osm.pbf
+          # japan.osm.pbf はキャッシュに置くので消さない
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ]; then
             python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json
             python3 scripts/build_routes.py --input raw.json --out routes.json

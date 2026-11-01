@@ -1,4 +1,4 @@
-import { segmentWeight, type Progress } from "./stats";
+import { isSeparate, segmentWeight, type Progress } from "./stats";
 import type { Category, Coverage, RouteData } from "./types";
 
 export interface BreakdownItem {
@@ -49,11 +49,11 @@ export function overlapsOf(data: RouteData, coverage: Coverage, ref: string): Br
   return [...items.values()].sort((a, b) => byRef(a.key, b.key));
 }
 
-/** ある路線の区間の通称(「三宿通り」など)ごとの区間。区間に名前のあるデータ(都道府県道)だけ。長い順 */
+/** ある路線の区間の通称(「三宿通り」「青梅街道」など)ごとの区間。長い順。点線国道・旧道(別枠)の名前は含めない */
 export function nicknamesOf(data: RouteData, coverage: Coverage, ref: string): BreakdownItem[] {
   const items = new Map<string, BreakdownItem>();
   for (const s of data.segments) {
-    if (!s.name || !s.routes.includes(ref)) continue;
+    if (!s.name || isSeparate(s) || !s.routes.includes(ref)) continue;
     collect(items, s.name, [ref], s.id, s.len * segmentWeight(s), coverage.get(s.id) ?? 0);
   }
   return [...items.values()].sort((a, b) => b.progress.total - a.progress.total);
