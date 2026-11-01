@@ -3,12 +3,13 @@ export type LonLat = [number, number];
 
 /**
  * 区間の種別。1区間が複数持つことがある(例: バイパス かつ 重複)。
- * main〜ferry は国道、expressway〜toll は高速道路のデータで使う
+ * main〜old は国道(old は国道指定を外れた旧ルート)、expressway〜toll は高速道路のデータで使う
  */
 export type Category =
   | "main"
   | "bypass"
   | "dotted"
+  | "old"
   | "ferry"
   | "expressway"
   | "urban"
@@ -20,6 +21,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   main: "現道",
   bypass: "バイパス",
   dotted: "点線国道",
+  old: "旧道",
   ferry: "海上区間",
   expressway: "高速自動車国道",
   urban: "都市高速",

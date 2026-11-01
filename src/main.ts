@@ -18,7 +18,7 @@ import {
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { trackLength, tripKey } from "./trips";
-import { REFERENCE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
+import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, openStore, type Record } from "./store";
 import {
   CATEGORY_LABELS,
@@ -217,7 +217,12 @@ function order(ref: string): number {
   return routeOrder.index.get(ref) ?? Infinity;
 }
 
-const catLabel = (c: Category) => (REFERENCE_CATS.includes(c) ? `${CATEGORY_LABELS[c]}(参考・自己申告)` : CATEGORY_LABELS[c]);
+const catLabel = (c: Category) =>
+  REFERENCE_CATS.includes(c)
+    ? `${CATEGORY_LABELS[c]}(参考・自己申告)`
+    : SEPARATE_CATS.includes(c)
+      ? `${CATEGORY_LABELS[c]}(別枠)`
+      : CATEGORY_LABELS[c];
 
 /** 点線国道を走ったかの申告のチェックボックス */
 const declareBox = (ref: string) =>
@@ -256,11 +261,11 @@ function render() {
 function renderNow() {
   if (!data) return;
   const stats = computeStats(data, coverage());
-  const hasReference = stats.byCategory.dotted.total > 0;
+  const separate = SEPARATE_CATS.filter((c) => stats.byCategory[c].total > 0).map((c) => CATEGORY_LABELS[c]);
   $("overall").innerHTML = `<h2>総合制覇率</h2><div class="big">${percent(stats.overall).toFixed(2)}%</div>
     <p class="muted">${km(stats.overall.done)} / ${km(stats.overall.total)} km(重複区間は1回だけ数えています${
       active === "expressway" ? "。上下線はどちらかを走れば制覇" : ""
-    }${hasReference ? "。点線国道は参考として別に数えています" : ""})</p>`;
+    }${separate.length ? `。${separate.join("・")}は別枠で数えています` : ""})</p>`;
   breakdownItems = new Map();
   $("categories").innerHTML =
     "<h2>種別ごと</h2>" +

@@ -12,8 +12,15 @@ export interface Progress {
 export const REFERENCE_CATS: Category[] = ["dotted"];
 export const isReference = (s: Segment) => s.cats.some((c) => REFERENCE_CATS.includes(c));
 
+/**
+ * 別枠で数え、総合・路線ごとの制覇率・実績(専用のもの以外)には入れない種別。
+ * 旧道(バイパスができて国道でなくなった旧ルートなど)は今の国道ではないので別に数える。判定はログで行う
+ */
+export const SEPARATE_CATS: Category[] = [...REFERENCE_CATS, "old"];
+export const isSeparate = (s: Segment) => s.cats.some((c) => SEPARATE_CATS.includes(c));
+
 export interface Stats {
-  /** 全種別をまとめた総合(点線国道は除く)。重複区間は1回だけ数える */
+  /** 全種別をまとめた総合(点線国道・旧道は除く)。重複区間は1回だけ数える */
   overall: Progress;
   byCategory: Record<Category, Progress>;
   byRoute: Map<string, { overall: Progress; byCategory: Partial<Record<Category, Progress>> }>;
@@ -56,7 +63,7 @@ export function computeStats(data: RouteData, coverage: Coverage): Stats {
   for (const seg of data.segments) {
     const r = coverage.get(seg.id) ?? 0;
     const len = seg.len * segmentWeight(seg);
-    const counted = !isReference(seg);
+    const counted = !isSeparate(seg);
     if (counted) add(stats.overall, len, r);
     for (const c of seg.cats) add(stats.byCategory[c], len, r);
     // 重複区間は、それぞれの国道の制覇率には丸ごと数える

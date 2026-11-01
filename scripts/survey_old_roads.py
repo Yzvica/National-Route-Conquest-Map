@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """OSM で旧道(国道の旧ルート)がどう書かれているかを調べて表にする(調査用)。
 
-  osmium tags-filter japan-latest.osm.pbf r/network=JP:national w/old_ref w/old_name w/name w/alt_name -o named.osm.pbf
-  python3 scripts/survey_old_roads.py named.osm.pbf
+  手順は .github/workflows/update-data.yml の target=survey-old を参照
 """
 from __future__ import annotations
 
@@ -34,16 +33,16 @@ class Rels(osmium.SimpleHandler):
                 self.rel_tags[f"{k}={v}"[:80]] += 1
 
 
+OTHER_KEYS = ("old_ref", "was:ref", "historic", "old_highway", "was:highway")
+
+
 class Ways(osmium.SimpleHandler):
+    """1回目: 位置なしで、旧道らしい way を探す(速くするため決まったキーだけ見る)"""
+
     def __init__(self, members: set[int]) -> None:
         super().__init__()
         self.members = members
-        self.km = defaultdict(float)  # (表, 値) -> km
-        self.n = Counter()
-
-    def add(self, table: str, value: str, km: float) -> None:
-        self.km[(table, value[:60])] += km
-        self.n[(table, value[:60])] += 1
+        self.found: dict[int, tuple[bool, str, list[tuple[str, str]]]] = {}
 
     def way(self, w) -> None:
         tags = w.tags
@@ -51,47 +50,79 @@ class Ways(osmium.SimpleHandler):
         if hw is None or hw in NOT_ROADS:
             return
         hits = []
-        for k, v in tags:
-            if k.startswith(("old_ref", "was:", "historic", "old_highway")):
+        for k in OTHER_KEYS:
+            v = tags.get(k)
+            if v:
                 hits.append(("key", f"{k}={v}"))
-            if k in KEYS and OLD_WORD.search(v):
+        for k in KEYS:
+            v = tags.get(k)
+            if v and "旧" in v and OLD_WORD.search(v):
                 hits.append(("name", f"{k}={v}"))
-        if not hits:
-            return
+        if hits:
+            self.found[w.id] = (w.id in self.members, hw, hits)
+
+
+class Lengths(osmium.SimpleHandler):
+    """2回目: 見つけた way だけを含むファイルで長さを測る"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.km: dict[int, float] = {}
+
+    def way(self, w) -> None:
         pts = [(n.lon, n.lat) for n in w.nodes if n.location.valid()]
-        km = sum(dist(pts[i - 1], pts[i]) for i in range(1, len(pts))) / 1000
-        current = w.id in self.members
-        for table, v in hits:
-            self.add(table + ("(現国道)" if current else ""), v, km)
-            self.add("highway" + ("(現国道)" if current else ""), f"{table}:{hw}", km)
-        if not current and tags.get("old_ref"):
-            self.add("old_ref の値", tags["old_ref"], km)
-        if not current:
-            for k in KEYS:
-                v = tags.get(k, "")
-                if OLD_WORD.search(v):
-                    # 「旧国道1号」「国道1号旧道」「旧1号」などの形を数える
-                    shape = re.sub(r"\d+", "N", v)
-                    self.add("名前の形", shape, km)
+        self.km[w.id] = sum(dist(pts[i - 1], pts[i]) for i in range(1, len(pts))) / 1000
 
 
 def main() -> None:
-    src = sys.argv[1]
-    rels = Rels()
-    rels.apply_file(src)
-    ways = Ways(rels.members)
-    ways.apply_file(src, locations=True, idx="flex_mem")
+    # 使い方: survey_old_roads.py kokudo.osm.pbf hw.osm.pbf ids.txt  → ids.txt を osmium getid に渡す
+    #         survey_old_roads.py --report found.json cand.osm.pbf
+    import json
+    if sys.argv[1] != "--report":
+        kokudo, hw, ids = sys.argv[1:4]
+        rels = Rels()
+        rels.apply_file(kokudo)
+        ways = Ways(rels.members)
+        ways.apply_file(hw)
+        with open(ids, "w") as f:
+            f.writelines(f"w{i}\n" for i in ways.found)
+        with open(ids + ".json", "w") as f:
+            json.dump({"found": {str(k): v for k, v in ways.found.items()}, "rel_tags": rels.rel_tags.most_common(50)}, f, ensure_ascii=False)
+        print(f"候補 {len(ways.found)} 本", file=sys.stderr)
+        return
+    found_path, cand = sys.argv[2:4]
+    j = json.load(open(found_path))
+    lens = Lengths()
+    lens.apply_file(cand, locations=True, idx="flex_mem")
+    km_ = defaultdict(float)
+    n = Counter()
+
+    def add(table: str, value: str, km: float) -> None:
+        km_[(table, value[:60])] += km
+        n[(table, value[:60])] += 1
+
+    for wid, (current, hw, hits) in j["found"].items():
+        km = lens.km.get(int(wid), 0.0)
+        suffix = "(現国道)" if current else ""
+        for table, v in hits:
+            add(table + suffix, v, km)
+            add("highway" + suffix, f"{table}:{hw}", km)
+            if not current:
+                k, _, val = v.partition("=")
+                if table == "key":
+                    add(f"{k} の値", val, km)
+                else:
+                    add("名前の形", re.sub(r"\d+", "N", val), km)
 
     print("== 旧・old 系のタグを持つリレーション(上位50)")
-    for v, n in rels.rel_tags.most_common(50):
-        print(f"{n:6d}  {v}")
-    tables = sorted({t for t, _ in ways.km})
-    for table in tables:
-        rows = sorted(((km, v) for (t, v), km in ways.km.items() if t == table), reverse=True)
+    for v, c in j["rel_tags"]:
+        print(f"{c:6d}  {v}")
+    for table in sorted({t for t, _ in km_}):
+        rows = sorted(((km, v) for (t, v), km in km_.items() if t == table), reverse=True)
         total = sum(km for km, _ in rows)
         print(f"\n== {table}: {len(rows)} 種類 / 計 {total:,.1f} km(上位80)")
         for km, v in rows[:80]:
-            print(f"{km:9.1f} km {ways.n[(table, v)]:6d} 本  {v}")
+            print(f"{km:9.1f} km {n[(table, v)]:6d} 本  {v}")
 
 
 if __name__ == "__main__":

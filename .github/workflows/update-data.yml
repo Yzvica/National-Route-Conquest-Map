@@ -40,9 +40,12 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
           pip install osmium
           curl -fsSL --retry 3 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
-          osmium tags-filter japan.osm.pbf r/network=JP:national w/old_ref w/old_name w/name w/alt_name w/official_name w/loc_name w/note -o named.osm.pbf
+          osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
+          osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
           rm japan.osm.pbf
-          python3 scripts/survey_old_roads.py named.osm.pbf | tee survey.txt
+          python3 scripts/survey_old_roads.py kokudo.osm.pbf hw.osm.pbf ids.txt
+          osmium getid -r hw.osm.pbf -i ids.txt -o cand.osm.pbf
+          python3 scripts/survey_old_roads.py --report ids.txt.json cand.osm.pbf
 
       - name: Geofabrik から日本の OSM データを取得して抽出
         if: inputs.source != 'overpass' && inputs.target != 'survey-old'

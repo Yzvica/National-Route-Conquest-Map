@@ -1,7 +1,7 @@
 // 実績・レベル・振り返り・チャレンジなど、ゲームとしての集計。
 // 画面には依存しない純粋な計算だけを置く(src/game.test.ts で確かめる)。
 import { REGIONS } from "./prefs";
-import { computeStats, isReference, segmentWeight, type Progress, type Stats } from "./stats";
+import { computeStats, isSeparate, segmentWeight, type Progress, type Stats } from "./stats";
 import type { PassDates } from "./store";
 import type { Trip } from "./trips";
 import type { Coverage, DatasetKind, RouteData } from "./types";
@@ -65,8 +65,8 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
   const byPref = new Map<number, Progress>();
 
   for (const s of data.segments) {
-    // 点線国道は参考データ(自己申告)なので、制覇・都道府県・振り返りには数えない
-    if (isReference(s)) continue;
+    // 点線国道(参考・自己申告)と旧道(今の国道ではない)は、制覇・都道府県・振り返りには数えない
+    if (isSeparate(s)) continue;
     const r = ratioOf(coverage, s.id);
     if (s.pref) {
       let p = byPref.get(s.pref);
@@ -114,7 +114,7 @@ export function summarize(data: RouteData, coverage: Coverage, dates: Map<string
   }
 
   const tunnelIds = new Set<string>();
-  for (const s of data.segments) if (s.tunnel && !isReference(s)) tunnelIds.add(s.tunnel);
+  for (const s of data.segments) if (s.tunnel && !isSeparate(s)) tunnelIds.add(s.tunnel);
   return {
     kind,
     stats,
@@ -373,6 +373,16 @@ export const ACHIEVEMENTS: Achievement[] = [
     (v) => (v < 1 ? "点線国道デビュー" : `点線国道 ${v} km`),
     (v) => (v < 1 ? "点線国道(車道でない国道)を走ったと申告する" : `走ったと申告した点線国道が ${v} km になる`),
     (c) => (c.kokudo ? catKm(c.kokudo, "dotted") : null),
+    "km",
+  ),
+  ...tiers(
+    "old",
+    "酷道・海",
+    "🏚️",
+    [1, 10, 50, 200],
+    (v) => (v <= 1 ? "旧道探訪" : `旧道 ${fmt(v)} km`),
+    (v) => (v <= 1 ? "国道の旧道を 1 km 走る" : `国道の旧道を ${fmt(v)} km 走る`),
+    (c) => (c.kokudo?.stats.byCategory.old.total ? catKm(c.kokudo, "old") : null),
     "km",
   ),
   ...tiers(
