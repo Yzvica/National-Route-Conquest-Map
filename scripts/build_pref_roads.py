@@ -2,7 +2,7 @@
 """OSM の抽出ファイルから都道府県道(東京都道・神奈川県道・北海道道など)を取り出し、
 都道府県ごとのファイル(prefroads/01.json 〜 47.json)と一覧(prefroads/index.json)を作る。
 
-  osmium tags-filter japan-latest.osm.pbf r/network=JP:prefectural* w/highway=secondary,tertiary -o prefroad.osm.pbf
+  osmium tags-filter japan-latest.osm.pbf r/network=JP:prefectural* w/highway=primary,secondary,tertiary -o prefroad.osm.pbf
   osmium tags-filter japan-latest.osm.pbf r/network=JP:national -o kokudo.osm.pbf
   osmium tags-filter japan-latest.osm.pbf r/admin_level=4 -o pref.osm.pbf
   python3 scripts/build_pref_roads.py prefroad.osm.pbf kokudo.osm.pbf pref.osm.pbf --out-dir prefroads
@@ -11,10 +11,10 @@
 
 - 路線は都道府県と番号ごと(キーは "13-413" のような「都道府県コード-番号」)
 - 都道府県道のリレーション(network=JP:prefectural:<都道府県>)に入っている道を主に使う。
-  リレーションのない道は、highway=secondary/tertiary で ref に番号があるもの、
+  リレーションのない道は、highway=primary/secondary/tertiary で ref に番号があるもの、
   または名前が「神奈川県道22号…」のようなものを、その場所の都道府県の道として拾う
 - 国道のリレーションに入っている道(国道との重複区間)は国道で数えるので除く
-- 種別は OSM の格付けから推定する: secondary 以上 → 主要地方道(major)、それ以外 → 一般都道府県道(general)。
+- 種別は OSM の格付けから推定する: primary 以上 → 主要地方道(major)、それ以外 → 一般都道府県道(general)。
   路線ごとに長いほうにそろえる。2路線以上が重なる区間には重複(overlap)も付ける
 - 区間の ID は "p<wayId>-<番号>"。国道・高速道路のデータ("w…")と記録がまざらないように頭を変えている
 - 上下線が別の線になっているところは、高速道路と同じく組(pair)にする
@@ -63,7 +63,9 @@ SKIP_HIGHWAYS = {
     "platform", "bus_stop", "services", "rest_area", "escape", "raceway", "busway", "via_ferrata",
     "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link",
 } | NOT_ROADS
-MAJOR_HIGHWAYS = {"motorway", "trunk", "primary", "secondary"}
+# OSM の日本の決まりでは、主要地方道は primary、一般都道府県道は secondary(tertiary は主な市町村道)
+MAJOR_HIGHWAYS = {"motorway", "trunk", "primary"}
+LOOSE_HIGHWAYS = {"primary", "secondary", "tertiary"}
 # リレーションのない道だけでできた路線は、これより短ければ ref の付け間違いなどの切れ端とみなして除く(m)
 MIN_LOOSE_ROUTE = 300.0
 # アプリが「このあたりにどの都道府県の道があるか」を調べる格子の大きさ(度)
@@ -163,7 +165,7 @@ class Ways(osmium.SimpleHandler):
             refs = [r.strip() for r in unicodedata.normalize("NFKC", tags.get("ref", "")).split(";")]
             refs = [str(int(r)) for r in refs if NUMERIC_REF.match(r)]
             m = ROAD_NAME.match(name)
-            if refs and hw in ("secondary", "tertiary"):
+            if refs and hw in LOOSE_HIGHWAYS:
                 entries = [(pref_of_name(name), r, "") for r in refs]
             elif m:
                 entries = [(pref_of_name(name), str(int(m.group(3))), "")]
@@ -310,7 +312,7 @@ def cells_of(segments: list[dict]) -> list[int]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("roads", help="都道府県道のリレーションと secondary/tertiary の道を含む .osm.pbf")
+    ap.add_argument("roads", help="都道府県道のリレーションと primary/secondary/tertiary の道を含む .osm.pbf")
     ap.add_argument("national", help="国道のリレーションを含む .osm.pbf(重複区間を除くため)")
     ap.add_argument("boundaries", help="行政界(admin_level=4)を含む .osm.pbf")
     ap.add_argument("--fallback", type=Path, help="境界が作れなかった都道府県に使う、前回の prefectures.json")
