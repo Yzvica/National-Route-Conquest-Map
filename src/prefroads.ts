@@ -57,3 +57,14 @@ export function comparePrefRefs(a: string, b: string): number {
   const [cb, nb] = splitPrefRef(b);
   return ca - cb || na - nb;
 }
+
+/**
+ * 都道府県道の路線の表示名。番号の入っていない名前(「津久井道」など。古いデータにある)には
+ * 「神奈川県道3号」のような番号を前に付ける
+ */
+export function prefRouteLabel(ref: string, name: string | undefined, prefName: (code: number) => string): string {
+  const [code, num] = splitPrefRef(ref);
+  const base = `${prefName(code)}道${num}号`;
+  if (!name) return base;
+  return new RegExp(`(^|[^0-9])${num}号`).test(name) ? name : `${base} ${name}`;
+}

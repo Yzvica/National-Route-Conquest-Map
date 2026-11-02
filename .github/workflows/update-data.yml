@@ -18,7 +18,7 @@ on:
         options: [both, kokudo, expressway, prefroad, old, pref]
         default: both
       detail:
-        description: "確認用: 旧道を一覧でログに出す国道番号(空欄なら出さない。例: 1 2)"
+        description: "確認用: 旧道を一覧でログに出す国道番号(例: 1 2)/ 都道府県道で扱いをログに出す名前(例: 津久井道)。空欄なら出さない"
         required: false
         default: ""
       upload:
@@ -81,6 +81,7 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
           OLD_ROADS_DETAIL: ${{ inputs.detail }}
+          PREFROAD_DETAIL: ${{ inputs.detail }}
           GH_TOKEN: ${{ github.token }}
         run: |
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
