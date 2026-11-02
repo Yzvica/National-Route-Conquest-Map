@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { comparePrefRefs, mergePrefData, prefsOfTrack } from "./prefroads";
+import { comparePrefRefs, mergePrefData, prefRouteLabel, prefsOfTrack } from "./prefroads";
 import type { PrefRoadIndex, RouteData, Segment } from "./types";
 
 const seg = (id: string, routes: string[], cats: Segment["cats"] = ["general"]): Segment => ({
@@ -56,4 +56,12 @@ describe("prefsOfTrack", () => {
 
 it("comparePrefRefs は都道府県コード順、その中は番号順", () => {
   expect(["14-2", "13-413", "13-8", "1-100"].sort(comparePrefRefs)).toEqual(["1-100", "13-8", "13-413", "14-2"]);
+});
+
+it("prefRouteLabel は番号のない名前に番号を付ける", () => {
+  const name = (c: number) => (c === 14 ? "神奈川県" : "東京都");
+  expect(prefRouteLabel("14-3", "津久井道", name)).toBe("神奈川県道3号 津久井道");
+  expect(prefRouteLabel("14-3", "神奈川県道3号世田谷町田線", name)).toBe("神奈川県道3号世田谷町田線");
+  expect(prefRouteLabel("13-413", undefined, name)).toBe("東京都道413号");
+  expect(prefRouteLabel("13-13", "東京都道413号", name)).toBe("東京都道13号 東京都道413号");
 });

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -74,13 +75,21 @@ CELL = 0.1
 CELL_PAD = 0.001
 
 
+def prefs_of_network(network: str) -> set[int]:
+    """network の値の都道府県コード。「JP:prefectural:tokyo;JP:prefectural:kanagawa」のように2つ以上のこともある"""
+    codes = set()
+    for part in network.split(";"):
+        bits = part.strip().split(":")
+        if len(bits) >= 3:
+            key = bits[2].strip().lower().replace("ō", "o").replace("ū", "u")
+            if key in ROMAJI:
+                codes.add(ROMAJI.index(key) + 1)
+    return codes
+
+
 def pref_of_network(network: str) -> int | None:
-    parts = network.split(":")
-    if len(parts) >= 3:
-        key = parts[2].strip().lower().replace("ō", "o").replace("ū", "u")
-        if key in ROMAJI:
-            return ROMAJI.index(key) + 1
-    return None
+    codes = prefs_of_network(network)
+    return next(iter(codes)) if len(codes) == 1 else None
 
 
 def pref_of_name(name: str) -> int | None:
@@ -137,11 +146,21 @@ class PrefRelations(osmium.SimpleHandler):
             ref = m.group(3) if m else ""
         if not ref:
             return
-        code = pref_of_network(network) or pref_of_name(name)
+        # 2つの都道府県にまたがる路線(「東京都道・神奈川県道3号」など、network に2つ書いてあるもの)は、
+        # 区間ごとに場所で都道府県を決める。名前の頭だけで決めると、神奈川県側も東京都道にしてしまう
+        multi = len(prefs_of_network(network)) > 1 or bool(re.match(rf"^(?:{PREF_PREFIX})(?:都|道|府|県)道・", name))
+        code = None if multi else (pref_of_network(network) or pref_of_name(name))
         self.count += 1
+        if DETAIL and any(d in name or d in tags.get("official_name", "") or d in tags.get("alt_name", "") for d in DETAIL):
+            print(f"  [確認] リレーション {r.id}: {dict(tags)} / 道 {sum(1 for m in r.members if m.type == 'w')} 本 / 都道府県 {code}",
+                  file=sys.stderr)
         for mem in r.members:
             if mem.type == "w":
                 self.members[mem.ref].append((code, str(int(ref)), name))
+
+
+# 確認用: 名前にこの言葉を含むリレーションと道を、どう扱ったかログに出す(例: PREFROAD_DETAIL="津久井道 世田谷町田")
+DETAIL = os.environ.get("PREFROAD_DETAIL", "").split()
 
 
 class Ways(osmium.SimpleHandler):
@@ -151,9 +170,22 @@ class Ways(osmium.SimpleHandler):
         self.national = national
         self.ways: list[dict] = []
         self.skipped_national = 0
+        self.detail_count = 0
+
+    def detail(self, w: osmium.osm.Way) -> None:
+        if self.detail_count >= 60:
+            return
+        self.detail_count += 1
+        t = w.tags
+        keys = ("highway", "ref", "name", "official_name", "alt_name")
+        info = {k: t.get(k) for k in keys if t.get(k)}
+        print(f"  [確認] 道 {w.id}: {info} / リレーション {self.rel_members.get(w.id)} / 国道 {w.id in self.national}",
+              file=sys.stderr)
 
     def way(self, w: osmium.osm.Way) -> None:
         tags = w.tags
+        if DETAIL and any(d in tags.get("name", "") for d in DETAIL):
+            self.detail(w)
         hw = tags.get("highway")
         if not hw or hw in SKIP_HIGHWAYS or tags.get("area") == "yes":
             return
@@ -269,11 +301,18 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
     find_pairs(segments, raw, oneway)
 
     def route_name(key: str) -> str:
+        """路線の名前。番号の入っていない名前(「世田谷町田線」「津久井道」など)には「神奈川県道3号」のような番号を前に付ける"""
         code, ref = key.split("-")
+        base = f"{PREFS[int(code) - 1]}道{ref}号"
         for names in (rel_names[key], way_names[key]):
             if names:
-                return names.most_common(1)[0][0]
-        return f"{PREFS[int(code) - 1]}道{ref}号"
+                name = names.most_common(1)[0][0]
+                hit = re.search(rf"(?<!\d){ref}号", name)
+                if not hit:
+                    return f"{base} {name}"
+                # 「東京都道・神奈川県道3号世田谷町田線」は、その都道府県の名前にする(神奈川県道3号世田谷町田線)
+                return base + name[hit.end():] if "・" in name[: hit.start()] else name
+        return base
 
     now = datetime.now(timezone.utc).isoformat()
     out: dict[int, dict] = {}

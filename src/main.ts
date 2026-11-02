@@ -26,7 +26,7 @@ import {
 import { matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { REGIONS, prefName } from "./prefs";
-import { comparePrefRefs, mergePrefData, prefFileName, prefsOfTrack, splitPrefRef } from "./prefroads";
+import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength, tripKey } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type Record } from "./store";
@@ -71,7 +71,10 @@ const map = createMap($("map"));
 // toLocaleString は呼ぶたびに書式を作り直して遅い(一覧の描き直しで数百回呼ぶ)ので、書式は一度だけ作る
 const kmFormat = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 1 });
 const km = (m: number) => kmFormat.format(m / 1000);
-const routeName = (ref: string) => data?.routes[ref]?.name ?? (active === "kokudo" ? `国道${ref}号` : ref);
+const routeName = (ref: string) =>
+  active === "prefroad"
+    ? prefRouteLabel(ref, data?.routes[ref]?.name, prefName)
+    : (data?.routes[ref]?.name ?? (active === "kokudo" ? `国道${ref}号` : ref));
 const BASE = import.meta.env.BASE_URL;
 
 /** 上下線のどちらかを走れば両方走ったことにし、点線国道は自己申告に置き換えた記録 */
