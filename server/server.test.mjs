@@ -96,12 +96,28 @@ describe("/api/logs", () => {
     const text = "#GBOWLCSV,2026-09-19 20:05:37\nTime(sec),Latitude(deg),Longitude(deg)\n0,35,139\n";
     const { id } = await (await fetch(`${base}?name=${encodeURIComponent("走行 1.csv")}`, { method: "POST", body: text })).json();
     const list = await (await fetch(base)).json();
-    expect(list).toEqual([expect.objectContaining({ id, name: "走行_1.csv" })]);
+    expect(list).toContainEqual(expect.objectContaining({ id, name: "走行_1.csv" }));
     expect(await (await fetch(`${base}/${encodeURIComponent(id)}`)).text()).toBe(text);
+  });
+
+  it("ログの日付と距離を一緒に残し、あとからも付けられる", async () => {
+    const { id } = await (await fetch(`${base}?name=a.gpx&date=2022-02-26&m=25712.4`, { method: "POST", body: "<gpx/>" })).json();
+    const { id: old } = await (await fetch(`${base}?name=b.gpx`, { method: "POST", body: "<gpx/>" })).json();
+    let list = await (await fetch(base)).json();
+    expect(list.find((l) => l.id === id)).toMatchObject({ date: "2022-02-26", m: 25712 });
+    expect(list.find((l) => l.id === old).date).toBeUndefined();
+
+    const patch = (body) => fetch(`${base}/${encodeURIComponent(old)}`, { method: "PATCH", body: JSON.stringify(body) });
+    expect((await patch({ date: "bad", m: 1 })).status).toBe(400);
+    expect((await patch({ date: "2021-08-28", m: 59000 })).status).toBe(200);
+    list = await (await fetch(base)).json();
+    expect(list.find((l) => l.id === old)).toMatchObject({ date: "2021-08-28", m: 59000 });
+    expect(list.some((l) => l.id === "meta.json")).toBe(false);
   });
 
   it("ログフォルダの外は読めない", async () => {
     expect((await fetch(`${base}/..%2Frecord.json`)).status).toBe(404);
+    expect((await fetch(`${base}/meta.json`)).status).toBe(404);
   });
 });
 

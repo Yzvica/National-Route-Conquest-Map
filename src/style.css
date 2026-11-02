@@ -138,6 +138,8 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .timeline { max-height: 320px; overflow-y: auto; }
 .timeline li .muted { font-variant-numeric: tabular-nums; min-width: 6.5em; }
 .timeline li.conquer { font-weight: 700; }
+.timeline.logs li.shown { font-weight: 700; }
+.timeline.logs li.shown a { color: #8e24aa; }
 #game details summary { cursor: pointer; margin: 8px 0; }
 .chart { width: 100%; height: auto; display: block; }
 .chart .grid { stroke: var(--line); stroke-width: 1; }
