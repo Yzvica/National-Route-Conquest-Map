@@ -86,19 +86,46 @@ export function mergeRecord(base, add) {
 /** ファイル名に使えない文字を除く。id は「保存時刻-元の名前.gz」 */
 const safeName = (name) => name.replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 120) || "log";
 
-function saveLog(name, body) {
+// 振り返りのログ一覧に出す日付と走行距離(ブラウザで読んだときに計算したもの)。ログ ID → { date, m }
+const META = () => join(LOGS, "meta.json");
+
+function loadMeta() {
+  try {
+    return JSON.parse(readFileSync(META(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+const isMeta = (m) => m && typeof m.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(m.date) && typeof m.m === "number" && m.m >= 0;
+
+function setMeta(id, m) {
+  const all = loadMeta();
+  all[id] = { date: m.date, m: Math.round(m.m) };
+  writeFileSync(`${META()}.tmp`, JSON.stringify(all));
+  renameSync(`${META()}.tmp`, META());
+}
+
+function saveLog(name, body, meta) {
   mkdirSync(LOGS, { recursive: true });
   const id = `${Date.now()}-${safeName(name)}.gz`;
   writeFileSync(join(LOGS, id), gzipSync(body));
+  if (isMeta(meta)) setMeta(id, meta);
   return id;
 }
 
 function listLogs() {
   if (!existsSync(LOGS)) return [];
+  const meta = loadMeta();
   return readdirSync(LOGS)
     .filter((f) => f.endsWith(".gz"))
     .sort()
-    .map((id) => ({ id, name: id.replace(/^\d+-/, "").replace(/\.gz$/, ""), size: statSync(join(LOGS, id)).size }));
+    .map((id) => ({
+      id,
+      name: id.replace(/^\d+-/, "").replace(/\.gz$/, ""),
+      size: statSync(join(LOGS, id)).size,
+      ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
+    }));
 }
 
 // --- 配信 ---
@@ -176,15 +203,23 @@ export function createApp() {
         if (req.method === "GET") return json(res, 200, listLogs());
         if (req.method === "POST") {
           const body = Buffer.concat(await readChunks(req));
-          return json(res, 200, { id: saveLog(url.searchParams.get("name") ?? "log", body) });
+          const meta = { date: url.searchParams.get("date"), m: Number(url.searchParams.get("m") ?? NaN) };
+          return json(res, 200, { id: saveLog(url.searchParams.get("name") ?? "log", body, meta) });
         }
         return json(res, 405, { error: "method not allowed" });
       }
       const logMatch = /^\/api\/logs\/([^/]+)$/.exec(url.pathname);
-      if (logMatch && req.method === "GET") {
+      if (logMatch && (req.method === "GET" || req.method === "PATCH")) {
         const id = decodeURIComponent(logMatch[1]);
         const path = join(LOGS, id);
-        if (id !== safeName(id) || !existsSync(path)) return json(res, 404, { error: "not found" });
+        if (id !== safeName(id) || !id.endsWith(".gz") || !existsSync(path)) return json(res, 404, { error: "not found" });
+        // 前から保存してあるログの日付と距離を、ブラウザで読んだときに足す
+        if (req.method === "PATCH") {
+          const meta = JSON.parse(await readBody(req));
+          if (!isMeta(meta)) return json(res, 400, { error: "bad meta" });
+          setMeta(id, meta);
+          return json(res, 200, { id, date: meta.date, m: Math.round(meta.m) });
+        }
         // 保存している gzip をそのまま送り、ブラウザに展開してもらう
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Encoding": "gzip" });
         return res.end(readFileSync(path));

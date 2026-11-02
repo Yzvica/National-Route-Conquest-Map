@@ -75,16 +75,21 @@ export interface RecordStore {
    */
   replaceCoverage(next: Record): Promise<Record>;
   clear(): Promise<void>;
-  /** 走行ログそのものを残す(MiniPC のときだけ。あとで判定し直すため) */
-  saveLog(name: string, text: string): Promise<void>;
+  /** 走行ログそのものを残す(MiniPC のときだけ。あとで判定し直すため)。trip は一覧に出す日付と距離 */
+  saveLog(name: string, text: string, trip?: Trip): Promise<void>;
   listLogs(): Promise<SavedLog[]>;
   loadLog(id: string): Promise<string>;
+  /** 日付と距離のない(前から保存してある)ログに付ける */
+  setLogTrip(id: string, trip: Trip): Promise<void>;
 }
 
 export interface SavedLog {
   id: string;
   name: string;
   size: number;
+  /** ログの日付と走行距離(m)。付ける前に保存したログにはない */
+  date?: string;
+  m?: number;
 }
 
 const LOGS_API = `${import.meta.env.BASE_URL}api/logs`;
@@ -122,9 +127,18 @@ class ServerStore implements RecordStore {
     await fetch(API, { method: "DELETE" });
   }
 
-  async saveLog(name: string, text: string) {
-    const res = await fetch(`${LOGS_API}?name=${encodeURIComponent(name)}`, { method: "POST", body: text });
+  async saveLog(name: string, text: string, trip?: Trip) {
+    const q = new URLSearchParams({ name });
+    if (trip) {
+      q.set("date", trip.date);
+      q.set("m", String(trip.m));
+    }
+    const res = await fetch(`${LOGS_API}?${q}`, { method: "POST", body: text });
     if (!res.ok) throw new Error(`ログを保存できませんでした(${res.status})`);
+  }
+
+  async setLogTrip(id: string, trip: Trip) {
+    await fetch(`${LOGS_API}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(trip) });
   }
 
   async listLogs(): Promise<SavedLog[]> {
@@ -186,6 +200,7 @@ class LocalStore implements RecordStore {
   async loadLog(): Promise<string> {
     throw new Error("このブラウザにはログを保存していません");
   }
+  async setLogTrip() {}
 
   async clear() {
     try {

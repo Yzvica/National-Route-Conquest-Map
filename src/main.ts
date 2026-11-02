@@ -29,7 +29,7 @@ import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength, tripKey } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
-import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type Record } from "./store";
+import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type Record, type SavedLog } from "./store";
 import {
   CATEGORY_LABELS,
   DATASET_LABELS,
@@ -171,6 +171,16 @@ const today = () => {
 
 type GameTab = "achievements" | "suggest" | "review" | "prefs";
 let gameTab: GameTab = "achievements";
+/** 振り返りのログ一覧に出す、MiniPC に保存してあるログ。読み込む前は null */
+let savedLogs: SavedLog[] | null = null;
+/** ログ一覧で地図に出しているログ */
+let shownLog: string | null = null;
+
+async function refreshLogs() {
+  const store = await storePromise;
+  savedLogs = store.shared ? await store.listLogs().catch(() => []) : [];
+  if (gameTab === "review") keepScroll(renderGame);
+}
 /** 都道府県の形(地図の色分け用)。データがなければ undefined */
 let prefShapes: PrefShapes | undefined;
 /** 地図を都道府県で色分けしているか */
@@ -205,12 +215,13 @@ function renderGame() {
         ? suggestionsView({ kind: active, data, summary, coverage: coverage() }, routeName)
         : gameTab === "prefs"
           ? prefsView(summary, active, prefFill, !!prefShapes)
-          : reviewView(summary, record.trips, today(), routeName, active);
+          : reviewView(summary, record.trips, today(), routeName, active, savedLogs, shownLog);
   }
 }
 
 function openGame(tab: GameTab) {
   gameTab = tab;
+  if (tab === "review") void refreshLogs();
   const dialog = $<HTMLDialogElement>("game");
   if (!dialog.open) dialog.showModal();
   renderGame();
@@ -705,7 +716,7 @@ async function matchAll(track: TrackPoint[]): Promise<Coverage> {
  */
 async function importFiles(
   files: File[],
-  opts: { save: boolean; logEntry: boolean; replace?: boolean } = { save: true, logEntry: true },
+  opts: { save: boolean; logEntry: boolean; replace?: boolean; saved?: SavedLog[] } = { save: true, logEntry: true },
 ) {
   if (!datasets.kokudo) return;
   if (expresswayReady) {
@@ -723,12 +734,16 @@ async function importFiles(
     status.textContent = `${file.name} を判定中…(${i + 1} / ${files.length})`;
     try {
       const track = await parseTrackFile(file);
-      if (opts.save) await store.saveLog(file.name, await file.text()).catch(() => undefined);
-      const result = await matchAll(track);
       const day = logDate(track, file);
+      const trip = { date: day, m: Math.round(trackLength(track)) };
+      if (opts.save) await store.saveLog(file.name, await file.text(), trip).catch(() => undefined);
+      // 前から保存してあるログには、ログ一覧に出す日付と距離をここで付ける
+      const saved = opts.saved?.[i];
+      if (saved && saved.date === undefined) await store.setLogTrip(saved.id, trip).catch(() => undefined);
+      const result = await matchAll(track);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
-      const trips = new Map([[tripKey(track, day), { date: day, m: Math.round(trackLength(track)) }]]);
+      const trips = new Map([[tripKey(track, day), trip]]);
       const added = { coverage: result, dates, logs, declared: new Map(), trips };
       if (opts.replace) pending = mergeRecord(pending, added);
       else record = await store.add(added);
@@ -755,6 +770,7 @@ async function importFiles(
     (failed.length ? `(読めなかったもの: ${failed.join(" / ")})` : "");
   render();
   announce(before);
+  if (store.shared) void refreshLogs();
 }
 
 // MiniPC に保存してあるログをすべて判定し直す(高速道路のデータを足したあと・判定の方法を直したあとなど)
@@ -777,7 +793,7 @@ $("rematch").addEventListener("click", async () => {
     return;
   const files: File[] = [];
   for (const l of saved) files.push(new File([await store.loadLog(l.id)], l.name, { lastModified: Number(l.id.split("-")[0]) || Date.now() }));
-  await importFiles(files, { save: false, logEntry: false, replace: true });
+  await importFiles(files, { save: false, logEntry: false, replace: true, saved });
 });
 
 $<HTMLInputElement>("file").addEventListener("change", async (ev) => {
@@ -958,9 +974,46 @@ $("game-close").addEventListener("click", () => $<HTMLDialogElement>("game").clo
 $("game").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) $<HTMLDialogElement>("game").close();
 });
+/** 保存してあるログの軌跡を地図に出す */
+async function showSavedLog(id: string) {
+  const store = await storePromise;
+  const log = savedLogs?.find((l) => l.id === id);
+  const name = log?.name ?? id;
+  status.textContent = `${name} を読み込み中…`;
+  try {
+    const file = new File([await store.loadLog(id)], name, { lastModified: Number(id.split("-")[0]) || Date.now() });
+    const track = await parseTrackFile(file);
+    if (track.length === 0) throw new Error("位置の記録がありません");
+    $<HTMLDialogElement>("game").close();
+    select(null, false);
+    showTrack(map, track);
+    shownLog = id;
+    const trip = { date: logDate(track, file), m: Math.round(trackLength(track)) };
+    if (log && log.date === undefined) {
+      Object.assign(log, trip);
+      await store.setLogTrip(id, trip).catch(() => undefined);
+    }
+    status.textContent = `${name}(${trip.date}・${(trip.m / 1000).toFixed(1)} km)の軌跡を表示しています`;
+  } catch (e) {
+    status.textContent = `${name} を表示できませんでした: ${(e as Error).message}`;
+  }
+}
+
 // 路線名を押したら、その路線を地図で表示する
 $("game-body").addEventListener("click", (e) => {
   const el = e.target as HTMLElement;
+  const log = el.closest<HTMLElement>("[data-log]");
+  if (log) {
+    e.preventDefault();
+    void showSavedLog(log.dataset.log!);
+    return;
+  }
+  if (el.closest("#clear-track")) {
+    showTrack(map, []);
+    shownLog = null;
+    renderGame();
+    return;
+  }
   if (el.closest("#pref-fill")) {
     prefFill = !prefFill;
     renderGame();
