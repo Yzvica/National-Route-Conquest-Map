@@ -140,6 +140,7 @@ class PrefRelations(osmium.SimpleHandler):
             return
         self.networks[network] += 1
         name = norm(tags.get("name", ""))
+        official = norm(tags.get("official_name", ""))
         ref = unicodedata.normalize("NFKC", tags.get("ref", "")).strip()
         m = ROAD_NAME.match(name)
         if not NUMERIC_REF.match(ref):
@@ -154,9 +155,11 @@ class PrefRelations(osmium.SimpleHandler):
         if DETAIL and any(d in name or d in tags.get("official_name", "") or d in tags.get("alt_name", "") for d in DETAIL):
             print(f"  [確認] リレーション {r.id}: {dict(tags)} / 道 {sum(1 for m in r.members if m.type == 'w')} 本 / 都道府県 {code}",
                   file=sys.stderr)
+        # 「東京都道・神奈川県道3号」+ official_name「世田谷町田線」のように、路線名が別に書いてあればつなげる
+        full = name + official if official and official not in name and name.endswith("号") else name
         for mem in r.members:
             if mem.type == "w":
-                self.members[mem.ref].append((code, str(int(ref)), name))
+                self.members[mem.ref].append((code, str(int(ref)), full))
 
 
 # 確認用: 名前にこの言葉を含むリレーションと道を、どう扱ったかログに出す(例: PREFROAD_DETAIL="津久井道 世田谷町田")
