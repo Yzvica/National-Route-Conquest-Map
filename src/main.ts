@@ -26,6 +26,7 @@ import {
 import { classifyTrack } from "./layers";
 import { DEFAULT_OPTIONS, matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
+import { fileNameTime } from "./parsers/csv";
 import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength, tripKey } from "./trips";
@@ -680,9 +681,9 @@ $("tabs").addEventListener("click", (e) => {
   if (kind && kind !== active) showDataset(kind);
 });
 
-/** ログの日付(YYYY-MM-DD、端末の時刻帯)。ログに時刻がなければファイルの更新日を使う */
+/** ログの日付(YYYY-MM-DD、端末の時刻帯)。ログに時刻がなければファイル名の日時、それもなければファイルの更新日を使う */
 function logDate(track: TrackPoint[], file: File): string {
-  const d = new Date(track.find((p) => p.time !== undefined)?.time ?? file.lastModified);
+  const d = new Date(track.find((p) => p.time !== undefined)?.time ?? fileNameTime(file.name) ?? file.lastModified);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
@@ -740,9 +741,9 @@ async function importFiles(
       const day = logDate(track, file);
       const trip = { date: day, m: Math.round(trackLength(track)) };
       if (opts.save) await store.saveLog(file.name, await file.text(), trip).catch(() => undefined);
-      // 前から保存してあるログには、ログ一覧に出す日付と距離をここで付ける
+      // 保存してあるログには、ログ一覧に出す日付と距離をここで付ける(前に時刻を読み違えて 1970年になっていたものも直す)
       const saved = opts.saved?.[i];
-      if (saved && saved.date === undefined) await store.setLogTrip(saved.id, trip).catch(() => undefined);
+      if (saved && (saved.date !== trip.date || saved.m !== trip.m)) await store.setLogTrip(saved.id, trip).catch(() => undefined);
       const result = await matchAll(track);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
@@ -1029,7 +1030,7 @@ async function showSavedLog(id: string) {
     showTrack(map, track);
     shownLog = id;
     const trip = { date: logDate(track, file), m: Math.round(trackLength(track)) };
-    if (log && log.date === undefined) {
+    if (log && (log.date !== trip.date || log.m !== trip.m)) {
       Object.assign(log, trip);
       await store.setLogTrip(id, trip).catch(() => undefined);
     }

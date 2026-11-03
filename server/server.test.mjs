@@ -50,6 +50,16 @@ describe("ログの走行距離", () => {
     expect(a.trips).toEqual({ t1: { date: "2026-10-01", m: 1000 } });
     expect(mergeRecord(a, { trips: { t1: { date: "2026-10-01", m: 1200 } } }).trips).toEqual({ t1: { date: "2026-10-01", m: 1200 } });
   });
+
+  it("時刻を読み違えた 1970年の記録は捨て、正しい日付で入れ直せる", () => {
+    const old = { coverage: {}, logs: [], dates: { s1: ["1970-01-01", "2024-03-01"] }, trips: { t0: { date: "1970-01-01", m: 52100 } } };
+    const merged = mergeRecord(old, {
+      dates: { s1: ["2024-02-04", "2024-02-04"], s2: ["1970-01-01", "1970-01-01"] },
+      trips: { t1707000000000: { date: "2024-02-04", m: 52100 }, t0: { date: "1970-01-01", m: 1 } },
+    });
+    expect(merged.trips).toEqual({ t1707000000000: { date: "2024-02-04", m: 52100 } });
+    expect(merged.dates).toEqual({ s1: ["2024-02-04", "2024-02-04"] });
+  });
 });
 
 describe("/api/record", () => {
