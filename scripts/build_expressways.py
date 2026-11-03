@@ -12,6 +12,8 @@
 - IC のランプ(下の道から本線へ / 本線から下の道へ。進む向きの線)と、高速道路に出入りできる場所
   (ランプが本線につながる点・本線の端)も入れる。アプリは高架の高速道路と下の国道を見分ける手がかりにする。
   ランプも取り出すので、osmium では w/highway=motorway_link,trunk_link も絞り込みに入れること
+- 路線に数えない高速道路の線(「〜インター線」などの名前の本線は `uncounted`、JCT のランプは `jct`)も入れる。
+  アプリはこれも「近くに高速道路がある」とみなす(入れないと、そこを走っている間は下の道にされてしまう)
 
 pyosmium が必要です(pip install osmium)。
 """
@@ -186,17 +188,18 @@ def line_len(coords: list[tuple[float, float]]) -> float:
     return sum(dist(coords[i - 1], coords[i]) for i in range(1, len(coords)))
 
 
-def ramps_and_access(ways: list[dict], links: list[dict]) -> tuple[list[dict], list[list[float]]]:
+def ramps_and_access(ways: list[dict], links: list[dict]) -> tuple[list[dict], list[list[float]], list[list[list[float]]]]:
     """IC のランプ(進む向きの線と、in: 下の道から本線へ / out: 本線から下の道へ)と、高速道路に出入りできる場所を求める。
 
     ways は高速道路(本線)、links はランプの候補(motorway_link・trunk_link)。
-    名前が「〜インター線」「〜ランプ」などで路線にしない高速道路の線も、ランプとして扱う。
+    名前が「〜インター線」「〜ランプ」などで路線にしない高速道路の線も、本線として扱う
+    (松山外環状道路インター線のように、高架の本線そのものがこの名前のことがあるため)。
     ランプのまとまり(つながっている線)のうち、本線にも下の道(抽出に入っていないので、行き止まりに見える端)にも
-    つながっているものが IC のランプ。本線どうしだけをつなぐもの(JCT)は、出入りできる場所にだけ入れる
+    つながっているものが IC のランプ。本線どうしだけをつなぐもの(JCT)は、出入りできる場所と jct にだけ入れる。
+    戻り値は (IC のランプ, 出入りできる場所, JCT のランプの線)
     """
-    mains = [w for w in ways if not SKIP_NAME.search(w["name"])]
-    ramps_in = [dict(w, oneway_default=w["tags"].get("highway") == "motorway") for w in ways if SKIP_NAME.search(w["name"])]
-    ramps_in += [dict(l, oneway_default=l["tags"].get("highway") == "motorway_link") for l in links]
+    mains = ways
+    ramps_in = [dict(l, oneway_default=l["tags"].get("highway") == "motorway_link") for l in links]
     main_nodes: set[int] = set()
     for w in mains:
         main_nodes.update(w["nodes"])
@@ -282,6 +285,8 @@ def ramps_and_access(ways: list[dict], links: list[dict]) -> tuple[list[dict], l
             cur = oriented[j]["nodes"][0 if back else -1]
         return coords
 
+    jct = [[rnd(p) for p in simplify(l["coords"], SIMPLIFY_METERS)]
+           for i, l in enumerate(oriented) if find(i) in touches_main and find(i) not in has_open_end]
     ramps: list[dict] = []
     for i, l in enumerate(oriented):
         if not l["dir"] or find(i) not in touches_main or find(i) not in has_open_end:
@@ -296,7 +301,7 @@ def ramps_and_access(ways: list[dict], links: list[dict]) -> tuple[list[dict], l
         if line_len(coords) < RAMP_MIN:
             continue
         ramps.append({"c": [rnd(p) for p in simplify(coords, SIMPLIFY_METERS)], "k": kind})
-    return ramps, [rnd(p) for p in access.values()]
+    return ramps, [rnd(p) for p in access.values()], jct
 
 
 def build(ways: list[dict], links: list[dict] | None = None) -> dict:
@@ -306,10 +311,12 @@ def build(ways: list[dict], links: list[dict] | None = None) -> dict:
     tunnels: list[dict] = []
     raw: dict[str, list[tuple[float, float]]] = {}
     oneway: set[str] = set()
+    uncounted: list[list[tuple[float, float]]] = []  # 路線に数えない高速道路の線
     for w in ways:
         tags, coords = w["tags"], w["coords"]
         name = w["name"]
         if not name or SKIP_NAME.search(name):
+            uncounted.append(coords)
             continue
         routes.setdefault(name, {"name": name})
         is_oneway = tags.get("oneway") in ("yes", "-1") or (tags.get("highway") == "motorway" and tags.get("oneway") != "no")
@@ -336,6 +343,7 @@ def build(ways: list[dict], links: list[dict] | None = None) -> dict:
     # 短すぎるもの(橋やトンネルの名前のまま残ったものは少し長くても)は、ほかの道の切れ端として数えない
     short = {r for r, c in route_cat.items() if sum(c.values()) < (1500 if WEAK_NAME.search(r) else MIN_ROUTE_LEN)}
     if short:
+        uncounted += [raw[s["id"]] for s in segments if s["routes"][0] in short]
         segments = [s for s in segments if s["routes"][0] not in short]
         keep_t = {s.get("tunnel") for s in segments}
         tunnels = [t for t in tunnels if t["id"] in keep_t]
@@ -350,7 +358,7 @@ def build(ways: list[dict], links: list[dict] | None = None) -> dict:
 
     find_pairs(segments, raw, oneway)
     order = ["expressway", "urban", "motorroad", "toll"]
-    ramps, access = ramps_and_access(ways, links or [])
+    ramps, access, jct = ramps_and_access(ways, links or [])
     return {
         "version": 1,
         "kind": "expressway",
@@ -360,6 +368,8 @@ def build(ways: list[dict], links: list[dict] | None = None) -> dict:
         "tunnels": tunnels,
         "ramps": ramps,
         "access": access,
+        "uncounted": [[rnd(p) for p in simplify(c, SIMPLIFY_METERS)] for c in uncounted],
+        "jct": jct,
     }
 
 
@@ -385,7 +395,7 @@ def main() -> None:
     kinds = defaultdict(int)
     for r in data["ramps"]:
         kinds[r["k"]] += 1
-    print(f"  ランプ: 入口 {kinds['in']} / 出口 {kinds['out']}、出入りできる場所 {len(data['access'])}", file=sys.stderr)
+    print(f"  ランプ: 入口 {kinds['in']} / 出口 {kinds['out']}、出入りできる場所 {len(data['access'])}、路線に数えない本線 {len(data['uncounted'])} / JCT のランプ {len(data['jct'])}", file=sys.stderr)
     for c, v in sorted(by_cat.items(), key=lambda kv: -kv[1]):
         print(f"  {c}: {v:,.0f} km", file=sys.stderr)
 

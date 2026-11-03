@@ -172,4 +172,81 @@ describe("classifyTrack(高架の高速道路と下の国道)", () => {
       expect(ck.get(s.id)).toBe(1);
     }
   });
+
+  it("ランプで高架に上がってから渋滞で何度か止まっても、高速道路のまま(ランプの本線側で一瞬だけ乗り換えたことにしない)", () => {
+    const track = drive([[139.0, Y], ...RAMP, [139.06, EY]], 30, 400);
+    const r = judge(track, true, 139.036);
+    expect(r.expressway).toBe(r.total);
+    expect(r.kokudo).toBe(0);
+  });
+
+  it("出口のランプが本線に沿って分かれていても、本線を走り続けただけなら降りたことにしない", () => {
+    // 東経139.04度で本線から分かれ、本線のすぐ脇を進んでから少しだけ離れ、本線のすぐ近く(真下)の下の道へ降りる
+    const exit: LonLat[] = [
+      [139.04, EY],
+      [139.0455, EY + 0.00004],
+      [139.0458, Y + 0.0005],
+      [139.0464, Y + 0.0005],
+      [139.0475, Y + 0.00002],
+    ];
+    const e = { ...expressway(true), ramps: [{ k: "out" as const, c: exit }], access: [[139.034, EY], [139.04, EY]] as LonLat[] };
+    // 下の道は、ランプが降りる所から東だけ
+    const k: RouteData = { ...kokudo(), segments: line("w2", [139.0475, Y], [139.06, Y], "main", "1") };
+    const track = drive([[139.0, 35.02], [139.02, EY], [139.06, EY]], 80);
+    const layers = classifyTrack(track, e, [k]);
+    expect([...layers.raw].every((x) => x === 1)).toBe(true);
+  });
+
+  it("出口のランプを降りてすぐ止まらずに入口のランプを上ったら(料金所・PA の通り抜け)、高速道路のまま", () => {
+    const exit: LonLat[] = [[139.04, EY], [139.041, Y + 0.0005], [139.042, Y + 0.0006]];
+    const entry: LonLat[] = [[139.0425, Y + 0.0006], [139.0435, Y + 0.0005], [139.0445, EY]];
+    const e = {
+      ...expressway(true),
+      ramps: [{ k: "out" as const, c: exit }, { k: "in" as const, c: entry }],
+      access: [[139.04, EY], [139.0445, EY]] as LonLat[],
+    };
+    const k = kokudo();
+    const path: LonLat[] = [[139.0, 35.02], [139.02, EY], ...exit, ...entry, [139.06, EY]];
+    expect([...classifyTrack(drive(path, 60), e, [k]).raw].every((x) => x === 1)).toBe(true);
+    // 間で止まったら、本当に降りて乗り直した
+    const before = drive([[139.0, 35.02], [139.02, EY], ...exit], 60);
+    const last = before[before.length - 1];
+    const wait = Array.from({ length: 40 }, (_, i) => ({ ...last, time: last.time! + (i + 1) * 1000 }));
+    const after = drive([exit[exit.length - 1], ...entry, [139.06, EY]], 60).map((p) => ({ ...p, time: p.time! + last.time! + 41_000 }));
+    const restarted = [...before, ...wait, ...after];
+    expect([...classifyTrack(restarted, e, [k]).raw].some((x) => x === 0)).toBe(true);
+  });
+
+  it("高速道路と下の道が並ぶ所を、時速100km未満でも長く止まらずに走ったら高速道路の上", () => {
+    // ログの最初から並んでいる所を走るので、それまでの流れからは決められない
+    const nonstop = judge(drive([[139.025, EY], [139.06, EY]], 70), true);
+    expect(nonstop.expressway).toBe(nonstop.total);
+    expect(nonstop.kokudo).toBe(0);
+    // 信号で止まりながら走ったら下の道
+    const stops = judge(drive([[139.025, Y], [139.06, Y]], 50, 600), true);
+    expect(stops.expressway).toBe(0);
+    expect(stops.kokudo).toBe(stops.total);
+  });
+
+  it("路線に数えない本線(「〜インター線」など)を走っている間も、高速道路の上", () => {
+    const e = expressway(true);
+    const counted = e.segments.filter((s) => s.id.startsWith("w100-"));
+    const uncounted = e.segments.filter((s) => s.id.startsWith("w101-")).map((s) => s.coords);
+    const track = drive([[139.0, 35.02], [139.02, EY], [139.06, EY]], 80);
+    const layers = classifyTrack(track, { ...e, segments: counted, uncounted }, [kokudo()]);
+    expect([...layers.raw].every((x) => x === 1)).toBe(true);
+  });
+
+  it("JCT のランプ(高速道路の区間にない)を走っている間も、高速道路の上", () => {
+    // 東経139.02〜139.04度は、国道と並ぶ JCT のランプ
+    const e = expressway(true);
+    const jctCoords: LonLat[] = [[139.02, EY], [139.04, EY]];
+    const segments = e.segments.filter((s) => s.coords[0][0] < 139.02 - 1e-9 || s.coords[0][0] >= 139.04 - 1e-9);
+    const track = drive([[139.0, 35.02], [139.02, EY], [139.06, EY]], 80);
+    const k = kokudo();
+    const without = classifyTrack(track, { ...e, segments, access: [] }, [k]);
+    expect([...without.raw].some((x) => x === 0)).toBe(true);
+    const layers = classifyTrack(track, { ...e, segments, access: [], jct: [jctCoords] }, [k]);
+    expect([...layers.raw].every((x) => x === 1)).toBe(true);
+  });
 });
