@@ -45,6 +45,11 @@ NOT_ROADS = {"construction", "proposed", "planned", "abandoned", "disused", "raz
 SIDEWALK_HIGHWAYS = {"footway", "cycleway", "pedestrian", "path", "steps"}
 SIDEWALK_DIST = 25.0  # m。車道からこれ以内なら脇を通っているとみなす
 SIDEWALK_SHARE = 0.8  # 区間の点のうちこの割合以上が車道の脇なら歩道とみなす
+# 国道のリレーションに入っていない自動車専用道路(extract_pbf.py の "plain"・"coded")は、
+# 同じ番号の国道のリレーションの道からこれより離れていれば除く。
+# 知多半島道路(愛知県道55号)・南薩縦貫道(鹿児島県道)のような県道の番号が国道の番号として入ってしまうため。
+# 番号のないリレーションに入っている道("yes"、西九州自動車道=国道497号など)はそのまま残す
+PLAIN_MOTORWAY_NEAR = 30_000.0  # m
 OUT = Path(__file__).resolve().parent.parent / "public" / "data" / "routes.json"
 # 中央分離帯などで上下線が別の線(一方通行)になっているところは、向きが逆で近い区間を組(pair)にして、
 # どちらか片方を走れば制覇、距離は1本分で数える。まずこれ(m)以内、残りはこれ以内で組む
@@ -252,6 +257,7 @@ def build(osm: dict) -> dict:
     old_segments: list[dict] = []
     raw: dict[str, list[tuple[float, float]]] = {}  # 組にするときに使う、間引く前の区間の点
     oneway: set[str] = set()
+    plain_ways: dict[int, str] = {}  # リレーションに入っていない自動車専用道路 → ref
     skipped_km = 0.0
     for el in osm["elements"]:
         if el["type"] != "way" or el["id"] not in way_routes or "geometry" not in el:
@@ -280,6 +286,8 @@ def build(osm: dict) -> dict:
         elif tags.get("_kokudo_motorway") or "バイパス" in tags.get("name", "") or "バイパス" in tags.get("official_name", ""):
             # 一般国道の自動車専用道路(extract_pbf.py が加えたもの)もバイパスとして数える
             cats.append("bypass")
+            if tags.get("_kokudo_motorway") in ("plain", "coded"):
+                plain_ways[el["id"]] = tags.get("ref", "") + (f" nat_ref={tags['nat_ref']}" if tags.get("nat_ref") else "")
         else:
             cats.append("main")
         refs = sorted((r for r in way_routes[el["id"]] if r in routes), key=int)
@@ -317,6 +325,7 @@ def build(osm: dict) -> dict:
             if is_oneway:
                 oneway.add(seg["id"])
 
+    segments = drop_far_plain_motorways(segments, plain_ways)
     if skipped_km:
         print(f"道路でない線(highway なし・工事中・廃道など)を除きました: {skipped_km:.1f} km", file=sys.stderr)
     segments, dropped = drop_sidewalks(segments)
@@ -339,6 +348,73 @@ def build(osm: dict) -> dict:
         "segments": segments,
         "tunnels": tunnels,
     }
+
+
+def drop_far_plain_motorways(segments: list[dict], plain_ways: dict[int, str]) -> list[dict]:
+    """リレーションに入っていない自動車専用道路のうち、同じ番号の国道(リレーションの道)から離れたひとつながりを除く"""
+    if not plain_ways:
+        return segments
+    way_of = lambda s: int(s["id"][1:].split("-")[0])  # noqa: E731
+    cell = 0.25  # 度(約25km)
+    near: dict[str, dict[tuple[int, int], list]] = defaultdict(lambda: defaultdict(list))
+    for s in segments:
+        if way_of(s) in plain_ways:
+            continue
+        for r in s["routes"]:
+            for p in s["coords"]:
+                near[r][(int(p[0] // cell), int(p[1] // cell))].append(p)
+
+    def close(ref: str, p) -> bool:
+        g = near.get(ref)
+        if not g:
+            return True  # 比べる道がない(自動車専用道路だけの国道)ときは残す
+        cx, cy = int(p[0] // cell), int(p[1] // cell)
+        return any(dist(p, q) <= PLAIN_MOTORWAY_NEAR
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1) for q in g.get((cx + dx, cy + dy), ())[::4])
+
+    drop: dict[str, set[str]] = defaultdict(set)  # 区間 → 外す番号
+    for ref in sorted({r for s in segments if way_of(s) in plain_ways for r in s["routes"]}, key=int):
+        segs = [s for s in segments if way_of(s) in plain_ways and ref in s["routes"]]
+        # 端の点でつながっているものをひとまとまりにする
+        parent = list(range(len(segs)))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        ends: dict[tuple[float, float], int] = {}
+        for i, s in enumerate(segs):
+            for p in (s["coords"][0], s["coords"][-1]):
+                k = (round(p[0], 4), round(p[1], 4))
+                if k in ends:
+                    parent[find(i)] = find(ends[k])
+                else:
+                    ends[k] = i
+        groups: dict[int, list[dict]] = defaultdict(list)
+        for i, s in enumerate(segs):
+            groups[find(i)].append(s)
+        for g in groups.values():
+            if any(close(ref, p) for s in g for p in s["coords"]):
+                continue
+            names = sorted({s.get("name", "(名前なし)") for s in g})
+            refs = sorted({plain_ways[way_of(s)] for s in g})
+            print(f"国道{ref}号から離れた自動車専用道路を除きました: {sum(s['len'] for s in g) / 1000:.1f} km"
+                  f"  {' / '.join(names[:3])}  ref={' / '.join(refs[:3])}", file=sys.stderr)
+            for s in g:
+                drop[s["id"]].add(ref)
+    out = []
+    for s in segments:
+        if s["id"] not in drop:
+            out.append(s)
+            continue
+        # ほかの番号の国道のそばでもあれば、その番号だけで残す
+        keep = [r for r in s["routes"] if r not in drop[s["id"]]]
+        if keep:
+            cats = [c for c in s["cats"] if c != "overlap" or len(keep) > 1]
+            out.append({**s, "routes": keep, "cats": cats})
+    return out
 
 
 def is_old_relation(tags: dict) -> bool:

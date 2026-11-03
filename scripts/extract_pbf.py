@@ -32,8 +32,11 @@ from build_routes import dist  # noqa: E402
 
 # 国道の番号(1〜58、101〜507。109〜111・214〜216 は欠番)
 NATIONAL_REFS = {str(n) for n in [*range(1, 59), *range(101, 508)]} - {"109", "110", "111", "214", "215", "216"}
-# build_routes.py がバイパス扱いにする目印
+# build_routes.py がバイパス扱いにする目印。値は、番号のないリレーション(西九州自動車道など)に入っている道が "yes"、
+# ref が「E35;497」のように高速道路の記号と一緒のもの・nat_ref のものが "coded"、ref が番号だけのものが "plain"。
+# "coded"・"plain" には県道の番号(知多半島道路の ref=55 など)が混じるので、build_routes.py で国道のそばのものだけ残す
 MOTORWAY_TAG = "_kokudo_motorway"
+CODED_REF = re.compile(r"[A-Za-z]\d")
 
 
 def national_refs_of(tags: osmium.osm.TagList) -> list[str]:
@@ -82,7 +85,8 @@ class MotorwayHandler(osmium.SimpleHandler):
             self.marked.add(w.id)
             return
         t = dict(tags)
-        t[MOTORWAY_TAG] = "yes"
+        coded = CODED_REF.search(tags.get("ref", "")) or any(r.strip() in NATIONAL_REFS for r in re.split(r"[;,]", tags.get("nat_ref", "")))
+        t[MOTORWAY_TAG] = "coded" if coded else "plain"
         self.ways.append({"type": "way", "id": w.id, "tags": t, "geometry": geometry})
 
 
