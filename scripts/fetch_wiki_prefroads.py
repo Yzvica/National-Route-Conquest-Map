@@ -42,31 +42,47 @@ def page_titles(pref: str) -> list[str]:
     return [f"{pref}の{kind}一覧", f"{pref}の{kind}", f"{pref}{kind}一覧"]
 
 
-def fetch(title: str) -> tuple[str, str] | None:
-    """ページの wikitext(転送はたどる)。無ければ None"""
-    q = urllib.parse.urlencode({
-        "action": "query", "prop": "revisions", "rvprop": "content", "rvslots": "main",
-        "titles": title, "redirects": 1, "format": "json", "formatversion": 2,
-    })
-    req = urllib.request.Request(f"{API}?{q}", headers={"User-Agent": UA})
-    for attempt in range(6):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                data = json.load(r)
-            break
-        except Exception as e:  # noqa: BLE001
-            if attempt == 5:
-                print(f"  {title}: 取得できません ({e})", file=sys.stderr)
-                return None
-            # 続けて取りすぎると 429 が返るので、待ってからやり直す
-            wait = 5 * 2 ** attempt
-            if isinstance(e, urllib.error.HTTPError) and e.headers.get("Retry-After", "").isdigit():
-                wait = max(wait, int(e.headers["Retry-After"]))
-            time.sleep(wait)
-    page = data["query"]["pages"][0]
-    if page.get("missing"):
-        return None
-    return page["title"], page["revisions"][0]["slots"]["main"]["content"]
+def fetch_many(titles: list[str]) -> dict[str, tuple[str, str]]:
+    """ページの wikitext をまとめて取る(転送はたどる)。頼んだ題名 → (本当の題名, wikitext)。無いページは入らない"""
+    out: dict[str, tuple[str, str]] = {}
+    for k in range(0, len(titles), 50):
+        chunk = titles[k:k + 50]
+        q = urllib.parse.urlencode({
+            "action": "query", "prop": "revisions", "rvprop": "content", "rvslots": "main",
+            "titles": "|".join(chunk), "redirects": 1, "format": "json", "formatversion": 2,
+        })
+        req = urllib.request.Request(API, data=q.encode(), headers={"User-Agent": UA})
+        data = None
+        for attempt in range(6):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    data = json.load(r)
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == 5:
+                    print(f"  {chunk[0]} ほか: 取得できません ({e})", file=sys.stderr)
+                    break
+                # 続けて取りすぎると 429 が返るので、待ってからやり直す
+                wait = 5 * 2 ** attempt
+                if isinstance(e, urllib.error.HTTPError) and e.headers.get("Retry-After", "").isdigit():
+                    wait = max(wait, int(e.headers["Retry-After"]))
+                time.sleep(wait)
+        time.sleep(1.5)
+        if not data:
+            continue
+        q = data.get("query", {})
+        back: dict[str, str] = {t: t for t in chunk}
+        for key in ("normalized", "redirects"):
+            for n in q.get(key, []):
+                for orig, cur in list(back.items()):
+                    if cur == n["from"]:
+                        back[orig] = n["to"]
+        pages = {pg["title"]: pg for pg in q.get("pages", []) if not pg.get("missing") and pg.get("revisions")}
+        for orig, cur in back.items():
+            pg = pages.get(cur)
+            if pg:
+                out[orig] = (cur, pg["revisions"][0]["slots"]["main"]["content"])
+    return out
 
 
 def strip_markup(s: str) -> str:
@@ -78,69 +94,108 @@ def strip_markup(s: str) -> str:
     return unicodedata.normalize("NFKC", s).strip()
 
 
-# 起点・終点の市町村名(「横浜市」「愛甲郡愛川町」「千代田区」など。郡は取る)
-MUNI = re.compile(r"([^\s、,・()（）]+?(?:市|町|村|区))")
+# 起点・終点の市町村名(「横浜市中区」→横浜市、「愛甲郡愛川町」→愛川町、「千代田区」など)
+TOKEN = re.compile(r"[^\s、,・()（）「」\[\]|]+")
+PREF_HEAD = re.compile("^(?:" + "|".join(PREFS) + ")")
+MUNI_ORDER = [re.compile(r"^.+?市(?!市)"), re.compile(r"^.+?[町村]"), re.compile(r"^.+?区")]
 
 
-def munis(text: str) -> list[str]:
-    out = []
-    for m in MUNI.finditer(strip_markup(text)):
-        name = re.sub(r"^.*郡", "", m.group(1))
-        if len(name) >= 2 and name not in out:
-            out.append(name)
-    return out
+def first_muni(text: str) -> str | None:
+    for tok in TOKEN.findall(strip_markup(text)):
+        tok = PREF_HEAD.sub("", tok)
+        tok = re.sub(r"^.+?郡", "", tok)
+        for pat in MUNI_ORDER:
+            m = pat.match(tok)
+            if m and len(m.group(0)) >= 2:
+                return m.group(0)
+    return None
+
+
+# 路線の名前に出てくる都道府県道の呼び方(「神奈川県道」「北海道道」)
+ROADS = "|".join(re.escape("北海道道" if p == "北海道" else p + "道") for p in PREFS)
+ROUTE = re.compile(rf"((?:{ROADS})(?:・(?:{ROADS}))*)\s*(\d+)\s*号")
+LINK = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]")
+ENDS = re.compile(r"(起点|終点)\s*[=:：]\s*([^\n]+)")
+
+
+def route_in(pref: str, text: str) -> tuple[str, str] | None:
+    """text の中で最初に出てくる、この都道府県の路線 → (番号, 名前)"""
+    own = "北海道道" if pref == "北海道" else pref + "道"
+    for m in ROUTE.finditer(text):
+        if own in m.group(1).split("・"):
+            rest = re.match(r"[^\]|\n<{}（(、。]*", text[m.end():]).group(0).strip()
+            return str(int(m.group(2))), f"{own}{int(m.group(2))}号{rest}"
+    return None
 
 
 def parse(pref: str, text: str) -> dict[str, dict]:
-    """一覧の wikitext から 番号 → {name, from, to}。表の行と箇条書きのどちらにも対応する"""
-    kind = road_kind(pref)
-    head = pref if pref != "北海道" else "北海"
-    route = re.compile(rf"(?:{re.escape(head)})?{kind[0]}道\s*(\d+)\s*号\s*([^\]|\n<{{}}]*)")
+    """一覧の wikitext から 番号 → {name, title(記事), from, to}。表の行と箇条書きのどちらにも対応する"""
     routes: dict[str, dict] = {}
 
-    def add(num: str, name: str, rest: str) -> None:
-        ref = str(int(num))
+    def add(unit: str, cells: list[str]) -> None:
+        if re.match(r"^[*#:]{2}", unit) or re.search(r"^[*#:]?\s*\(?\d*\)?\s*(?:旧・|元・)", unit):
+            return  # 下の階層(「旧・〇〇線 廃止」など)は今の路線ではない
+        found = None
+        for t in LINK.findall(unit):
+            r = route_in(pref, t)
+            if r:
+                found = (*r, t)
+                break
+        if not found:
+            r = route_in(pref, strip_markup(unit))
+            if not r:
+                return
+            found = (*r, None)
+        ref, name, title = found
         if ref in routes:
             return
-        cells = [c for c in re.split(r"\|\||\n\|", rest) if c.strip()]
-        names = [munis(c) for c in cells]
-        names = [n for n in names if n]
-        info = {"name": f"{pref}道{ref}号{strip_markup(name)}".replace(f"{pref}道", f"{pref[:-1] if pref != '北海道' else '北海'}{kind}", 1)}
-        if len(names) >= 2:
-            info["from"], info["to"] = names[0], names[1]
-        elif names:
-            info["via"] = names[0]
+        info: dict = {"name": name}
+        if title:
+            info["title"] = title
+        ends = [m for m in (first_muni(c) for c in cells) if m]
+        if len(ends) >= 2:
+            info["from"], info["to"] = ends[0], ends[1]
         routes[ref] = info
 
-    # 表: 行(|- で区切る)ごとに、最初に出てくる路線と、そのあとのセルの市町村名
+    # 表: 行(|- で区切る)ごとに、最初に出てくる路線と、そのあとのセルの市町村名(起点・終点の順に並んでいる)
     if "{|" in text:
         for row in re.split(r"\n\|-[^\n]*", text):
-            m = route.search(row)
-            if m:
-                add(m.group(1), m.group(2), row[m.end():])
-    # 箇条書き(* [[神奈川県道1号横浜厚木線]] 横浜市 - 厚木市 など)
+            cells = [c for c in re.split(r"\|\||\n[|!]", row) if c.strip()]
+            for j, c in enumerate(cells):
+                if route_in(pref, c) or any(route_in(pref, t) for t in LINK.findall(c)):
+                    add(c, cells[j + 1:])
+                    break
+    # 箇条書き(* 3 [[東京都道・神奈川県道3号世田谷町田線|神奈川県道3号世田谷町田線]] など)
     for line in text.splitlines():
         if line.startswith(("*", "#", ":")):
-            m = route.search(line)
-            if m:
-                add(m.group(1), m.group(2), line[m.end():])
+            add(line, [])
     return routes
+
+
+def ends_of_article(text: str) -> tuple[str, str] | None:
+    """路線の記事(基本情報の表など)から 起点・終点の市町村"""
+    got: dict[str, str] = {}
+    for m in ENDS.finditer(text):
+        if m.group(1) not in got:
+            muni = first_muni(m.group(2))
+            if muni:
+                got[m.group(1)] = muni
+    if "起点" in got and "終点" in got:
+        return got["起点"], got["終点"]
+    return None
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--raw-dir", type=Path, help="取得した wikitext を置く(確認用)")
-    ap.add_argument("--sample", action="store_true", help="ページの書き方の確認用に、一部をログに出す")
+    ap.add_argument("--raw-dir", type=Path, help="取得した一覧の wikitext を置く(確認用)")
+    ap.add_argument("--sample", action="store_true", help="記事の書き方の確認用に、一部をログに出す")
+    ap.add_argument("--no-articles", action="store_true", help="路線ごとの記事は読まない(一覧だけ)")
     args = ap.parse_args()
+    lists = fetch_many([t for p in PREFS for t in page_titles(p)])
     out: dict[str, dict] = {}
     for code, pref in enumerate(PREFS, 1):
-        got = None
-        for t in page_titles(pref):
-            got = fetch(t)
-            if got:
-                break
-            time.sleep(1.5)
+        got = next((lists[t] for t in page_titles(pref) if t in lists), None)
         if not got:
             print(f"  {pref}: 一覧のページが見つかりません", file=sys.stderr)
             continue
@@ -149,18 +204,32 @@ def main() -> None:
             args.raw_dir.mkdir(parents=True, exist_ok=True)
             (args.raw_dir / f"{code:02d}.txt").write_text(f"{title}\n{text}", encoding="utf-8")
         routes = parse(pref, text)
-        with_ends = sum(1 for r in routes.values() if "from" in r)
-        print(f"  {pref}: {title} / {len(routes)} 路線(起点・終点あり {with_ends})", file=sys.stderr)
-        if args.sample:
-            i = text.find("道1号")
-            i = text.rfind("\n", 0, max(i - 300, 0)) if i > 0 else 0
-            for line in text[i:i + 1500].splitlines():
-                print(f"    | {line}", file=sys.stderr)
-            for ref in list(routes)[:3]:
-                print(f"    → {ref}: {routes[ref]}", file=sys.stderr)
         if routes:
             out[str(code)] = routes
-        time.sleep(1.5)
+
+    # 一覧に起点・終点が無い路線は、路線の記事から取る
+    if not args.no_articles:
+        want = sorted({r["title"] for rs in out.values() for r in rs.values() if "title" in r and "from" not in r})
+        print(f"  路線の記事 {len(want)} 件を読みます", file=sys.stderr)
+        arts = fetch_many(want)
+        shown = 0
+        for rs in out.values():
+            for r in rs.values():
+                art = arts.get(r.get("title", ""))
+                if "from" in r or not art:
+                    continue
+                ends = ends_of_article(art[1])
+                if ends:
+                    r["from"], r["to"] = ends
+                if args.sample and shown < 6:
+                    shown += 1
+                    print(f"    [{art[0]}] → {ends}", file=sys.stderr)
+                    for line in art[1].splitlines()[:40]:
+                        if "点" in line or "経由" in line:
+                            print(f"    | {line[:200]}", file=sys.stderr)
+    for code, rs in out.items():
+        with_ends = sum(1 for r in rs.values() if "from" in r)
+        print(f"  {PREFS[int(code) - 1]}: {len(rs)} 路線(起点・終点あり {with_ends})", file=sys.stderr)
     args.out.write_text(json.dumps(out, ensure_ascii=False, indent=0), encoding="utf-8")
     print(f"{len(out)} 都道府県 → {args.out}", file=sys.stderr)
 
