@@ -43,6 +43,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      # 都道府県道は Wikipedia の「〇〇県の県道一覧」で、番号や場所が合わない道(市町村道など)を除く
+      - name: Wikipedia から都道府県道の一覧を取得
+        if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
+        continue-on-error: true
+        run: python3 scripts/fetch_wiki_prefroads.py --out wiki_prefroads.json --raw-dir wiki-raw
+      - name: 取得した一覧を確認用に置く
+        if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiki-prefroads
+          path: |
+            wiki_prefroads.json
+            wiki-raw
+          retention-days: 14
+
       # 日本全体の OSM ファイル(約2.4GB)は、同じ日(UTC)に2回目以降の実行ではキャッシュから使う。
       # Geofabrik は1日1回更新なので、日付が変わったら取り直す
       - name: 今日の日付
