@@ -19,6 +19,8 @@
 - 区間の ID は "p<wayId>-<番号>"。国道・高速道路のデータ("w…")と記録がまざらないように頭を変えている
 - 上下線が別の線になっているところは、高速道路と同じく組(pair)にする
 - 区間に通称(「三宿通り」など、OSM の name・loc_name・alt_name)があれば name に入れる
+- --wiki(fetch_wiki_prefroads.py で作る Wikipedia の県道一覧)があれば、一覧に無い番号の路線と、
+  起点・終点・経由地の市町村(--munis の境界)から離れた、リレーションのない道を除く(市町村道の ref の取り違え対策)
 
 pyosmium と shapely が必要です(pip install osmium shapely)。
 """
