@@ -1,0 +1,24 @@
+// テスト用の判定 worker。ログの各行「区間ID,割合,日付」をそのまま判定結果として返す。"BAD" を含むログは読めないことにする
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parentPort, workerData } from "node:worker_threads";
+import { gunzipSync } from "node:zlib";
+
+parentPort.on("message", ({ seq, logId }) => {
+  const text = gunzipSync(readFileSync(join(workerData.logsDir, logId))).toString("utf8");
+  if (text.includes("BAD")) return parentPort.postMessage({ seq, error: "読めないログ" });
+  const rows = text.trim().split("\n").map((l) => l.split(","));
+  const day = rows[0][2];
+  parentPort.postMessage({
+    seq,
+    result: {
+      name: logId.replace(/^\d+-/, "").replace(/\.gz$/, ""),
+      points: rows.length,
+      trip: { date: day, m: 1000 * rows.length },
+      tripKey: `t-${logId}`,
+      coverage: Object.fromEntries(rows.map(([id, r]) => [id, Number(r)])),
+      dates: Object.fromEntries(rows.map(([id]) => [id, [day, day]])),
+    },
+  });
+});
+parentPort.postMessage({ ready: true });

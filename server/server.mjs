@@ -4,6 +4,7 @@
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
+import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -12,6 +13,12 @@ const RECORD = process.env.RECORD_FILE ?? join(ROOT, "data", "record.json");
 const PORT = Number(process.env.PORT ?? 8080);
 // 読み込んだ走行ログそのもの。あとで判定方法や対象の道路(高速道路など)を増やしたときに判定し直せるよう残す
 const LOGS = process.env.LOGS_DIR ?? join(dirname(RECORD), "logs");
+// 走行ログをサーバーで判定する worker(npm run build で作る)と、判定に使う道路データ。
+// JUDGE_WORKER を空にすると、サーバーでは判定しない(前と同じくブラウザで判定する)
+const JUDGE_WORKER = process.env.JUDGE_WORKER ?? join(ROOT, "server", "build", "judgeWorker.js");
+const JUDGE_DATA = process.env.JUDGE_DATA_DIR ?? join(DIST, "data");
+// 判定し終えてから worker(道路データで数百MB使う)を止めるまでの時間。続けて送られてきたログで読み直さないよう少し待つ
+const JUDGE_IDLE_MS = Number(process.env.JUDGE_IDLE_MS ?? 3 * 60_000);
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -135,8 +142,9 @@ function saveLog(name, body, meta) {
 }
 
 // --- 自動で送られてきたログ(まだ判定していないもの) ---
-// gbowl-log-formatter などのツールから POST /api/inbox で送られたログは、保存だけしておき、
-// 次に地図を開いたブラウザが判定して記録に足す(判定に使う道路のデータはブラウザで読むため)
+// gbowl-log-formatter などのツールから POST /api/inbox で送られたログは、保存して pending.json に残し、
+// このサーバーで判定して記録に足す。サーバーで判定する準備(npm run build)ができていなければ、
+// 次に地図を開いたブラウザが判定する
 const PENDING = () => join(LOGS, "pending.json");
 
 function loadPending() {
@@ -160,7 +168,7 @@ function listPending() {
   return listLogs().filter((l) => ids.has(l.id));
 }
 
-/** 判定するブラウザが、判定する前に呼ぶ。2台で同時に開いていても、1台だけが判定するように */
+/** 判定する前に呼ぶ(サーバーとブラウザ、2台のブラウザで二重に判定しないように) */
 function claimPending(id) {
   const ids = loadPending();
   if (!ids.includes(id)) return false;
@@ -207,6 +215,192 @@ export function dedupeLogs() {
   renameSync(`${META()}.tmp`, META());
   return moved.length;
 }
+
+// --- サーバーでの判定 ---
+// 保存したログの判定し直しと、自動で送られてきたログの判定を MiniPC で行う(画面を閉じても続く)。
+// 道路データを読むと重いので、HTTP を受けるのとは別のスレッド(worker)で判定し、記録の保存はこちらで行う
+
+export const serverJudge = () => !!JUDGE_WORKER && existsSync(JUDGE_WORKER) && existsSync(join(JUDGE_DATA, "routes.json"));
+
+let worker = null;
+let workerReady = null;
+let idleTimer = null;
+let seq = 0;
+const waiting = new Map(); // seq → { ok, ng }
+
+function stopWorker() {
+  const w = worker;
+  worker = null;
+  workerReady = null;
+  if (w) void w.terminate();
+}
+
+function startWorker() {
+  const w = new Worker(JUDGE_WORKER, { workerData: { dataDir: JUDGE_DATA, logsDir: LOGS } });
+  worker = w;
+  workerReady = new Promise((ok, ng) => {
+    w.on("message", (m) => {
+      if (m?.ready) return ok();
+      const p = waiting.get(m?.seq);
+      if (!p) return;
+      waiting.delete(m.seq);
+      if (m.error) p.ng(new Error(m.error));
+      else p.ok(m.result);
+    });
+    const fail = (e) => {
+      if (worker === w) {
+        worker = null;
+        workerReady = null;
+      }
+      ng(e);
+      for (const p of waiting.values()) p.ng(e);
+      waiting.clear();
+    };
+    w.on("error", fail);
+    w.on("exit", (code) => fail(new Error(`判定の処理が止まりました(${code})`)));
+  });
+  // 待っている人がいないときに起きた失敗で、未処理の拒否にならないように
+  workerReady.catch(() => undefined);
+}
+
+/** 保存してあるログ 1 本を判定する */
+async function judgeOne(id) {
+  clearTimeout(idleTimer);
+  if (!worker) startWorker();
+  await workerReady;
+  const n = ++seq;
+  return new Promise((ok, ng) => {
+    waiting.set(n, { ok, ng });
+    worker.postMessage({ seq: n, logId: id });
+  });
+}
+
+/** 判定した結果を、記録に足す形にする。logEntry なら読み込み履歴にも足す */
+const toAdded = (r, logEntry) => ({
+  coverage: r.coverage,
+  dates: r.dates,
+  logs: logEntry ? [{ name: r.name, importedAt: new Date().toISOString(), points: r.points }] : [],
+  declared: {},
+  trips: { [r.tripKey]: r.trip },
+});
+
+function updateMeta(id, trip) {
+  const cur = loadMeta()[id];
+  if (!isMeta(cur) || cur.date !== trip.date || cur.m !== trip.m) setMeta(id, trip);
+}
+
+/** 画面に出す判定の様子。rev は判定で記録が変わるたびに増やす(ブラウザが読み直すため) */
+const judge = { rev: 0, running: null, last: null, rejudgeQueued: false };
+let queue = Promise.resolve();
+
+function enqueue(fn) {
+  queue = queue
+    .then(fn)
+    .catch((e) => console.error(e))
+    .finally(() => {
+      if (judge.running || waiting.size) return;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(stopWorker, JUDGE_IDLE_MS);
+      idleTimer.unref?.();
+    });
+  return queue;
+}
+
+/** 判定が終わるまで待つ(テスト用) */
+export const judgeIdle = () => queue;
+
+/** 保存してあるログをすべて判定し直し、通った区間の記録を作り直す */
+async function rejudgeAll() {
+  judge.rejudgeQueued = false;
+  const run = { kind: "rejudge", done: 0, total: 0, failed: [], passed: 0, startedAt: new Date().toISOString() };
+  judge.running = run;
+  let acc = { coverage: {}, dates: {}, logs: [], declared: {}, trips: {} };
+  const seen = new Set();
+  const passed = new Set();
+  try {
+    // 判定している間に保存されたログも判定する
+    for (;;) {
+      const todo = listLogs().filter((l) => !seen.has(l.id));
+      if (todo.length === 0) break;
+      run.total = seen.size + todo.length;
+      for (const l of todo) {
+        seen.add(l.id);
+        run.current = l.name;
+        try {
+          const r = await judgeOne(l.id);
+          acc = mergeRecord(acc, toAdded(r, false));
+          for (const id of Object.keys(r.coverage)) passed.add(id);
+          updateMeta(l.id, r.trip);
+        } catch (e) {
+          run.failed.push(`${l.name}: ${e.message}`);
+        }
+        run.done++;
+        run.passed = passed.size;
+      }
+    }
+    delete run.current;
+    // 読めなかったログがあると、その分の記録が消えてしまうので、置き換えずに足すだけにする
+    if (run.failed.length === 0 && run.total > 0) {
+      backupRecord();
+      const cur = loadRecord();
+      saveRecord(mergeRecord({ ...cur, coverage: {}, dates: {} }, acc));
+      run.replaced = true;
+    } else {
+      saveRecord(mergeRecord(loadRecord(), acc));
+      run.replaced = false;
+    }
+    judge.rev++;
+  } finally {
+    run.finishedAt = new Date().toISOString();
+    judge.running = null;
+    judge.last = run;
+  }
+}
+
+/** 自動で送られてきて、まだ判定していないログを判定して記録に足す */
+async function judgePending() {
+  const ids = loadPending();
+  if (ids.length === 0) return;
+  const run = { kind: "inbox", done: 0, total: ids.length, failed: [], passed: 0, startedAt: new Date().toISOString() };
+  judge.running = run;
+  const passed = new Set();
+  try {
+    for (const id of ids) {
+      // ブラウザ(古い版の画面)が先に判定していれば飛ばす
+      if (!claimPending(id)) {
+        run.total--;
+        continue;
+      }
+      run.current = logName(id);
+      try {
+        const r = await judgeOne(id);
+        saveRecord(mergeRecord(loadRecord(), toAdded(r, true)));
+        updateMeta(id, r.trip);
+        for (const s of Object.keys(r.coverage)) passed.add(s);
+        judge.rev++;
+      } catch (e) {
+        // 判定できなかったログも保存はしてあるので、「保存したログで判定し直す」で読み直せる
+        run.failed.push(`${logName(id)}: ${e.message}`);
+      }
+      run.done++;
+      run.passed = passed.size;
+    }
+    delete run.current;
+  } finally {
+    run.finishedAt = new Date().toISOString();
+    judge.running = null;
+    if (run.total > 0) judge.last = run;
+  }
+}
+
+const judgeStatus = () => ({
+  enabled: serverJudge(),
+  rev: judge.rev,
+  running: judge.running,
+  last: judge.last,
+  pending: loadPending().length,
+  rejudgeQueued: judge.rejudgeQueued,
+});
 
 // --- 配信 ---
 
@@ -289,6 +483,21 @@ export function createApp() {
         return json(res, 405, { error: "method not allowed" });
       }
 
+      if (url.pathname === "/api/judge") {
+        if (req.method === "GET") return json(res, 200, judgeStatus());
+        return json(res, 405, { error: "method not allowed" });
+      }
+      // 保存したログをすべて MiniPC で判定し直す。すぐに返し、様子は GET /api/judge で見る
+      if (url.pathname === "/api/rejudge") {
+        if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+        if (!serverJudge()) return json(res, 503, { error: "サーバーで判定する準備ができていません(npm run build を実行してください)" });
+        if (!judge.rejudgeQueued && judge.running?.kind !== "rejudge") {
+          judge.rejudgeQueued = true;
+          void enqueue(rejudgeAll);
+        }
+        return json(res, 202, judgeStatus());
+      }
+
       if (url.pathname === "/api/inbox") {
         if (req.method === "GET") return json(res, 200, listPending());
         // ログをそのまま本文で送る(?name=ファイル名)。前に読み込んだのと同じログなら、判定し直さない
@@ -296,7 +505,10 @@ export function createApp() {
           const body = Buffer.concat(await readChunks(req));
           if (body.length === 0) return json(res, 400, { error: "empty log" });
           const { id, added } = saveLog(url.searchParams.get("name") ?? "log", body, null);
-          if (added) savePending([...loadPending(), id]);
+          if (added) {
+            savePending([...loadPending(), id]);
+            if (serverJudge()) void enqueue(judgePending);
+          }
           return json(res, 200, { id, duplicate: !added });
         }
         return json(res, 405, { error: "method not allowed" });
@@ -350,5 +562,10 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`${new Date().toISOString()} 国道制覇マップ: http://localhost:${PORT}/ (LAN からは http://<このPCのIPアドレス>:${PORT}/)`);
     console.log(`走行記録の保存先: ${RECORD}`);
+    if (serverJudge()) {
+      console.log("走行ログはこのサーバーで判定します");
+      // 止まっている間に残っていた、まだ判定していないログ
+      void enqueue(judgePending);
+    } else console.log("サーバーで判定する準備ができていないので、走行ログはブラウザで判定します(npm run build で準備できます)");
   });
 }

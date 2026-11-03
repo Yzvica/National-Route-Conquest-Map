@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 process.env.RECORD_FILE = join(mkdtempSync(join(tmpdir(), "kokudo-")), "record.json");
 process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-logs-"));
+process.env.JUDGE_WORKER = ""; // サーバーでの判定は server/judge.test.mjs で確かめる
 const { createApp, dedupeLogs, mergeRecord } = await import("./server.mjs");
 
 describe("mergeRecord", () => {

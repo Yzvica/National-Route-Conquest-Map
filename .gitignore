@@ -6,3 +6,4 @@ public/data/*.json
 data/
 public/data/prefroads/
 public/data/*.tar.gz
+server/build/

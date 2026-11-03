@@ -85,6 +85,37 @@ export interface RecordStore {
   pendingLogs(): Promise<SavedLog[]>;
   /** これから判定するログを、まだ判定していない一覧から外す。ほかの端末が先に外していれば false */
   claimLog(id: string): Promise<boolean>;
+  /** MiniPC のサーバーで判定している様子(サーバーがなければ null) */
+  judgeStatus(): Promise<JudgeStatus | null>;
+  /** 保存したログをすべて MiniPC のサーバーで判定し直す。始められなければ null */
+  startRejudge(): Promise<JudgeStatus | null>;
+}
+
+/** サーバーでの判定 1 回分(判定し直し、または自動で送られてきたログの判定) */
+export interface JudgeRun {
+  kind: "rejudge" | "inbox";
+  done: number;
+  total: number;
+  failed: string[];
+  /** 通った区間の数 */
+  passed: number;
+  /** 判定中のログの名前 */
+  current?: string;
+  /** 判定し直しで、前の記録を置き換えたか(読めないログがあれば足すだけにする) */
+  replaced?: boolean;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+export interface JudgeStatus {
+  /** サーバーで判定できるか(できなければブラウザで判定する) */
+  enabled: boolean;
+  /** サーバーの判定で記録が変わるたびに増える */
+  rev: number;
+  running: JudgeRun | null;
+  last: JudgeRun | null;
+  pending: number;
+  rejudgeQueued: boolean;
 }
 
 export interface SavedLog {
@@ -98,6 +129,8 @@ export interface SavedLog {
 
 const LOGS_API = `${import.meta.env.BASE_URL}api/logs`;
 const INBOX_API = `${import.meta.env.BASE_URL}api/inbox`;
+const JUDGE_API = `${import.meta.env.BASE_URL}api/judge`;
+const REJUDGE_API = `${import.meta.env.BASE_URL}api/rejudge`;
 
 class ServerStore implements RecordStore {
   readonly shared = true;
@@ -166,6 +199,17 @@ class ServerStore implements RecordStore {
     const res = await fetch(`${INBOX_API}/${encodeURIComponent(id)}`, { method: "DELETE" });
     return res.ok && (await res.json()).claimed === true;
   }
+
+  async judgeStatus(): Promise<JudgeStatus | null> {
+    // 前の版のサーバー(判定しないもの)は 404 を返す
+    const res = await fetch(JUDGE_API).catch(() => undefined);
+    return res?.ok && res.headers.get("content-type")?.includes("json") ? res.json() : null;
+  }
+
+  async startRejudge(): Promise<JudgeStatus | null> {
+    const res = await fetch(REJUDGE_API, { method: "POST" }).catch(() => undefined);
+    return res?.ok && res.headers.get("content-type")?.includes("json") ? res.json() : null;
+  }
 }
 
 class LocalStore implements RecordStore {
@@ -221,6 +265,12 @@ class LocalStore implements RecordStore {
   }
   async claimLog() {
     return false;
+  }
+  async judgeStatus() {
+    return null;
+  }
+  async startRejudge() {
+    return null;
   }
 
   async clear() {
