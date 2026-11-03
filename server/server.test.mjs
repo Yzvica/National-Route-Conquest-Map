@@ -147,6 +147,47 @@ describe("/api/logs", () => {
   });
 });
 
+describe("/api/inbox", () => {
+  let server;
+  let root;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    root = `http://127.0.0.1:${server.address().port}/api`;
+  });
+  afterAll(() => server.close());
+
+  const send = (name, body) => fetch(`${root}/inbox?name=${encodeURIComponent(name)}`, { method: "POST", body }).then((r) => r.json());
+
+  it("送られたログは保存され、判定するまで一覧に残る", async () => {
+    const text = "#GBOWLCSV,2026-11-01 09:00:00 (30m) DriverA\nTime(sec),Latitude(deg),Longitude(deg)\n0,35,139\n";
+    const { id, duplicate } = await send("2026-11-01 09_00_00 (30m) DriverA.csv", text);
+    expect(duplicate).toBe(false);
+    expect((await (await fetch(`${root}/inbox`)).json()).map((l) => l.id)).toEqual([id]);
+    // 保存したログの一覧にも出る(あとで判定し直せる)
+    expect((await (await fetch(`${root}/logs`)).json()).some((l) => l.id === id)).toBe(true);
+    expect(await (await fetch(`${root}/logs/${encodeURIComponent(id)}`)).text()).toBe(text);
+
+    // 判定する端末が一覧から外す。2台目は外せない
+    const claim = () => fetch(`${root}/inbox/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
+    expect(await claim()).toEqual({ claimed: true });
+    expect(await claim()).toEqual({ claimed: false });
+    expect(await (await fetch(`${root}/inbox`)).json()).toEqual([]);
+  });
+
+  it("同じログをもう一度送っても、判定し直さない", async () => {
+    const first = await send("same.csv", "a,b\n1,2\n");
+    await fetch(`${root}/inbox/${encodeURIComponent(first.id)}`, { method: "DELETE" });
+    const again = await send("same.csv", "a,b\n1,2\n");
+    expect(again).toEqual({ id: first.id, duplicate: true });
+    expect(await (await fetch(`${root}/inbox`)).json()).toEqual([]);
+  });
+
+  it("空のログは受け取らない", async () => {
+    expect((await fetch(`${root}/inbox?name=x.csv`, { method: "POST", body: "" })).status).toBe(400);
+  });
+});
+
 describe("配信", () => {
   let server;
   let base;

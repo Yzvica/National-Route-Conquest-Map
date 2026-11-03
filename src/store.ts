@@ -81,6 +81,10 @@ export interface RecordStore {
   loadLog(id: string): Promise<string>;
   /** 日付と距離のない(前から保存してある)ログに付ける */
   setLogTrip(id: string, trip: Trip): Promise<void>;
+  /** ほかのツール(gbowl-log-formatter など)から自動で送られてきて、まだ判定していないログ */
+  pendingLogs(): Promise<SavedLog[]>;
+  /** これから判定するログを、まだ判定していない一覧から外す。ほかの端末が先に外していれば false */
+  claimLog(id: string): Promise<boolean>;
 }
 
 export interface SavedLog {
@@ -93,6 +97,7 @@ export interface SavedLog {
 }
 
 const LOGS_API = `${import.meta.env.BASE_URL}api/logs`;
+const INBOX_API = `${import.meta.env.BASE_URL}api/inbox`;
 
 class ServerStore implements RecordStore {
   readonly shared = true;
@@ -151,6 +156,16 @@ class ServerStore implements RecordStore {
     if (!res.ok) throw new Error(`ログを読み込めませんでした(${res.status})`);
     return res.text();
   }
+
+  async pendingLogs(): Promise<SavedLog[]> {
+    const res = await fetch(INBOX_API);
+    return res.ok ? res.json() : [];
+  }
+
+  async claimLog(id: string) {
+    const res = await fetch(`${INBOX_API}/${encodeURIComponent(id)}`, { method: "DELETE" });
+    return res.ok && (await res.json()).claimed === true;
+  }
 }
 
 class LocalStore implements RecordStore {
@@ -201,6 +216,12 @@ class LocalStore implements RecordStore {
     throw new Error("このブラウザにはログを保存していません");
   }
   async setLogTrip() {}
+  async pendingLogs(): Promise<SavedLog[]> {
+    return [];
+  }
+  async claimLog() {
+    return false;
+  }
 
   async clear() {
     try {
