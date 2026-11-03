@@ -668,6 +668,7 @@ map.on("load", async () => {
     if (active === "expressway") showDataset(active);
     else render(); // 実績やレベルに高速道路の分を足す
     status.textContent = statusText(expressway).replace(" / 高速道路のデータを読み込み中…", "");
+    await importPending();
   } catch (e) {
     status.textContent = (e as Error).message;
   }
@@ -773,6 +774,42 @@ async function importFiles(
   if (store.shared) void refreshLogs();
 }
 
+/**
+ * ほかのツール(gbowl-log-formatter の RunAll.bat など)から MiniPC に自動で送られてきたログを判定して記録に足す。
+ * 地図を開いたときと、ほかのアプリから戻ってきたときに確かめる
+ */
+let importingPending = false;
+async function importPending() {
+  const store = await storePromise;
+  if (!store.shared || !datasets.kokudo || importingPending) return;
+  importingPending = true;
+  try {
+    const pending = await store.pendingLogs().catch(() => []);
+    const files: File[] = [];
+    const saved: SavedLog[] = [];
+    for (const l of pending) {
+      // 2台で同時に開いていても、二重に判定しないよう先に一覧から外す
+      if (!(await store.claimLog(l.id).catch(() => false))) continue;
+      try {
+        files.push(new File([await store.loadLog(l.id)], l.name, { lastModified: Number(l.id.split("-")[0]) || Date.now() }));
+        saved.push(l);
+      } catch {
+        /* 読めなかったログは飛ばす(「保存したログで判定し直す」で読み直せる) */
+      }
+    }
+    if (files.length === 0) return;
+    await importFiles(files, { save: false, logEntry: true, saved });
+    status.textContent = `自動で送られてきたログ ${files.length} 件を判定しました: ` + status.textContent;
+  } finally {
+    importingPending = false;
+  }
+}
+
+// 地図を開いたままのときも、1分ごとに送られてきたログがないか確かめる
+setInterval(() => {
+  if (document.visibilityState === "visible") void importPending();
+}, 60_000);
+
 // MiniPC に保存してあるログをすべて判定し直す(高速道路のデータを足したあと・判定の方法を直したあとなど)
 $("rematch").addEventListener("click", async () => {
   const store = await storePromise;
@@ -837,6 +874,7 @@ document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState !== "visible" || !store.shared || !data) return;
   record = await store.load();
   render();
+  await importPending();
 });
 
 // スマホ: 地図の何もないところを押すと、一覧と詳細をたたんで地図を広く見せる(もう一度押すと戻す)

@@ -116,18 +116,53 @@ const sameLog = (id, body) => {
   }
 };
 
+/** ログを保存して { id, added } を返す。added は新しく保存したとき true */
 function saveLog(name, body, meta) {
   mkdirSync(LOGS, { recursive: true });
   // 同じ名前・同じ中身のログをもう一度読み込んだときは、新しく保存せず前のものを使う
   const same = logFiles().find((f) => logName(f) === safeName(name) && sameLog(f, body));
   if (same) {
     if (isMeta(meta)) setMeta(same, meta);
-    return same;
+    return { id: same, added: false };
   }
   const id = `${Date.now()}-${safeName(name)}.gz`;
   writeFileSync(join(LOGS, id), gzipSync(body));
   if (isMeta(meta)) setMeta(id, meta);
-  return id;
+  return { id, added: true };
+}
+
+// --- 自動で送られてきたログ(まだ判定していないもの) ---
+// gbowl-log-formatter などのツールから POST /api/inbox で送られたログは、保存だけしておき、
+// 次に地図を開いたブラウザが判定して記録に足す(判定に使う道路のデータはブラウザで読むため)
+const PENDING = () => join(LOGS, "pending.json");
+
+function loadPending() {
+  try {
+    const ids = JSON.parse(readFileSync(PENDING(), "utf8"));
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePending(ids) {
+  mkdirSync(LOGS, { recursive: true });
+  writeFileSync(`${PENDING()}.tmp`, JSON.stringify(ids));
+  renameSync(`${PENDING()}.tmp`, PENDING());
+}
+
+/** まだ判定していないログ(ファイルが残っているものだけ) */
+function listPending() {
+  const ids = new Set(loadPending());
+  return listLogs().filter((l) => ids.has(l.id));
+}
+
+/** 判定するブラウザが、判定する前に呼ぶ。2台で同時に開いていても、1台だけが判定するように */
+function claimPending(id) {
+  const ids = loadPending();
+  if (!ids.includes(id)) return false;
+  savePending(ids.filter((x) => x !== id));
+  return true;
 }
 
 function listLogs() {
@@ -246,9 +281,26 @@ export function createApp() {
         if (req.method === "POST") {
           const body = Buffer.concat(await readChunks(req));
           const meta = { date: url.searchParams.get("date"), m: Number(url.searchParams.get("m") ?? NaN) };
-          return json(res, 200, { id: saveLog(url.searchParams.get("name") ?? "log", body, meta) });
+          return json(res, 200, { id: saveLog(url.searchParams.get("name") ?? "log", body, meta).id });
         }
         return json(res, 405, { error: "method not allowed" });
+      }
+
+      if (url.pathname === "/api/inbox") {
+        if (req.method === "GET") return json(res, 200, listPending());
+        // ログをそのまま本文で送る(?name=ファイル名)。前に読み込んだのと同じログなら、判定し直さない
+        if (req.method === "POST") {
+          const body = Buffer.concat(await readChunks(req));
+          if (body.length === 0) return json(res, 400, { error: "empty log" });
+          const { id, added } = saveLog(url.searchParams.get("name") ?? "log", body, null);
+          if (added) savePending([...loadPending(), id]);
+          return json(res, 200, { id, duplicate: !added });
+        }
+        return json(res, 405, { error: "method not allowed" });
+      }
+      const inboxMatch = /^\/api\/inbox\/([^/]+)$/.exec(url.pathname);
+      if (inboxMatch && req.method === "DELETE") {
+        return json(res, 200, { claimed: claimPending(decodeURIComponent(inboxMatch[1])) });
       }
       const logMatch = /^\/api\/logs\/([^/]+)$/.exec(url.pathname);
       if (logMatch && (req.method === "GET" || req.method === "PATCH")) {
