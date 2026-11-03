@@ -105,7 +105,7 @@ jobs:
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
           if [ "$TARGET" = both ] || [ "$TARGET" = prefroad ]; then
             osmium tags-filter japan.osm.pbf "r/network=JP:prefectural*" w/highway=primary,secondary,tertiary -o prefroad.osm.pbf
-            osmium tags-filter japan.osm.pbf n/place=city,town,village -o places.osm.pbf
+            osmium tags-filter japan.osm.pbf r/admin_level=7 -o muni.osm.pbf
           fi
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ] || [ "$TARGET" = old ]; then
             osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
@@ -136,7 +136,7 @@ jobs:
           # 都道府県道は都道府県ごとのファイルにして、1つにまとめる(アプリは選んだ都道府県だけ読む)
           if [ -f prefroad.osm.pbf ]; then
             wiki=()
-            if [ -s wiki_prefroads.json ]; then wiki=(--wiki wiki_prefroads.json --places places.osm.pbf); else echo "Wikipedia の一覧が無いので、一覧での確かめはしません"; fi
+            if [ -s wiki_prefroads.json ]; then wiki=(--wiki wiki_prefroads.json --munis muni.osm.pbf); else echo "Wikipedia の一覧が無いので、一覧での確かめはしません"; fi
             python3 scripts/build_pref_roads.py prefroad.osm.pbf kokudo.osm.pbf pref.osm.pbf --fallback prefectures-prev.json --out-dir prefroads "${wiki[@]}"
             tar -czf prefroads.tar.gz prefroads
           fi
