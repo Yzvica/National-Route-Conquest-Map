@@ -23,15 +23,12 @@ import {
   showTrack,
   type PrefShapes,
 } from "./map";
-import { classifyTrack } from "./layers";
-import { DEFAULT_OPTIONS, matchTrack } from "./matcher";
-import { parseTrackFile } from "./parsers";
-import { fileNameTime } from "./parsers/csv";
+import { judgeLog, logDate, parseTrackText, type JudgeData } from "./judge";
 import { REGIONS, prefName } from "./prefs";
-import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
-import { trackLength, tripKey } from "./trips";
+import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, splitPrefRef } from "./prefroads";
+import { trackLength } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
-import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type Record, type SavedLog } from "./store";
+import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
   CATEGORY_LABELS,
   DATASET_LABELS,
@@ -40,7 +37,6 @@ import {
   type DatasetKind,
   type PrefRoadIndex,
   type RouteData,
-  type TrackPoint,
 } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -670,6 +666,7 @@ map.on("load", async () => {
     if (active === "expressway") showDataset(active);
     else render(); // 実績やレベルに高速道路の分を足す
     status.textContent = statusText(expressway).replace(" / 高速道路のデータを読み込み中…", "");
+    await checkJudge();
     await importPending();
   } catch (e) {
     status.textContent = (e as Error).message;
@@ -681,37 +678,15 @@ $("tabs").addEventListener("click", (e) => {
   if (kind && kind !== active) showDataset(kind);
 });
 
-/** ログの日付(YYYY-MM-DD、端末の時刻帯)。ログに時刻がなければファイル名の日時、それもなければファイルの更新日を使う */
-function logDate(track: TrackPoint[], file: File): string {
-  const d = new Date(track.find((p) => p.time !== undefined)?.time ?? fileNameTime(file.name) ?? file.lastModified);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
 const isTrackFile = (f: File) => /\.(csv|gpx)$/i.test(f.name);
 
-/**
- * 国道・高速道路と、ログが通った都道府県の都道府県道で判定し、区間ごとに大きいほうをとる。
- * 都道府県道は画面に出していない都道府県の分も判定する(あとでその都道府県を選んだときに記録があるように)
- */
-async function matchAll(track: TrackPoint[]): Promise<Coverage> {
-  const out: Coverage = new Map();
-  const generals: RouteData[] = [];
-  if (datasets.kokudo) generals.push(datasets.kokudo);
-  if (prefIndex) {
-    for (const code of prefsOfTrack(prefIndex, track)) {
-      const d = await loadPrefFile(code);
-      if (d) generals.push(d);
-    }
-  }
-  const expressway = datasets.expressway;
-  // 高架の高速道路と下の国道が並んでいるところで、走っていないほうを塗らないように、ログの各点がどちらの上かを先に決める
-  const layers = expressway ? classifyTrack(track, expressway, generals) : undefined;
-  for (const d of expressway ? [...generals, expressway] : generals) {
-    for (const [id, r] of matchTrack(d, track, DEFAULT_OPTIONS, layers)) out.set(id, Math.max(out.get(id) ?? 0, r));
-  }
-  return out;
-}
+/** 判定に使う道路データ(画面で読んだものを使い回す) */
+const judgeData = (): JudgeData => ({
+  kokudo: datasets.kokudo,
+  expressway: datasets.expressway,
+  prefIndex,
+  loadPref: loadPrefFile,
+});
 
 /**
  * ログを判定して記録に足す。save なら MiniPC にログも残す(あとで判定し直せるように)。
@@ -737,17 +712,14 @@ async function importFiles(
   for (const [i, file] of files.entries()) {
     status.textContent = `${file.name} を判定中…(${i + 1} / ${files.length})`;
     try {
-      const track = await parseTrackFile(file);
-      const day = logDate(track, file);
-      const trip = { date: day, m: Math.round(trackLength(track)) };
+      const { track, day, trip, tripKey: key, coverage: result } = await judgeLog(await file.text(), file.name, file.lastModified, judgeData());
       if (opts.save) await store.saveLog(file.name, await file.text(), trip).catch(() => undefined);
       // 保存してあるログには、ログ一覧に出す日付と距離をここで付ける(前に時刻を読み違えて 1970年になっていたものも直す)
       const saved = opts.saved?.[i];
       if (saved && (saved.date !== trip.date || saved.m !== trip.m)) await store.setLogTrip(saved.id, trip).catch(() => undefined);
-      const result = await matchAll(track);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
-      const trips = new Map([[tripKey(track, day), trip]]);
+      const trips = new Map([[key, trip]]);
       const added = { coverage: result, dates, logs, declared: new Map(), trips };
       if (opts.replace) pending = mergeRecord(pending, added);
       else record = await store.add(added);
@@ -784,7 +756,8 @@ async function importFiles(
 let importingPending = false;
 async function importPending() {
   const store = await storePromise;
-  if (!store.shared || !datasets.kokudo || importingPending) return;
+  // MiniPC のサーバーで判定するときは、サーバーに任せる
+  if (!store.shared || !datasets.kokudo || importingPending || serverJudge) return;
   importingPending = true;
   try {
     const pending = await store.pendingLogs().catch(() => []);
@@ -808,9 +781,58 @@ async function importPending() {
   }
 }
 
-// 地図を開いたままのときも、1分ごとに送られてきたログがないか確かめる
+// ---- MiniPC のサーバーでの判定 ----
+
+/** サーバーで判定するか(MiniPC のサーバーが新しい版で、npm run build 済みなら true) */
+let serverJudge = false;
+/** 最後に見た、サーバーの判定の番号。変わっていたら記録を読み直す */
+let judgeRev: number | null = null;
+let judgeTimer = 0;
+/** 判定中の様子をこの画面で見ていたもの(終わったときに結果を出す) */
+let watchedRun: string | null = null;
+
+const runLabel = (r: JudgeRun) => (r.kind === "rejudge" ? "保存したログの判定し直し" : "自動で送られてきたログの判定");
+
+function runText(r: JudgeRun): string {
+  if (r.finishedAt) {
+    const failed = r.failed.length ? `(読めなかったもの: ${r.failed.join(" / ")})` : "";
+    const note = r.kind === "rejudge" && r.replaced === false ? "(読めないログがあったので、前の記録は消さずに足しました)" : "";
+    return `MiniPC で${runLabel(r)}が終わりました: ${r.done - r.failed.length} 件を判定し、${r.passed} 区間を通過しました${note}${failed}`;
+  }
+  const cur = r.current ? `(${r.current})` : "";
+  return `MiniPC で${runLabel(r)}をしています… ${r.done} / ${r.total}${cur}。この画面を閉じても続きます`;
+}
+
+/** サーバーでの判定の様子を確かめ、判定で記録が変わっていれば読み直す。判定中は 2 秒ごとに確かめる */
+async function checkJudge() {
+  const store = await storePromise;
+  if (!store.shared) return;
+  clearTimeout(judgeTimer);
+  const st = await store.judgeStatus().catch(() => null);
+  serverJudge = !!st?.enabled;
+  if (!st) return;
+  if (judgeRev !== null && st.rev !== judgeRev && data) {
+    const before = gameState();
+    record = await store.load();
+    render();
+    announce(before);
+    void refreshLogs();
+  }
+  judgeRev = st.rev;
+  const run = st.running;
+  if (run) {
+    watchedRun = run.startedAt;
+    status.textContent = runText(run);
+  } else if (watchedRun && (st.last?.startedAt === watchedRun || (watchedRun === "rejudge" && st.last?.kind === "rejudge" && !st.rejudgeQueued))) {
+    status.textContent = runText(st.last);
+    watchedRun = null;
+  } else if (st.rejudgeQueued) status.textContent = "MiniPC で判定し直す準備をしています…";
+  if (run || st.rejudgeQueued) judgeTimer = window.setTimeout(() => void checkJudge(), 2000);
+}
+
+// 地図を開いたままのときも、1分ごとに送られてきたログがないか(サーバーで判定した結果がないか)確かめる
 setInterval(() => {
-  if (document.visibilityState === "visible") void importPending();
+  if (document.visibilityState === "visible") void checkJudge().then(importPending);
 }, 60_000);
 
 // MiniPC に保存してあるログをすべて判定し直す(高速道路のデータを足したあと・判定の方法を直したあとなど)
@@ -827,10 +849,23 @@ $("rematch").addEventListener("click", async () => {
       `保存してある ${saved.length} 件のログで判定し直し、通った区間の記録を作り直します。` +
         `前の判定の誤り(交差した道路を走ったことにしていたなど)は消えますが、` +
         `保存していないログ(ログを残す前に読み込んだものなど)で付いた記録も消えます。${unsaved}\n` +
-        `今の記録は MiniPC の data/backup に控えを残します。よろしいですか?`,
+        `今の記録は MiniPC の data/backup に控えを残します。` +
+        (serverJudge ? "判定は MiniPC で行うので、始めたあとはこの画面を閉じてもかまいません。" : "判定し終わるまでこの画面を開いておいてください。") +
+        `\nよろしいですか?`,
     )
   )
     return;
+  if (serverJudge) {
+    const st = await store.startRejudge();
+    if (st) {
+      status.textContent = "MiniPC で判定し直します…";
+      // すぐ終わって判定中の様子を見られなくても、結果は出す
+      watchedRun = st.running?.kind === "rejudge" ? st.running.startedAt : "rejudge";
+      await checkJudge();
+      return;
+    }
+    // サーバーで始められなければ、この画面で判定する
+  }
   const files: File[] = [];
   for (const l of saved) files.push(new File([await store.loadLog(l.id)], l.name, { lastModified: Number(l.id.split("-")[0]) || Date.now() }));
   await importFiles(files, { save: false, logEntry: false, replace: true, saved });
@@ -877,6 +912,7 @@ document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState !== "visible" || !store.shared || !data) return;
   record = await store.load();
   render();
+  await checkJudge();
   await importPending();
 });
 
@@ -1022,14 +1058,13 @@ async function showSavedLog(id: string) {
   const name = log?.name ?? id;
   status.textContent = `${name} を読み込み中…`;
   try {
-    const file = new File([await store.loadLog(id)], name, { lastModified: Number(id.split("-")[0]) || Date.now() });
-    const track = await parseTrackFile(file);
+    const track = parseTrackText(await store.loadLog(id), name);
     if (track.length === 0) throw new Error("位置の記録がありません");
     $<HTMLDialogElement>("game").close();
     select(null, false);
     showTrack(map, track);
     shownLog = id;
-    const trip = { date: logDate(track, file), m: Math.round(trackLength(track)) };
+    const trip = { date: logDate(track, name, Number(id.split("-")[0]) || Date.now()), m: Math.round(trackLength(track)) };
     if (log && (log.date !== trip.date || log.m !== trip.m)) {
       Object.assign(log, trip);
       await store.setLogTrip(id, trip).catch(() => undefined);
