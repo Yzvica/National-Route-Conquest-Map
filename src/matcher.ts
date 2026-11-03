@@ -1,5 +1,11 @@
 import { distance, PointGrid } from "./geo";
+import type { RoadLayers } from "./layers";
 import type { Coverage, LonLat, RouteData, TrackPoint } from "./types";
+
+/** 区間・トンネルの ID("w123-4"・"p123-4"・"t123")から OSM の way の番号を取り出す */
+export function wayOf(id: string): string {
+  return id.replace(/^[a-z]+/, "").replace(/-\d+$/, "");
+}
 
 export interface MatchOptions {
   /** 道路からこの距離以内を通っていれば「通った」とみなす(m) */
@@ -50,10 +56,18 @@ function legKind(pa: TrackPoint, pb: TrackPoint, d: number, opt: MatchOptions): 
   return "fill";
 }
 
+/** 補間したひと続きの点列。raw[k] はその点のもとになったログの点の番号(補間した点は、次のログの点の番号) */
+export interface DenseRun {
+  pts: LonLat[];
+  raw: number[];
+  /** 補間で足した点か */
+  filled: boolean[];
+}
+
 /** ログの点の間を補間して、DENSIFY_STEP 間隔の点列にする。補間できない飛びで切った、ひと続きの点列のリストを返す */
-export function densifyRuns(track: TrackPoint[], opt: MatchOptions): LonLat[][] {
-  const runs: LonLat[][] = [];
-  let run: LonLat[] = [];
+export function densify(track: TrackPoint[], opt: MatchOptions): DenseRun[] {
+  const runs: DenseRun[] = [];
+  let run: DenseRun = { pts: [], raw: [], filled: [] };
   for (let i = 0; i < track.length; i++) {
     const b: LonLat = [track[i].lon, track[i].lat];
     if (i > 0) {
@@ -63,19 +77,27 @@ export function densifyRuns(track: TrackPoint[], opt: MatchOptions): LonLat[][] 
       const kind = legKind(pa, track[i], d, opt);
       if (kind === "break") {
         runs.push(run);
-        run = [];
+        run = { pts: [], raw: [], filled: [] };
       } else if (kind === "fill") {
         const n = Math.floor(d / DENSIFY_STEP);
         for (let k = 1; k <= n; k++) {
           const f = k / (n + 1);
-          run.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+          run.pts.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+          run.raw.push(i);
+          run.filled.push(true);
         }
       }
     }
-    run.push(b);
+    run.pts.push(b);
+    run.raw.push(i);
+    run.filled.push(false);
   }
   runs.push(run);
-  return runs.filter((r) => r.length > 0);
+  return runs.filter((r) => r.pts.length > 0);
+}
+
+export function densifyRuns(track: TrackPoint[], opt: MatchOptions): LonLat[][] {
+  return densify(track, opt).map((r) => r.pts);
 }
 
 /**
@@ -116,7 +138,7 @@ export function headings(run: LonLat[]): number[] {
 }
 
 /** 線上に step メートルおきの点を取り、その場所での線の向きも返す(両端を含む) */
-function samplePointsWithDir(coords: LonLat[], step: number): { p: LonLat; dir: number }[] {
+export function samplePointsWithDir(coords: LonLat[], step: number): { p: LonLat; dir: number }[] {
   const out: { p: LonLat; dir: number }[] = [];
   const dirOf = (i: number) => bearing(coords[i - 1], coords[i]);
   if (coords.length < 2) return coords.map((p) => ({ p, dir: NaN }));
@@ -172,49 +194,66 @@ function tunnelPassed(
   return false;
 }
 
-/** 1本のログで、各区間を何割走ったかを求める */
+/**
+ * 1本のログで、各区間を何割走ったかを求める。
+ * layers(classifyTrack の結果)を渡すと、高速道路のデータは高速道路の上と判定したログの点だけで、
+ * 国道・都道府県道のデータは下の道と判定した点だけで判定する(高架の高速と下の国道を取り違えないため)。
+ * 両方のデータにある同じ道(国道の自動車専用道路など)は、どちらの点でも判定する
+ */
 export function matchTrack(
   data: RouteData,
   track: TrackPoint[],
   opt: MatchOptions = DEFAULT_OPTIONS,
+  layers?: RoadLayers,
 ): Coverage {
   const result: Coverage = new Map();
   if (track.length === 0) return result;
+  const role = data.kind === "expressway" ? 1 : 0;
+  const sharedWays = layers && (role === 1 ? layers.genWays : layers.expWays);
+  const isShared = (id: string) => !!sharedWays?.has(wayOf(id));
 
-  // 補間したログの点と、そこで進んでいた向き
+  // 補間したログの点と、そこで進んでいた向き。layers があれば、このデータの側(高速道路か下の道か)の点だけ dense に入れる
   const dense = new PointGrid<number>(Math.max(opt.tolerance, 50));
+  const other = new PointGrid<number>(Math.max(opt.tolerance, 50));
   // ログから遠い区間をまとめて飛ばすための粗いマス(区間は 200m 前後なので、端から COARSE m 以内を見れば足りる)
   const coarse = new PointGrid<null>(COARSE);
-  for (const run of densifyRuns(track, opt)) {
-    const hs = headings(run);
-    run.forEach((p, i) => {
-      dense.add(p, hs[i]);
+  densify(track, opt).forEach((run, r) => {
+    const hs = headings(run.pts);
+    const st = layers?.dense[r];
+    run.pts.forEach((p, i) => {
+      (st && st[i] !== role ? other : dense).add(p, hs[i]);
       coarse.add(p, null);
     });
-  }
+  });
   const maxAngle = (opt.maxAngle * Math.PI) / 180;
 
   const raw = new PointGrid<number>(Math.max(opt.portalRadius, 50));
-  track.forEach((p, i) => raw.add([p.lon, p.lat], i));
+  const rawAll = layers ? new PointGrid<number>(Math.max(opt.portalRadius, 50)) : raw;
+  track.forEach((p, i) => {
+    if (!layers || layers.raw[i] === role) raw.add([p.lon, p.lat], i);
+    if (layers) rawAll.add([p.lon, p.lat], i);
+  });
 
   const tunnelOk = new Map<string, boolean>();
   for (const t of data.tunnels) {
-    tunnelOk.set(t.id, tunnelPassed(raw, track, t.a, t.b, t.len, opt));
+    tunnelOk.set(t.id, tunnelPassed(isShared(t.id) ? rawAll : raw, track, t.a, t.b, t.len, opt));
   }
 
+  // 近くを、道路と同じ向き(上り下りは問わない)に進んでいたログの点があれば通ったとみなす。
+  // 止まっていて向きが分からない点は使わない(前後に動いていた点があるので、それで判定できる)
+  const along = (dir: number) => (h: number) => !Number.isNaN(h) && (Number.isNaN(dir) || angleDiff(h, dir) <= maxAngle);
   for (const seg of data.segments) {
     if (seg.tunnel && tunnelOk.get(seg.tunnel)) {
       result.set(seg.id, 1);
       continue;
     }
     if (seg.len + opt.tolerance <= COARSE && !coarse.hasNear(seg.coords[0], COARSE)) continue;
+    const shared = layers !== undefined && isShared(seg.id);
     const samples = samplePointsWithDir(seg.coords, SAMPLE_STEP);
     let hit = 0;
     for (const s of samples) {
-      // 近くを、道路と同じ向き(上り下りは問わない)に進んでいたログの点があれば通ったとみなす。
-      // 止まっていて向きが分からない点は使わない(前後に動いていた点があるので、それで判定できる)
-      if (dense.some(s.p, opt.tolerance, (h) => !Number.isNaN(h) && (Number.isNaN(s.dir) || angleDiff(h, s.dir) <= maxAngle)))
-        hit++;
+      const ok = along(s.dir);
+      if (dense.some(s.p, opt.tolerance, ok) || (shared && other.some(s.p, opt.tolerance, ok))) hit++;
     }
     // 交差点で隣の区間の端に触れただけ、のようなものは数えない
     if (hit * SAMPLE_STEP < MIN_HIT_METERS) continue;
