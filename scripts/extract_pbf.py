@@ -34,7 +34,7 @@ from build_routes import dist  # noqa: E402
 NATIONAL_REFS = {str(n) for n in [*range(1, 59), *range(101, 508)]} - {"109", "110", "111", "214", "215", "216"}
 # build_routes.py がバイパス扱いにする目印。値は、番号のないリレーション(西九州自動車道など)に入っている道が "yes"、
 # ref が「E35;497」のように高速道路の記号と一緒のもの・nat_ref のものが "coded"、ref が番号だけのものが "plain"。
-# 番号だけのものには県道の番号(知多半島道路の ref=55 など)が混じるので、build_routes.py で国道のそばのものだけ残す
+# "coded"・"plain" には県道の番号(知多半島道路の ref=55 など)が混じるので、build_routes.py で国道のそばのものだけ残す
 MOTORWAY_TAG = "_kokudo_motorway"
 CODED_REF = re.compile(r"[A-Za-z]\d")
 
