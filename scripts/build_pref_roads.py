@@ -58,6 +58,9 @@ ROAD_NAME = re.compile(rf"^(?:({PREF_PREFIX})?(都|道|府|県))道(\d+)号")
 NUMERIC_REF = re.compile(r"^\d{1,4}$")
 # 通称として出さない名前(橋・トンネルの名前、国道や路線番号だけの名前)
 NOT_NICKNAME = re.compile(r"(橋|高架橋|トンネル|隧道)$|国道")
+# 市町村道・区道の名前(「市道3号線」「2級市道〇〇線」「特別区道江147号」など。「坂ノ市道路」のような「道路」は除く)。
+# 市道にも県道と同じ数字の ref が付いていることがあるので、リレーションのない道でこの名前なら使わない
+MUNICIPAL_NAME = re.compile(r"(市|町|村|区)道(?!路)")
 # 道路として数えない種類(歩道・小道・ランプ・工事中など)
 SKIP_HIGHWAYS = {
     "footway", "path", "steps", "cycleway", "pedestrian", "bridleway", "track", "corridor", "elevator",
@@ -202,7 +205,7 @@ class Ways(osmium.SimpleHandler):
         name = norm(tags.get("name", ""))
         weak = False
         if not entries:
-            if "国道" in name:
+            if "国道" in name or (MUNICIPAL_NAME.search(name) and not ROAD_NAME.search(name)):
                 return
             refs = [r.strip() for r in unicodedata.normalize("NFKC", tags.get("ref", "")).split(";")]
             refs = [str(int(r)) for r in refs if NUMERIC_REF.match(r)]
