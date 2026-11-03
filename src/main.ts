@@ -23,7 +23,8 @@ import {
   showTrack,
   type PrefShapes,
 } from "./map";
-import { matchTrack } from "./matcher";
+import { classifyTrack } from "./layers";
+import { DEFAULT_OPTIONS, matchTrack } from "./matcher";
 import { parseTrackFile } from "./parsers";
 import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
@@ -694,18 +695,19 @@ const isTrackFile = (f: File) => /\.(csv|gpx)$/i.test(f.name);
  */
 async function matchAll(track: TrackPoint[]): Promise<Coverage> {
   const out: Coverage = new Map();
-  const add = (d: RouteData) => {
-    for (const [id, r] of matchTrack(d, track)) out.set(id, Math.max(out.get(id) ?? 0, r));
-  };
-  for (const kind of ["kokudo", "expressway"] as const) {
-    const d = datasets[kind];
-    if (d) add(d);
-  }
+  const generals: RouteData[] = [];
+  if (datasets.kokudo) generals.push(datasets.kokudo);
   if (prefIndex) {
     for (const code of prefsOfTrack(prefIndex, track)) {
       const d = await loadPrefFile(code);
-      if (d) add(d);
+      if (d) generals.push(d);
     }
+  }
+  const expressway = datasets.expressway;
+  // 高架の高速道路と下の国道が並んでいるところで、走っていないほうを塗らないように、ログの各点がどちらの上かを先に決める
+  const layers = expressway ? classifyTrack(track, expressway, generals) : undefined;
+  for (const d of expressway ? [...generals, expressway] : generals) {
+    for (const [id, r] of matchTrack(d, track, DEFAULT_OPTIONS, layers)) out.set(id, Math.max(out.get(id) ?? 0, r));
   }
   return out;
 }

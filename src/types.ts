@@ -90,6 +90,18 @@ export interface RouteData {
   routes: Record<string, { name: string }>;
   segments: Segment[];
   tunnels: Tunnel[];
+  /**
+   * 高速道路のデータだけにある、IC のランプ(進む向きの線)。in は下の道から本線へ、out は本線から下の道へ。
+   * 走ったログが高速道路の上か下の道かを決める手がかりにする(src/layers.ts)。古いデータにはない
+   */
+  ramps?: Ramp[];
+  /** 高速道路のデータだけにある、高速道路に出入りできる場所(ランプが本線につながる点と、本線の端)。古いデータにはない */
+  access?: LonLat[];
+}
+
+export interface Ramp {
+  c: LonLat[];
+  k: "in" | "out";
 }
 
 /** 都道府県道の一覧(prefroads/index.json)。都道府県ごとのファイルは prefroads/01.json 〜 47.json */

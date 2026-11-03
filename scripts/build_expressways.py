@@ -2,13 +2,16 @@
 """OSM の抽出ファイルから高速道路・都市高速・自動車専用道路・有料道路を取り出し、
 アプリ用の public/data/expressways.json を作る。
 
-  osmium tags-filter japan-latest.osm.pbf w/highway=motorway w/motorroad=yes w/toll=yes -o hw.osm.pbf
+  osmium tags-filter japan-latest.osm.pbf w/highway=motorway,motorway_link,trunk_link w/motorroad=yes w/toll=yes -o hw.osm.pbf
   python3 scripts/build_expressways.py hw.osm.pbf --out public/data/expressways.json
 
 - 路線は道路の名前ごとにまとめる(OSM の name)
 - IC・JCT のランプ(motorway_link)は数えない
 - 上下線が別の線で描かれているところは、反対向きの区間を組(pair)にする。
   アプリはどちらかを走れば両方走ったことにし、長さは半分ずつ数える
+- IC のランプ(下の道から本線へ / 本線から下の道へ。進む向きの線)と、高速道路に出入りできる場所
+  (ランプが本線につながる点・本線の端)も入れる。アプリは高架の高速道路と下の国道を見分ける手がかりにする。
+  ランプも取り出すので、osmium では w/highway=motorway_link,trunk_link も絞り込みに入れること
 
 pyosmium が必要です(pip install osmium)。
 """
@@ -38,6 +41,10 @@ URBAN_NAME = re.compile(r"^(首都高速|首都高|阪神高速|名古屋高速|
 EXPRESSWAY_NAME = re.compile(r"(自動車道|高速道路|高速自動車国道)")
 # 有料道路として数える一般道の種類(駐車場の通路などは除く)
 TOLL_HIGHWAYS = {"trunk", "primary", "secondary", "tertiary", "unclassified"}
+# IC のランプとして見る道路の種類(trunk_link は自動車専用道路のランプ。本線につながるものだけ使う)
+LINK_HIGHWAYS = {"motorway_link", "trunk_link"}
+# ランプをつなげてたどる長さの上限(m)と、短すぎて手がかりにならないランプ(m)
+RAMP_MAX, RAMP_MIN = 3000.0, 60.0
 # 上下線を組にするときの距離(m)。まず近いもの同士、残りは離れていても組にする
 PAIR_NEAR, PAIR_FAR = 80.0, 800.0
 
@@ -79,17 +86,23 @@ class Ways(osmium.SimpleHandler):
     def __init__(self) -> None:
         super().__init__()
         self.ways: list[dict] = []
+        self.links: list[dict] = []
 
     def way(self, w: osmium.osm.Way) -> None:
         tags = dict(w.tags)
+        valid = [n for n in w.nodes if n.location.valid()]
+        coords = [(n.lon, n.lat) for n in valid]
+        if len(coords) < 2:
+            return
+        nodes = [n.ref for n in valid]
+        if tags.get("highway") in LINK_HIGHWAYS:
+            self.links.append({"id": w.id, "tags": tags, "coords": coords, "nodes": nodes})
+            return
         cat = classify(tags)
         if not cat:
             return
-        coords = [(n.lon, n.lat) for n in w.nodes if n.location.valid()]
-        if len(coords) < 2:
-            return
-        ends = (w.nodes[0].ref, w.nodes[len(w.nodes) - 1].ref)
-        self.ways.append({"id": w.id, "tags": tags, "cat": cat, "coords": coords, "ends": ends, "name": road_name(tags)})
+        ends = (nodes[0], nodes[-1])
+        self.ways.append({"id": w.id, "tags": tags, "cat": cat, "coords": coords, "nodes": nodes, "ends": ends, "name": road_name(tags)})
 
 
 def inherit_names(ways: list[dict]) -> None:
@@ -169,7 +182,124 @@ def find_pairs(segments: list[dict], raw: dict[str, list[tuple[float, float]]], 
             segments[j].setdefault("pair", s["id"])
 
 
-def build(ways: list[dict]) -> dict:
+def line_len(coords: list[tuple[float, float]]) -> float:
+    return sum(dist(coords[i - 1], coords[i]) for i in range(1, len(coords)))
+
+
+def ramps_and_access(ways: list[dict], links: list[dict]) -> tuple[list[dict], list[list[float]]]:
+    """IC のランプ(進む向きの線と、in: 下の道から本線へ / out: 本線から下の道へ)と、高速道路に出入りできる場所を求める。
+
+    ways は高速道路(本線)、links はランプの候補(motorway_link・trunk_link)。
+    名前が「〜インター線」「〜ランプ」などで路線にしない高速道路の線も、ランプとして扱う。
+    ランプのまとまり(つながっている線)のうち、本線にも下の道(抽出に入っていないので、行き止まりに見える端)にも
+    つながっているものが IC のランプ。本線どうしだけをつなぐもの(JCT)は、出入りできる場所にだけ入れる
+    """
+    mains = [w for w in ways if not SKIP_NAME.search(w["name"])]
+    ramps_in = [dict(w, oneway_default=w["tags"].get("highway") == "motorway") for w in ways if SKIP_NAME.search(w["name"])]
+    ramps_in += [dict(l, oneway_default=l["tags"].get("highway") == "motorway_link") for l in links]
+    main_nodes: set[int] = set()
+    for w in mains:
+        main_nodes.update(w["nodes"])
+
+    # 進む向きにそろえる(両方向に通れるランプは向きが分からないので、出入りできる場所にだけ使う)
+    oriented: list[dict] = []
+    for l in ramps_in:
+        ow = l["tags"].get("oneway")
+        if ow == "-1":
+            oriented.append({"nodes": l["nodes"][::-1], "coords": l["coords"][::-1], "dir": True})
+        elif ow == "yes" or (ow is None and l["oneway_default"]):
+            oriented.append({"nodes": l["nodes"], "coords": l["coords"], "dir": True})
+        else:
+            oriented.append({"nodes": l["nodes"], "coords": l["coords"], "dir": False})
+
+    node_count: dict[int, int] = defaultdict(int)
+    for l in oriented:
+        for n in set(l["nodes"]):
+            node_count[n] += 1
+    # ランプのまとまり
+    parent = list(range(len(oriented)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    by_end: dict[int, list[int]] = defaultdict(list)
+    for i, l in enumerate(oriented):
+        for n in (l["nodes"][0], l["nodes"][-1]):
+            by_end[n].append(i)
+    for idx in by_end.values():
+        for j in idx[1:]:
+            parent[find(j)] = find(idx[0])
+    touches_main: set[int] = set()
+    has_open_end: set[int] = set()
+    for i, l in enumerate(oriented):
+        for n in (l["nodes"][0], l["nodes"][-1]):
+            if n in main_nodes:
+                touches_main.add(find(i))
+            elif node_count[n] == 1:
+                has_open_end.add(find(i))
+
+    access: dict[int, tuple[float, float]] = {}
+    for i, l in enumerate(oriented):
+        if find(i) not in touches_main:
+            continue
+        for n, p in ((l["nodes"][0], l["coords"][0]), (l["nodes"][-1], l["coords"][-1])):
+            if n in main_nodes:
+                access[n] = p
+    # 本線の端(一般道につながるところ)
+    main_count: dict[int, int] = defaultdict(int)
+    for w in mains:
+        for n in set(w["nodes"]):
+            main_count[n] += 1
+    for w in mains:
+        for n, p in ((w["nodes"][0], w["coords"][0]), (w["nodes"][-1], w["coords"][-1])):
+            if main_count[n] == 1 and n not in node_count:
+                access[n] = p
+
+    starts: dict[int, list[int]] = defaultdict(list)
+    ends: dict[int, list[int]] = defaultdict(list)
+    for i, l in enumerate(oriented):
+        if l["dir"]:
+            starts[l["nodes"][0]].append(i)
+            ends[l["nodes"][-1]].append(i)
+
+    def walk(i: int, back: bool) -> list[tuple[float, float]]:
+        """本線につながるランプから、分かれ道か下の道に着くまでたどる"""
+        coords = list(oriented[i]["coords"])
+        seen = {i}
+        cur = oriented[i]["nodes"][0 if back else -1]
+        while cur not in main_nodes and line_len(coords) < RAMP_MAX:
+            nxt = ends[cur] if back else starts[cur]
+            other = starts[cur] if back else ends[cur]
+            if len(nxt) != 1 or len(other) != 1 or nxt[0] in seen:
+                break
+            j = nxt[0]
+            seen.add(j)
+            c = oriented[j]["coords"]
+            coords = c[:-1] + coords if back else coords + c[1:]
+            cur = oriented[j]["nodes"][0 if back else -1]
+        return coords
+
+    ramps: list[dict] = []
+    for i, l in enumerate(oriented):
+        if not l["dir"] or find(i) not in touches_main or find(i) not in has_open_end:
+            continue
+        a, b = l["nodes"][0] in main_nodes, l["nodes"][-1] in main_nodes
+        if b and not a:
+            coords, kind = walk(i, back=True), "in"
+        elif a and not b:
+            coords, kind = walk(i, back=False), "out"
+        else:
+            continue
+        if line_len(coords) < RAMP_MIN:
+            continue
+        ramps.append({"c": [rnd(p) for p in simplify(coords, SIMPLIFY_METERS)], "k": kind})
+    return ramps, [rnd(p) for p in access.values()]
+
+
+def build(ways: list[dict], links: list[dict] | None = None) -> dict:
     routes: dict[str, dict] = {}
     route_cat: dict[str, defaultdict] = defaultdict(lambda: defaultdict(float))
     segments: list[dict] = []
@@ -220,6 +350,7 @@ def build(ways: list[dict]) -> dict:
 
     find_pairs(segments, raw, oneway)
     order = ["expressway", "urban", "motorroad", "toll"]
+    ramps, access = ramps_and_access(ways, links or [])
     return {
         "version": 1,
         "kind": "expressway",
@@ -227,6 +358,8 @@ def build(ways: list[dict]) -> dict:
         "routes": dict(sorted(routes.items(), key=lambda kv: (order.index(main_cat[kv[0]]), kv[0]))),
         "segments": segments,
         "tunnels": tunnels,
+        "ramps": ramps,
+        "access": access,
     }
 
 
@@ -239,7 +372,7 @@ def main() -> None:
     h = Ways()
     h.apply_file(str(args.pbf), locations=True, idx="flex_mem")
     inherit_names(h.ways)
-    data = build(h.ways)
+    data = build(h.ways, h.links)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
     segs = data["segments"]
@@ -249,6 +382,10 @@ def main() -> None:
     for s in segs:
         by_cat[s["cats"][0]] += s["len"] * (0.5 if "pair" in s else 1) / 1000
     print(f"{len(data['routes'])} 路線 / {len(segs)} 区間(上下線の組 {paired}) / 道路として {km:,.0f} km → {args.out}", file=sys.stderr)
+    kinds = defaultdict(int)
+    for r in data["ramps"]:
+        kinds[r["k"]] += 1
+    print(f"  ランプ: 入口 {kinds['in']} / 出口 {kinds['out']}、出入りできる場所 {len(data['access'])}", file=sys.stderr)
     for c, v in sorted(by_cat.items(), key=lambda kv: -kv[1]):
         print(f"  {c}: {v:,.0f} km", file=sys.stderr)
 
