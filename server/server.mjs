@@ -4,7 +4,7 @@
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -106,8 +106,24 @@ function setMeta(id, m) {
   renameSync(`${META()}.tmp`, META());
 }
 
+const logName = (id) => id.replace(/^\d+-/, "").replace(/\.gz$/, "");
+const logFiles = () => readdirSync(LOGS).filter((f) => f.endsWith(".gz")).sort();
+const sameLog = (id, body) => {
+  try {
+    return gunzipSync(readFileSync(join(LOGS, id))).equals(body);
+  } catch {
+    return false;
+  }
+};
+
 function saveLog(name, body, meta) {
   mkdirSync(LOGS, { recursive: true });
+  // 同じ名前・同じ中身のログをもう一度読み込んだときは、新しく保存せず前のものを使う
+  const same = logFiles().find((f) => logName(f) === safeName(name) && sameLog(f, body));
+  if (same) {
+    if (isMeta(meta)) setMeta(same, meta);
+    return same;
+  }
   const id = `${Date.now()}-${safeName(name)}.gz`;
   writeFileSync(join(LOGS, id), gzipSync(body));
   if (isMeta(meta)) setMeta(id, meta);
@@ -117,15 +133,41 @@ function saveLog(name, body, meta) {
 function listLogs() {
   if (!existsSync(LOGS)) return [];
   const meta = loadMeta();
-  return readdirSync(LOGS)
-    .filter((f) => f.endsWith(".gz"))
-    .sort()
-    .map((id) => ({
-      id,
-      name: id.replace(/^\d+-/, "").replace(/\.gz$/, ""),
-      size: statSync(join(LOGS, id)).size,
-      ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
-    }));
+  return logFiles().map((id) => ({
+    id,
+    name: logName(id),
+    size: statSync(join(LOGS, id)).size,
+    ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
+  }));
+}
+
+/**
+ * 前に同じログを何度も読み込んで重複して保存されたものを、ログフォルダの duplicates に移す。
+ * 同じ名前で中身も同じものは、いちばん古いものだけ残す。移したファイルの数を返す
+ */
+export function dedupeLogs() {
+  if (!existsSync(LOGS)) return 0;
+  const meta = loadMeta();
+  const kept = new Map(); // 名前 → 残したログの id と中身
+  const moved = [];
+  for (const id of logFiles()) {
+    const body = gunzipSync(readFileSync(join(LOGS, id)));
+    const list = kept.get(logName(id)) ?? [];
+    const same = list.find((k) => k.body.equals(body));
+    if (!same) {
+      kept.set(logName(id), [...list, { id, body }]);
+      continue;
+    }
+    if (!isMeta(meta[same.id]) && isMeta(meta[id])) meta[same.id] = meta[id];
+    delete meta[id];
+    moved.push(id);
+  }
+  if (!moved.length) return 0;
+  mkdirSync(join(LOGS, "duplicates"), { recursive: true });
+  for (const id of moved) renameSync(join(LOGS, id), join(LOGS, "duplicates", id));
+  writeFileSync(`${META()}.tmp`, JSON.stringify(meta));
+  renameSync(`${META()}.tmp`, META());
+  return moved.length;
 }
 
 // --- 配信 ---
@@ -242,6 +284,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
     console.error("dist/ がありません。先に npm run build(または scripts\\update.ps1)を実行してください。");
     process.exit(1);
   }
+  const moved = dedupeLogs();
+  if (moved) console.log(`重複して保存されていたログ ${moved} 件を ${join(LOGS, "duplicates")} に移しました`);
   const app = createApp();
   app.on("error", (e) => {
     if (e.code === "EADDRINUSE") console.error(`ポート ${PORT} はほかのプログラムが使っています(前のサーバーが残っている可能性があります)。`);
