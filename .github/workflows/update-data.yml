@@ -92,6 +92,12 @@ jobs:
             bash scripts/download_japan.sh japan.osm.pbf
           fi
 
+      - name: 国道の自動車専用道路の書き方を見る(確認用)
+        continue-on-error: true
+        run: |
+          osmium tags-filter japan.osm.pbf w/highway=motorway -o mw.osm.pbf
+          osmium tags-filter -R japan.osm.pbf r/route=road -o rr.osm.pbf
+          python3 scripts/diag_kokudo_motorway.py mw.osm.pbf rr.osm.pbf
       - name: 日本の OSM ファイルをキャッシュに置く(同じ日の次の実行で使う)
         if: inputs.source != 'overpass' && steps.osm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
