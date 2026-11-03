@@ -126,6 +126,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--raw-dir", type=Path, help="取得した wikitext を置く(確認用)")
+    ap.add_argument("--sample", action="store_true", help="ページの書き方の確認用に、一部をログに出す")
     args = ap.parse_args()
     out: dict[str, dict] = {}
     for code, pref in enumerate(PREFS, 1):
@@ -145,6 +146,13 @@ def main() -> None:
         routes = parse(pref, text)
         with_ends = sum(1 for r in routes.values() if "from" in r)
         print(f"  {pref}: {title} / {len(routes)} 路線(起点・終点あり {with_ends})", file=sys.stderr)
+        if args.sample:
+            i = text.find("道1号")
+            i = text.rfind("\n", 0, max(i - 300, 0)) if i > 0 else 0
+            for line in text[i:i + 1500].splitlines():
+                print(f"    | {line}", file=sys.stderr)
+            for ref in list(routes)[:3]:
+                print(f"    → {ref}: {routes[ref]}", file=sys.stderr)
         if routes:
             out[str(code)] = routes
         time.sleep(0.5)
