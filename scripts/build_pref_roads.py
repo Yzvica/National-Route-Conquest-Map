@@ -67,6 +67,12 @@ SKIP_HIGHWAYS = {
 # OSM の日本の決まりでは、主要地方道は primary、一般都道府県道は secondary(tertiary は主な市町村道)
 MAJOR_HIGHWAYS = {"motorway", "trunk", "primary"}
 LOOSE_HIGHWAYS = {"primary", "secondary", "tertiary"}
+# tertiary(主な市町村道)に数字の ref だけ付いた道は、市道・区道の番号のことが多い。
+# 同じ路線がリレーション・primary/secondary・「〇〇県道N号」の名前のどれかでも出てくるときだけ使う
+WEAK_HIGHWAYS = {"tertiary"}
+# 都道府県道の番号は北海道(4桁がある)以外は3桁まで。それより大きい番号は市町村道とみなす
+MAX_REF_EXCEPT_HOKKAIDO = 999
+HOKKAIDO = 1
 # リレーションのない道だけでできた路線は、これより短ければ ref の付け間違いなどの切れ端とみなして除く(m)
 MIN_LOOSE_ROUTE = 300.0
 # アプリが「このあたりにどの都道府県の道があるか」を調べる格子の大きさ(度)
@@ -194,16 +200,18 @@ class Ways(osmium.SimpleHandler):
             return
         entries = self.rel_members.get(w.id)
         name = norm(tags.get("name", ""))
+        weak = False
         if not entries:
             if "国道" in name:
                 return
             refs = [r.strip() for r in unicodedata.normalize("NFKC", tags.get("ref", "")).split(";")]
             refs = [str(int(r)) for r in refs if NUMERIC_REF.match(r)]
             m = ROAD_NAME.match(name)
-            if refs and hw in LOOSE_HIGHWAYS:
-                entries = [(pref_of_name(name), r, "") for r in refs]
-            elif m:
+            if m:
                 entries = [(pref_of_name(name), str(int(m.group(3))), "")]
+            elif refs and hw in LOOSE_HIGHWAYS:
+                entries = [(pref_of_name(name), r, "") for r in refs]
+                weak = hw in WEAK_HIGHWAYS
             else:
                 return
         if w.id in self.national:
@@ -221,6 +229,7 @@ class Ways(osmium.SimpleHandler):
             "coords": coords,
             "entries": entries,
             "rel": w.id in self.rel_members,
+            "weak": weak,
             "oneway": oneway in ("yes", "-1"),
             "tunnel": tags.get("tunnel") not in (None, "no"),
             "name": name,
@@ -250,6 +259,8 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
     tunnels: dict[str, dict] = {}
     route_len: dict[str, defaultdict] = defaultdict(lambda: defaultdict(float))
     rel_routes: set[str] = set()
+    strong_routes: set[str] = set()
+    big_refs: set[str] = set()
     way_names: dict[str, Counter] = defaultdict(Counter)
     rel_names: dict[str, Counter] = defaultdict(Counter)
     for (w, i, piece), f in zip(pieces, found):
@@ -259,7 +270,12 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
             key = f"{code or here}-{ref}"
             if key in keys:
                 continue
+            if int(ref) > MAX_REF_EXCEPT_HOKKAIDO and (code or here) != HOKKAIDO:
+                big_refs.add(key)
+                continue
             keys.append(key)
+            if not w["weak"]:
+                strong_routes.add(key)
             if rname:
                 rel_names[key][rname] += 1
             if w["rel"]:
@@ -289,13 +305,17 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
 
     # リレーションのない道だけでできた短い路線は除く
     drop = {k for k, c in route_len.items() if k not in rel_routes and sum(c.values()) < MIN_LOOSE_ROUTE}
+    print(f"  短い切れ端として除いた路線: {len(drop)}", file=sys.stderr)
+    weak_only = {k for k in route_len if k not in strong_routes}
+    print(f"  市町村道とみなして除いた路線: 番号が4桁 {len(big_refs)} / tertiary の ref だけ {len(weak_only)}"
+          f" ({sum(sum(route_len[k].values()) for k in weak_only - drop) / 1000:.0f}km)", file=sys.stderr)
+    drop |= weak_only
     kept = []
     for s in segments:
         s["routes"] = [k for k in s["routes"] if k not in drop]
         if s["routes"]:
             kept.append(s)
     segments = kept
-    print(f"  短い切れ端として除いた路線: {len(drop)}", file=sys.stderr)
 
     main_cat = {k: max(c.items(), key=lambda kv: kv[1])[0] for k, c in route_len.items() if k not in drop}
     for s in segments:
