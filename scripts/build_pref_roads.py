@@ -19,6 +19,8 @@
 - 区間の ID は "p<wayId>-<番号>"。国道・高速道路のデータ("w…")と記録がまざらないように頭を変えている
 - 上下線が別の線になっているところは、高速道路と同じく組(pair)にする
 - 区間に通称(「三宿通り」など、OSM の name・loc_name・alt_name)があれば name に入れる
+- --wiki(fetch_wiki_prefroads.py で作る Wikipedia の県道一覧)があれば、一覧に無い番号の路線と、
+  起点・終点・経由地の市町村(--munis の境界)から離れた、リレーションのない道を除く(市町村道の ref の取り違え対策)
 
 pyosmium と shapely が必要です(pip install osmium shapely)。
 """
@@ -76,6 +78,17 @@ WEAK_HIGHWAYS = {"tertiary"}
 # 都道府県道の番号は北海道(4桁がある)以外は3桁まで。それより大きい番号は市町村道とみなす
 MAX_REF_EXCEPT_HOKKAIDO = 999
 HOKKAIDO = 1
+# Wikipedia の県道一覧(fetch_wiki_prefroads.py)で確かめるとき:
+# 一覧の路線数が OSM の路線数のこれ以上の割合なら、一覧に無い番号のリレーションのない路線を除く(一覧の読み取り失敗に備える)
+WIKI_MIN_COVER = 0.6
+# 路線の範囲(起点・終点・経由地の市町村を囲んだ形)をこれだけ(度。約5km)広げ、その外にあって、
+# 同じ路線のリレーションの道からも WIKI_NEAR_REL(度。約3km)以上離れたリレーションのない道は、その路線の道としない。
+# ただし範囲があてになるときだけ: リレーションの道が WIKI_REL_IN 以上範囲に入っている、
+# またはリレーションが無く、外す道が路線の WIKI_MAX_MOVE 以下(それより多ければ Wikipedia の読み違いとみなす)
+WIKI_AREA_PAD = 0.05
+WIKI_NEAR_REL = 0.03
+WIKI_REL_IN = 0.8
+WIKI_MAX_MOVE = 0.5
 # リレーションのない道だけでできた路線は、これより短ければ ref の付け間違いなどの切れ端とみなして除く(m)
 MIN_LOOSE_ROUTE = 300.0
 # アプリが「このあたりにどの都道府県の道があるか」を調べる格子の大きさ(度)
@@ -240,7 +253,129 @@ class Ways(osmium.SimpleHandler):
         })
 
 
-def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, dict]:
+class Municipalities(osmium.SimpleHandler):
+    """市町村・特別区の形(admin_level=7)。名前 → 形の一覧(同じ名前が別の都道府県にもある)"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.wkb = osmium.geom.WKBFactory()
+        self.shapes: dict[str, list] = defaultdict(list)
+
+    def area(self, a: osmium.osm.Area) -> None:
+        tags = a.tags
+        if tags.get("boundary") != "administrative" or tags.get("admin_level") != "7":
+            return
+        name = norm(tags.get("name", ""))
+        if not name:
+            return
+        try:
+            geom = shapely.from_wkb(self.wkb.create_multipolygon(a))
+        except (RuntimeError, shapely.errors.GEOSException):
+            return
+        self.shapes[name].append(shapely.simplify(geom, 0.002))
+
+
+def muni_shape(name: str, code: int, munis: dict[str, list], shapes: dict[int, shapely.Geometry]):
+    """市町村名の形。同じ名前がいくつもあれば、その都道府県にいちばん近いもの"""
+    cands = munis.get(name)
+    if not cands:
+        return None
+    shape = shapes.get(code)
+    if shape is None or len(cands) == 1:
+        return cands[0]
+    return min(cands, key=lambda g: shape.distance(g))
+
+
+def wiki_check(segments: list[dict], route_len: dict, rel_routes: set[str], drop: set[str], wiki: dict,
+               munis: dict[str, list], shapes: dict[int, shapely.Geometry]) -> set[str]:
+    """Wikipedia の県道一覧で確かめる。一覧に無い番号の路線(リレーションのないもの)は返して除かせ、
+    起点・終点・経由地の市町村から離れたリレーションのない道は、その路線から外す"""
+    by_code: dict[str, set[str]] = defaultdict(set)
+    for k in route_len:
+        if k not in drop:
+            by_code[k.split("-")[0]].add(k.split("-")[1])
+    missing: set[str] = set()
+    for code, refs in by_code.items():
+        listed = wiki.get(code)
+        if not listed or len(listed) < WIKI_MIN_COVER * len(refs):
+            continue
+        missing |= {f"{code}-{r}" for r in refs if r not in listed and f"{code}-{r}" not in rel_routes}
+    km = sum(sum(route_len[k].values()) for k in missing) / 1000
+    print(f"  Wikipedia の一覧に無い番号として除いた路線: {len(missing)} ({km:.0f}km)"
+          f" {sorted(missing, key=lambda k: tuple(map(int, k.split('-'))))[:40]}", file=sys.stderr)
+
+    # 路線の範囲: 起点・終点・経由地の市町村(と記事の座標)をまとめて囲んだ形を、少し広げたもの
+    area: dict[str, shapely.Geometry] = {}
+    for k in route_len:
+        if k in missing or k in drop:
+            continue
+        code, ref = k.split("-")
+        info = wiki.get(code, {}).get(ref)
+        if not info or "from" not in info:
+            continue
+        parts = [muni_shape(n, int(code), munis, shapes) for n in (info["from"], info["to"], *info.get("via", []))]
+        if parts[0] is None or parts[1] is None:
+            continue
+        parts = [g for g in parts if g is not None]
+        parts += [shapely.Point(info[p]) for p in ("from_pt", "to_pt") if p in info]
+        hull = shapely.convex_hull(shapely.union_all(parts)).buffer(WIKI_AREA_PAD)
+        shapely.prepare(hull)
+        area[k] = hull
+
+    def mid(s: dict) -> shapely.Point:
+        return shapely.Point(s["coords"][len(s["coords"]) // 2])
+
+    # リレーションの道が範囲にどれだけ入るかで、範囲(Wikipedia から読んだ起点・終点)が正しそうか見る
+    rel_in, rel_all = Counter(), Counter()
+    rel_pts: dict[str, list] = defaultdict(list)
+    for s in segments:
+        if s["_rel"]:
+            for k in s["routes"]:
+                if k in area:
+                    rel_all[k] += s["len"]
+                    rel_pts[k].append(s["coords"][len(s["coords"]) // 2])
+                    if area[k].contains(mid(s)):
+                        rel_in[k] += s["len"]
+    rel_geom = {k: shapely.MultiPoint(v) for k, v in rel_pts.items()}
+    out: dict[str, list] = defaultdict(list)  # 路線 → 範囲の外にあるリレーションのない区間
+    for s in segments:
+        if s["_rel"]:
+            continue
+        for k in s["routes"]:
+            if k in area and not area[k].contains(mid(s)):
+                if k in rel_geom and rel_geom[k].distance(mid(s)) <= WIKI_NEAR_REL:
+                    continue
+                out[k].append(s)
+    moved, skipped = Counter(), []
+    for k, segs in out.items():
+        far = sum(s["len"] for s in segs)
+        total = sum(route_len[k].values())
+        if rel_all[k]:
+            trusted = rel_in[k] >= WIKI_REL_IN * rel_all[k]
+        else:
+            trusted = far <= WIKI_MAX_MOVE * total
+        if not trusted:
+            skipped.append(k)
+            continue
+        for s in segs:
+            s["routes"] = [r for r in s["routes"] if r != k]
+            route_len[k]["major" if s["_major"] else "general"] -= s["len"]
+        moved[k] = far
+    print(f"  起点・終点の市町村から離れているため外した道: {len(moved)} 路線 ({sum(moved.values()) / 1000:.0f}km)。"
+          f"範囲で確かめた路線 {len(area)} / {len(route_len)}、範囲があてにならず確かめなかった路線 {len(skipped)}", file=sys.stderr)
+    for k, m in moved.most_common(40):
+        code, ref = k.split("-")
+        info = wiki[code][ref]
+        total = sum(route_len[k].values()) + m
+        ex = out[k][0]
+        print(f"    [外した道] {k} {info.get('name', '')}: {m / 1000:.1f}/{total / 1000:.1f}km"
+              f" 起点 {info['from']} 終点 {info['to']} 経由 {info.get('via', [])}"
+              f" リレーション {rel_in[k] / 1000:.1f}/{rel_all[k] / 1000:.1f}km 例 {ex['id']} {ex['coords'][0]}", file=sys.stderr)
+    return missing
+
+
+def build(ways: list[dict], shapes: dict[int, shapely.Geometry], wiki: dict | None = None,
+          munis: dict[str, list] | None = None) -> dict[int, dict]:
     codes = list(shapes)
     tree = shapely.STRtree([shapes[c] for c in codes])
 
@@ -299,6 +434,7 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
                 tl = sum(dist(c[j - 1], c[j]) for j in range(1, len(c)))
                 tunnels[tid] = {"id": tid, "a": rnd(c[0]), "b": rnd(c[-1]), "len": round(tl)}
         seg["_major"] = w["hw"] in MAJOR_HIGHWAYS
+        seg["_rel"] = w["rel"]
         segments.append(seg)
         raw[sid] = piece
         if w["oneway"]:
@@ -313,6 +449,8 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
     print(f"  市町村道とみなして除いた路線: 番号が4桁 {len(big_refs)} / tertiary の ref だけ {len(weak_only)}"
           f" ({sum(sum(route_len[k].values()) for k in weak_only - drop) / 1000:.0f}km)", file=sys.stderr)
     drop |= weak_only
+    if wiki:
+        drop |= wiki_check(segments, route_len, rel_routes, drop, wiki, munis or {}, shapes)
     kept = []
     for s in segments:
         s["routes"] = [k for k in s["routes"] if k not in drop]
@@ -323,6 +461,7 @@ def build(ways: list[dict], shapes: dict[int, shapely.Geometry]) -> dict[int, di
     main_cat = {k: max(c.items(), key=lambda kv: kv[1])[0] for k, c in route_len.items() if k not in drop}
     for s in segments:
         s.pop("_major")
+        s.pop("_rel")
         s["cats"] = [main_cat[s["routes"][0]]] + (["overlap"] if len(s["routes"]) > 1 else [])
     find_pairs(segments, raw, oneway)
 
@@ -382,6 +521,8 @@ def main() -> None:
     ap.add_argument("boundaries", help="行政界(admin_level=4)を含む .osm.pbf")
     ap.add_argument("--fallback", type=Path, help="境界が作れなかった都道府県に使う、前回の prefectures.json")
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--wiki", type=Path, help="fetch_wiki_prefroads.py で作った Wikipedia の県道一覧(確かめに使う)")
+    ap.add_argument("--munis", help="市町村の境界(admin_level=7)を含む .osm.pbf。起点・終点の確かめに使う")
     args = ap.parse_args()
 
     nat = NationalWays()
@@ -398,7 +539,16 @@ def main() -> None:
           file=sys.stderr)
 
     shapes = load_prefectures(args.boundaries, args.fallback)
-    files = build(h.ways, shapes)
+    wiki = None
+    if args.wiki and args.wiki.exists():
+        wiki = json.loads(args.wiki.read_text(encoding="utf-8"))
+    munis: dict[str, list] = {}
+    if wiki and args.munis:
+        mh = Municipalities()
+        mh.apply_file(args.munis, locations=True, idx="flex_mem")
+        munis = mh.shapes
+        print(f"市町村の形 {sum(map(len, munis.values()))} 件", file=sys.stderr)
+    files = build(h.ways, shapes, wiki, munis)
 
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -43,6 +43,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      # 都道府県道は Wikipedia の「〇〇県の県道一覧」で、番号や場所が合わない道(市町村道など)を除く
+      - name: Wikipedia から都道府県道の一覧を取得
+        if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
+        continue-on-error: true
+        run: python3 scripts/fetch_wiki_prefroads.py --out wiki_prefroads.json --raw-dir wiki-raw
+      - name: 取得した一覧を確認用に置く
+        if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiki-prefroads
+          path: |
+            wiki_prefroads.json
+            wiki-raw
+          retention-days: 14
+
       # 日本全体の OSM ファイル(約2.4GB)は、同じ日(UTC)に2回目以降の実行ではキャッシュから使う。
       # Geofabrik は1日1回更新なので、日付が変わったら取り直す
       - name: 今日の日付
@@ -89,6 +105,7 @@ jobs:
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
           if [ "$TARGET" = both ] || [ "$TARGET" = prefroad ]; then
             osmium tags-filter japan.osm.pbf "r/network=JP:prefectural*" w/highway=primary,secondary,tertiary -o prefroad.osm.pbf
+            osmium tags-filter japan.osm.pbf r/admin_level=7 -o muni.osm.pbf
           fi
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ] || [ "$TARGET" = old ]; then
             osmium tags-filter japan.osm.pbf w/highway -o hw.osm.pbf
@@ -118,7 +135,9 @@ jobs:
           gh release download route-data -p prefectures.json -O prefectures-prev.json || echo "前回の prefectures.json はありません"
           # 都道府県道は都道府県ごとのファイルにして、1つにまとめる(アプリは選んだ都道府県だけ読む)
           if [ -f prefroad.osm.pbf ]; then
-            python3 scripts/build_pref_roads.py prefroad.osm.pbf kokudo.osm.pbf pref.osm.pbf --fallback prefectures-prev.json --out-dir prefroads
+            wiki=()
+            if [ -s wiki_prefroads.json ]; then wiki=(--wiki wiki_prefroads.json --munis muni.osm.pbf); else echo "Wikipedia の一覧が無いので、一覧での確かめはしません"; fi
+            python3 scripts/build_pref_roads.py prefroad.osm.pbf kokudo.osm.pbf pref.osm.pbf --fallback prefectures-prev.json --out-dir prefroads "${wiki[@]}"
             tar -czf prefroads.tar.gz prefroads
           fi
           python3 scripts/add_prefectures.py pref.osm.pbf "${files[@]}" --out prefectures.json --fallback prefectures-prev.json
