@@ -16,6 +16,7 @@ import re
 import sys
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -48,16 +49,20 @@ def fetch(title: str) -> tuple[str, str] | None:
         "titles": title, "redirects": 1, "format": "json", "formatversion": 2,
     })
     req = urllib.request.Request(f"{API}?{q}", headers={"User-Agent": UA})
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.load(r)
             break
         except Exception as e:  # noqa: BLE001
-            if attempt == 3:
+            if attempt == 5:
                 print(f"  {title}: 取得できません ({e})", file=sys.stderr)
                 return None
-            time.sleep(2 ** attempt)
+            # 続けて取りすぎると 429 が返るので、待ってからやり直す
+            wait = 5 * 2 ** attempt
+            if isinstance(e, urllib.error.HTTPError) and e.headers.get("Retry-After", "").isdigit():
+                wait = max(wait, int(e.headers["Retry-After"]))
+            time.sleep(wait)
     page = data["query"]["pages"][0]
     if page.get("missing"):
         return None
@@ -135,7 +140,7 @@ def main() -> None:
             got = fetch(t)
             if got:
                 break
-            time.sleep(0.5)
+            time.sleep(1.5)
         if not got:
             print(f"  {pref}: 一覧のページが見つかりません", file=sys.stderr)
             continue
@@ -155,7 +160,7 @@ def main() -> None:
                 print(f"    → {ref}: {routes[ref]}", file=sys.stderr)
         if routes:
             out[str(code)] = routes
-        time.sleep(0.5)
+        time.sleep(1.5)
     args.out.write_text(json.dumps(out, ensure_ascii=False, indent=0), encoding="utf-8")
     print(f"{len(out)} 都道府県 → {args.out}", file=sys.stderr)
 
