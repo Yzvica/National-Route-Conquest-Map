@@ -317,6 +317,7 @@ def wiki_check(segments: list[dict], route_len: dict, rel_routes: set[str], drop
     rel_geom = {k: shapely.MultiPoint(v) for k, v in rel_pts.items()}
     km_per_deg = 100.0  # 日本あたりの、1度のおおよその距離(km)。ゆるい判定なので緯度による違いは気にしない
     moved = Counter()
+    example: dict[str, tuple] = {}
     for s in segments:
         if s["_rel"]:
             continue
@@ -329,6 +330,8 @@ def wiki_check(segments: list[dict], route_len: dict, rel_routes: set[str], drop
                 near_rel = k in rel_geom and rel_geom[k].distance(mid) * km_per_deg <= WIKI_NEAR_REL_KM
                 if not near_line and not near_rel:
                     moved[k] += s["len"]
+                    example.setdefault(k, (s["id"], s["coords"][len(s["coords"]) // 2],
+                                           round(line.distance(mid) * km_per_deg, 1), round(limit, 1)))
                     route_len[k]["major" if s["_major"] else "general"] -= s["len"]
                     continue
             keep.append(k)
@@ -336,6 +339,14 @@ def wiki_check(segments: list[dict], route_len: dict, rel_routes: set[str], drop
     print(f"  起点・終点から離れているため外した道: {len(moved)} 路線 ({sum(moved.values()) / 1000:.0f}km)"
           f" {[k for k, _ in moved.most_common(30)]}", file=sys.stderr)
     print(f"  起点・終点で確かめた路線: {len(corridor)} / {len(route_len)}", file=sys.stderr)
+    for k, m in moved.most_common(40):
+        code, ref = k.split("-")
+        info = wiki[code][ref]
+        total = sum(route_len[k].values()) + m
+        print(f"    [外した道] {k} {info.get('name', '')}: {m / 1000:.1f}/{total / 1000:.1f}km"
+              f" 起点 {info['from']}{info.get('from_pt', '')} 終点 {info['to']}{info.get('to_pt', '')}"
+              f" 経由 {info.get('via', [])} リレーション {'あり' if k in rel_geom else 'なし'} 例 {example[k]}",
+              file=sys.stderr)
     return missing
 
 
