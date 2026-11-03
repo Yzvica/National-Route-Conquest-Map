@@ -19,14 +19,19 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 import sys
 from collections import defaultdict
 
 import osmium
 
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+from build_expressways import URBAN_NAME, URBAN_OPERATORS  # noqa: E402
+from build_routes import dist  # noqa: E402
 
-# 国道の番号(1〜58、101〜507)
-NATIONAL_REFS = {str(n) for n in [*range(1, 59), *range(101, 508)]}
+
+# 国道の番号(1〜58、101〜507。109〜111・214〜216 は欠番)
+NATIONAL_REFS = {str(n) for n in [*range(1, 59), *range(101, 508)]} - {"109", "110", "111", "214", "215", "216"}
 # build_routes.py がバイパス扱いにする目印
 MOTORWAY_TAG = "_kokudo_motorway"
 
@@ -45,23 +50,37 @@ def national_refs_of(tags: osmium.osm.TagList) -> list[str]:
 class MotorwayHandler(osmium.SimpleHandler):
     """国道のリレーションに入っていない、国道の番号を持つ自動車専用道路(ランプは除く)"""
 
-    def __init__(self, known: set[int]) -> None:
+    def __init__(self, numbered: set[int], members: set[int]) -> None:
         super().__init__()
-        self.known = known
+        self.numbered = numbered  # 番号のある国道のリレーションに入っている道(そのまま国道として数える)
+        self.members = members  # 国道のリレーションに入っている道(番号のない「西九州自動車道」のリレーションなども)
         self.by_ref: dict[str, list[int]] = defaultdict(list)
         self.ways: list[dict] = []
+        self.marked: set[int] = set()  # リレーションには入っているが番号のない道。形は WayHandler が取る
+        self.km: dict[str, float] = defaultdict(float)
+        self.names: dict[str, set[str]] = defaultdict(set)
 
     def way(self, w: osmium.osm.Way) -> None:
         tags = w.tags
         hw = tags.get("highway")
-        if w.id in self.known or not (hw == "motorway" or (hw == "trunk" and tags.get("motorroad") == "yes")):
+        if w.id in self.numbered or not (hw == "motorway" or (hw == "trunk" and tags.get("motorroad") == "yes")):
+            return
+        # 首都高・阪神高速などの都市高速の路線番号(「1号羽田線」の 1 など)は国道の番号ではない
+        if any(o in tags.get("operator", "") for o in URBAN_OPERATORS) or URBAN_NAME.search(tags.get("name", "")):
             return
         refs = national_refs_of(tags)
         if not refs:
             return
+        geometry = [{"lon": n.lon, "lat": n.lat} for n in w.nodes if n.location.valid()]
+        length = sum(dist((geometry[i - 1]["lon"], geometry[i - 1]["lat"]), (geometry[i]["lon"], geometry[i]["lat"]))
+                     for i in range(1, len(geometry)))
         for r in refs:
             self.by_ref[r].append(w.id)
-        geometry = [{"lon": n.lon, "lat": n.lat} for n in w.nodes if n.location.valid()]
+            self.km[r] += length / 1000
+            self.names[r].add(tags.get("name", "(名前なし)"))
+        if w.id in self.members:
+            self.marked.add(w.id)
+            return
         t = dict(tags)
         t[MOTORWAY_TAG] = "yes"
         self.ways.append({"type": "way", "id": w.id, "tags": t, "geometry": geometry})
@@ -80,26 +99,33 @@ class RelationHandler(osmium.SimpleHandler):
         super().__init__()
         self.relations: list[dict] = []
         self.way_ids: set[int] = set()
+        self.numbered: set[int] = set()  # 国道の番号のあるリレーションに入っている道
 
     def relation(self, r: osmium.osm.Relation) -> None:
         if not is_national_route(r.tags):
             return
         members = [{"type": "way", "ref": m.ref} for m in r.members if m.type == "w"]
         self.way_ids.update(m["ref"] for m in members)
+        if any(r.strip() in NATIONAL_REFS for r in re.split(r"[;,]", unicodedata.normalize("NFKC", r.tags.get("ref", "")))):
+            self.numbered.update(m["ref"] for m in members)
         self.relations.append({"type": "relation", "id": r.id, "tags": dict(r.tags), "members": members})
 
 
 class WayHandler(osmium.SimpleHandler):
-    def __init__(self, wanted: set[int]) -> None:
+    def __init__(self, wanted: set[int], marked: set[int] | None = None) -> None:
         super().__init__()
         self.wanted = wanted
+        self.marked = marked or set()
         self.ways: list[dict] = []
 
     def way(self, w: osmium.osm.Way) -> None:
         if w.id not in self.wanted:
             return
         geometry = [{"lon": n.lon, "lat": n.lat} for n in w.nodes if n.location.valid()]
-        self.ways.append({"type": "way", "id": w.id, "tags": dict(w.tags), "geometry": geometry})
+        tags = dict(w.tags)
+        if w.id in self.marked:
+            tags[MOTORWAY_TAG] = "yes"
+        self.ways.append({"type": "way", "id": w.id, "tags": tags, "geometry": geometry})
 
 
 def main() -> None:
@@ -109,21 +135,26 @@ def main() -> None:
 
     rels = RelationHandler()
     rels.apply_file(src)
-    ways = WayHandler(rels.way_ids)
-    ways.apply_file(src, locations=True, idx="flex_mem")
 
     extra_rels: list[dict] = []
     extra_ways: list[dict] = []
+    marked: set[int] = set()
     if len(sys.argv) == 4:
-        mw = MotorwayHandler(rels.way_ids)
+        mw = MotorwayHandler(rels.numbered, rels.way_ids)
         mw.apply_file(sys.argv[3], locations=True, idx="flex_mem")
         # 番号ごとに、その道だけをまとめたリレーションを作る(build_routes.py はリレーションから路線を読む)
         for i, (ref, ids) in enumerate(sorted(mw.by_ref.items(), key=lambda kv: int(kv[0])), 1):
             extra_rels.append({"type": "relation", "id": -i, "members": [{"type": "way", "ref": w} for w in ids],
                                "tags": {"type": "route", "route": "road", "network": "JP:national", "ref": ref}})
         extra_ways = mw.ways
-        print(f"国道のリレーションに入っていない自動車専用道路: {len(extra_ways)} 本"
-              f"(国道 {', '.join(sorted(mw.by_ref, key=int))} 号)", file=sys.stderr)
+        marked = mw.marked
+        print(f"国道のリレーションに入っていない(番号のないリレーションだけの)自動車専用道路: {len(extra_ways) + len(marked)} 本",
+              file=sys.stderr)
+        for ref in sorted(mw.by_ref, key=int):
+            print(f"  国道{ref}号: {mw.km[ref]:.1f} km(上下線とも)  {' / '.join(sorted(mw.names[ref])[:6])}", file=sys.stderr)
+
+    ways = WayHandler(rels.way_ids, marked)
+    ways.apply_file(src, locations=True, idx="flex_mem")
 
     with open(out, "w") as f:
         json.dump({"elements": rels.relations + extra_rels + ways.ways + extra_ways}, f)
