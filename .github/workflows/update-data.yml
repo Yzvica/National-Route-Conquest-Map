@@ -112,8 +112,10 @@ jobs:
           fi
           # japan.osm.pbf はキャッシュに置くので消さない
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ]; then
-            python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json
+            python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json expressway.osm.pbf
             python3 scripts/build_routes.py --input raw.json --out routes.json
+            # 確認用: Wikipedia の各国道の延長・通過する都道府県と比べて、大きく違う路線をログに出す
+            python3 scripts/check_kokudo_wiki.py routes.json || echo "Wikipedia との比較はできませんでした"
           fi
           # 旧道(国道でなくなった旧ルート)を国道データに加える
           if [ -f hw.osm.pbf ]; then

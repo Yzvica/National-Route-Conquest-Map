@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import sys
 import unicodedata
@@ -32,7 +31,9 @@ from pathlib import Path
 import osmium
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_routes import SEGMENT_LENGTH, SIMPLIFY_METERS, dist, rnd, simplify, split_line  # noqa: E402
+from build_routes import (  # noqa: E402
+    SEGMENT_LENGTH, SIMPLIFY_METERS, dist, find_pairs, rnd, simplify, split_line,
+)
 
 OUT = Path(__file__).resolve().parent.parent / "public" / "data" / "expressways.json"
 
@@ -47,8 +48,6 @@ TOLL_HIGHWAYS = {"trunk", "primary", "secondary", "tertiary", "unclassified"}
 LINK_HIGHWAYS = {"motorway_link", "trunk_link"}
 # ランプをつなげてたどる長さの上限(m)と、短すぎて手がかりにならないランプ(m)
 RAMP_MAX, RAMP_MIN = 3000.0, 60.0
-# 上下線を組にするときの距離(m)。まず近いもの同士、残りは離れていても組にする
-PAIR_NEAR, PAIR_FAR = 80.0, 800.0
 
 
 def classify(tags: dict) -> str | None:
@@ -129,59 +128,6 @@ def inherit_names(ways: list[dict]) -> None:
         weak = [w for w in weak if not w["name"] or WEAK_NAME.search(w["name"])]
         if not changed:
             break
-
-
-def bearing_vec(coords: list[tuple[float, float]]) -> tuple[float, float]:
-    (x1, y1), (x2, y2) = coords[0], coords[-1]
-    dx = (x2 - x1) * math.cos(math.radians((y1 + y2) / 2))
-    dy = y2 - y1
-    n = math.hypot(dx, dy) or 1.0
-    return dx / n, dy / n
-
-
-def mid(coords: list[tuple[float, float]]) -> tuple[float, float]:
-    return coords[len(coords) // 2]
-
-
-def find_pairs(segments: list[dict], raw: dict[str, list[tuple[float, float]]], oneway: set[str]) -> None:
-    """同じ路線で、向きが逆の一方通行の区間を組にする"""
-    cell = PAIR_FAR / 111_000  # 度。ざっくりした格子で近くを探す
-    grid: dict[tuple[str, int, int], list[int]] = defaultdict(list)
-    info = []
-    for i, s in enumerate(segments):
-        c = raw[s["id"]]
-        m = mid(c)
-        info.append((m, bearing_vec(c)))
-        if s["id"] in oneway:
-            grid[(s["routes"][0], int(m[0] / cell), int(m[1] / cell))].append(i)
-
-    def candidates(i: int, limit: float, free_only: bool) -> int | None:
-        s = segments[i]
-        (m, v) = info[i]
-        gx, gy = int(m[0] / cell), int(m[1] / cell)
-        best, best_d = None, limit
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for j in grid.get((s["routes"][0], gx + dx, gy + dy), []):
-                    if j == i or (free_only and "pair" in segments[j]):
-                        continue
-                    m2, v2 = info[j]
-                    if v[0] * v2[0] + v[1] * v2[1] > -0.5:  # 逆向きでない
-                        continue
-                    d = dist(m, m2)
-                    if d < best_d:
-                        best, best_d = j, d
-        return best
-
-    for limit, free_only in ((PAIR_NEAR, False), (PAIR_FAR, True)):
-        for i, s in enumerate(segments):
-            if s["id"] not in oneway or "pair" in s:
-                continue
-            j = candidates(i, limit, free_only)
-            if j is None:
-                continue
-            s["pair"] = segments[j]["id"]
-            segments[j].setdefault("pair", s["id"])
 
 
 def line_len(coords: list[tuple[float, float]]) -> float:
