@@ -56,6 +56,9 @@ const isDates = (d) => Array.isArray(d) && d.length === 2 && d.every((x) => type
  * 区間ごとに割合は大きい方、通った日は初めての日が早い方・最後の日が遅い方を残す。
  * (src/store.ts の mergeRecord と同じ規則)
  */
+/** 前に時刻を読み違えて 1970-01-01 などになった日付。記録には残さない(src/store.ts と同じ) */
+export const isBogusDay = (d) => typeof d === "string" && d < "2000";
+
 export function mergeRecord(base, add) {
   const coverage = { ...base.coverage };
   for (const [id, r] of Object.entries(add.coverage ?? {})) {
@@ -63,9 +66,9 @@ export function mergeRecord(base, add) {
   }
   const dates = { ...base.dates };
   for (const [id, d] of Object.entries(add.dates ?? {})) {
-    if (!isDates(d)) continue;
+    if (!isDates(d) || isBogusDay(d[0]) || isBogusDay(d[1])) continue;
     const cur = dates[id];
-    dates[id] = cur ? [cur[0] < d[0] ? cur[0] : d[0], cur[1] > d[1] ? cur[1] : d[1]] : d;
+    dates[id] = cur && !isBogusDay(cur[0]) && !isBogusDay(cur[1]) ? [cur[0] < d[0] ? cur[0] : d[0], cur[1] > d[1] ? cur[1] : d[1]] : d;
   }
   // 点線国道の自己申告は、申告した時刻が新しい方を残す(取り消しもできるように)
   const declared = { ...(base.declared ?? {}) };
@@ -74,9 +77,9 @@ export function mergeRecord(base, add) {
     if (!declared[ref] || d.at > declared[ref].at) declared[ref] = { on: d.on, at: d.at };
   }
   // ログごとの走行距離。同じログ(同じキー)は上書きする
-  const trips = { ...(base.trips ?? {}) };
+  const trips = Object.fromEntries(Object.entries(base.trips ?? {}).filter(([, t]) => !isBogusDay(t?.date)));
   for (const [key, t] of Object.entries(add.trips ?? {})) {
-    if (t && typeof t.date === "string" && typeof t.m === "number" && t.m >= 0) trips[key] = { date: t.date, m: t.m };
+    if (t && typeof t.date === "string" && !isBogusDay(t.date) && typeof t.m === "number" && t.m >= 0) trips[key] = { date: t.date, m: t.m };
   }
   return { coverage, dates, logs: [...base.logs, ...(add.logs ?? [])], declared, trips };
 }

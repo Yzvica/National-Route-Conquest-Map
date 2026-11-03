@@ -236,18 +236,26 @@ class LocalStore implements RecordStore {
   }
 }
 
+/** 前に時刻を読み違えて 1970-01-01 などになった日付。記録には残さない(server/server.mjs と同じ) */
+export const isBogusDay = (d: string | undefined) => typeof d === "string" && d < "2000";
+
 export function mergeRecord(base: Record, add: Record): Record {
   const coverage = new Map(base.coverage);
   for (const [id, r] of add.coverage) coverage.set(id, Math.max(coverage.get(id) ?? 0, r));
   const dates = new Map(base.dates);
-  for (const [id, d] of add.dates) dates.set(id, mergeDates(dates.get(id), d));
+  for (const [id, d] of add.dates) {
+    if (isBogusDay(d[0]) || isBogusDay(d[1])) continue;
+    const cur = dates.get(id);
+    dates.set(id, mergeDates(cur && !isBogusDay(cur[0]) && !isBogusDay(cur[1]) ? cur : undefined, d));
+  }
   const declared = new Map(base.declared);
   for (const [ref, d] of add.declared) {
     const cur = declared.get(ref);
     if (!cur || d.at > cur.at) declared.set(ref, d);
   }
   // 同じログを読み直したら上書きする(二重に数えない)
-  const trips = new Map([...base.trips, ...add.trips]);
+  // 日付を読み違えていた分は捨てる(判定し直すと正しい日付で入り直す)
+  const trips = new Map([...base.trips, ...add.trips].filter(([, t]) => !isBogusDay(t.date)));
   return { coverage, dates, logs: [...base.logs, ...add.logs], declared, trips };
 }
 
