@@ -1,4 +1,9 @@
-"""確認用: 国道データ(routes.json)を Wikipedia の各国道の記事(延長・通過する都道府県)と比べ、大きく違う路線をログに出す。"""
+"""確認用: 国道データ(routes.json)を Wikipedia の各国道の記事(延長・通過する都道府県)と比べ、大きく違う路線をログに出す。
+
+  python3 scripts/check_kokudo_wiki.py routes.json
+
+上下線の組(pair)は半分で数える。旧道(old)は比べない。
+"""
 import json
 import re
 import sys

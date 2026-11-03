@@ -48,13 +48,6 @@ jobs:
         if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
         continue-on-error: true
         run: python3 scripts/fetch_wiki_prefroads.py --out wiki_prefroads.json --raw-dir wiki-raw
-      - name: 国道を Wikipedia と比べる(確認用)
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download route-data -p routes.json -O routes-check.json
-          python3 scripts/check_kokudo_wiki.py routes-check.json
       - name: 取得した一覧を確認用に置く
         if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
         continue-on-error: true
@@ -92,12 +85,6 @@ jobs:
             bash scripts/download_japan.sh japan.osm.pbf
           fi
 
-      - name: 国道の自動車専用道路の書き方を見る(確認用)
-        continue-on-error: true
-        run: |
-          osmium tags-filter japan.osm.pbf w/highway=motorway -o mw.osm.pbf
-          osmium tags-filter -R japan.osm.pbf r/route=road -o rr.osm.pbf
-          python3 scripts/diag_kokudo_motorway.py mw.osm.pbf rr.osm.pbf
       - name: 日本の OSM ファイルをキャッシュに置く(同じ日の次の実行で使う)
         if: inputs.source != 'overpass' && steps.osm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -125,8 +112,10 @@ jobs:
           fi
           # japan.osm.pbf はキャッシュに置くので消さない
           if [ "$TARGET" = both ] || [ "$TARGET" = kokudo ]; then
-            python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json
+            python3 scripts/extract_pbf.py kokudo.osm.pbf raw.json expressway.osm.pbf
             python3 scripts/build_routes.py --input raw.json --out routes.json
+            # 確認用: Wikipedia の各国道の延長・通過する都道府県と比べて、大きく違う路線をログに出す
+            python3 scripts/check_kokudo_wiki.py routes.json || echo "Wikipedia との比較はできませんでした"
           fi
           # 旧道(国道でなくなった旧ルート)を国道データに加える
           if [ -f hw.osm.pbf ]; then

@@ -20,6 +20,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +46,9 @@ SIDEWALK_HIGHWAYS = {"footway", "cycleway", "pedestrian", "path", "steps"}
 SIDEWALK_DIST = 25.0  # m。車道からこれ以内なら脇を通っているとみなす
 SIDEWALK_SHARE = 0.8  # 区間の点のうちこの割合以上が車道の脇なら歩道とみなす
 OUT = Path(__file__).resolve().parent.parent / "public" / "data" / "routes.json"
+# 中央分離帯などで上下線が別の線(一方通行)になっているところは、向きが逆で近い区間を組(pair)にして、
+# どちらか片方を走れば制覇、距離は1本分で数える。まずこれ(m)以内、残りはこれ以内で組む
+PAIR_NEAR, PAIR_FAR = 80.0, 800.0
 
 
 def overpass_query(refs: list[str]) -> str:
@@ -155,6 +159,59 @@ def simplify(pts: list[tuple[float, float]], eps: float) -> list[tuple[float, fl
 NOT_NICKNAME = re.compile(r"国道|(都|道|府|県)道\d+号|(橋|高架橋|トンネル|隧道)$")
 
 
+def bearing_vec(coords: list[tuple[float, float]]) -> tuple[float, float]:
+    (x1, y1), (x2, y2) = coords[0], coords[-1]
+    dx = (x2 - x1) * math.cos(math.radians((y1 + y2) / 2))
+    dy = y2 - y1
+    n = math.hypot(dx, dy) or 1.0
+    return dx / n, dy / n
+
+
+def mid(coords: list[tuple[float, float]]) -> tuple[float, float]:
+    return coords[len(coords) // 2]
+
+
+def find_pairs(segments: list[dict], raw: dict[str, list[tuple[float, float]]], oneway: set[str]) -> None:
+    """同じ路線で、向きが逆の一方通行の区間を組にする"""
+    cell = PAIR_FAR / 111_000  # 度。ざっくりした格子で近くを探す
+    grid: dict[tuple[str, int, int], list[int]] = defaultdict(list)
+    info = []
+    for i, s in enumerate(segments):
+        c = raw[s["id"]]
+        m = mid(c)
+        info.append((m, bearing_vec(c)))
+        if s["id"] in oneway:
+            grid[(s["routes"][0], int(m[0] / cell), int(m[1] / cell))].append(i)
+
+    def candidates(i: int, limit: float, free_only: bool) -> int | None:
+        s = segments[i]
+        (m, v) = info[i]
+        gx, gy = int(m[0] / cell), int(m[1] / cell)
+        best, best_d = None, limit
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get((s["routes"][0], gx + dx, gy + dy), []):
+                    if j == i or (free_only and "pair" in segments[j]):
+                        continue
+                    m2, v2 = info[j]
+                    if v[0] * v2[0] + v[1] * v2[1] > -0.5:  # 逆向きでない
+                        continue
+                    d = dist(m, m2)
+                    if d < best_d:
+                        best, best_d = j, d
+        return best
+
+    for limit, free_only in ((PAIR_NEAR, False), (PAIR_FAR, True)):
+        for i, s in enumerate(segments):
+            if s["id"] not in oneway or "pair" in s:
+                continue
+            j = candidates(i, limit, free_only)
+            if j is None:
+                continue
+            s["pair"] = segments[j]["id"]
+            segments[j].setdefault("pair", s["id"])
+
+
 def nickname(tags: dict) -> str:
     """区間の通称(「青梅街道」「○○バイパス」など)。name・loc_name・alt_name のうち、番号だけの名前や橋の名前でない最初のもの"""
     for key in ("name", "loc_name", "alt_name"):
@@ -193,6 +250,8 @@ def build(osm: dict) -> dict:
     segments = []
     tunnels = []
     old_segments: list[dict] = []
+    raw: dict[str, list[tuple[float, float]]] = {}  # 組にするときに使う、間引く前の区間の点
+    oneway: set[str] = set()
     skipped_km = 0.0
     for el in osm["elements"]:
         if el["type"] != "way" or el["id"] not in way_routes or "geometry" not in el:
@@ -218,7 +277,8 @@ def build(osm: dict) -> dict:
             continue
         elif tags.get("highway") in DOTTED_HIGHWAYS:
             cats.append("dotted")
-        elif "バイパス" in tags.get("name", "") or "バイパス" in tags.get("official_name", ""):
+        elif tags.get("_kokudo_motorway") or "バイパス" in tags.get("name", "") or "バイパス" in tags.get("official_name", ""):
+            # 一般国道の自動車専用道路(extract_pbf.py が加えたもの)もバイパスとして数える
             cats.append("bypass")
         else:
             cats.append("main")
@@ -227,6 +287,9 @@ def build(osm: dict) -> dict:
             cats.append("overlap")
 
         nick = nickname(tags) if cats[0] in ("main", "bypass") else ""
+        is_oneway = cats[0] in ("main", "bypass") and tags.get("oneway") in ("yes", "-1")
+        if tags.get("oneway") == "-1":
+            coords = coords[::-1]
         tunnel_id = None
         if tags.get("tunnel") not in (None, "no"):
             tunnel_id = f"t{el['id']}"
@@ -250,10 +313,17 @@ def build(osm: dict) -> dict:
                 # 区間の通称(画面の国道の詳細に一覧で出す)
                 seg["name"] = nick
             segments.append(seg)
+            raw[seg["id"]] = piece
+            if is_oneway:
+                oneway.add(seg["id"])
 
     if skipped_km:
         print(f"道路でない線(highway なし・工事中・廃道など)を除きました: {skipped_km:.1f} km", file=sys.stderr)
     segments, dropped = drop_sidewalks(segments)
+    roads = [s for s in segments if s["cats"][0] in ("main", "bypass")]
+    find_pairs(roads, raw, oneway)
+    paired = [s for s in roads if "pair" in s]
+    print(f"上下線を組にした区間: {len(paired)} 区間 / {sum(s['len'] for s in paired) / 2000:.1f} km 分", file=sys.stderr)
     if dropped:
         print(f"車道沿いの歩道などを点線国道から除きました: {len(dropped)} 区間 / {sum(s['len'] for s in dropped) / 1000:.1f} km", file=sys.stderr)
     if old_segments:
@@ -369,7 +439,7 @@ def main() -> None:
     data = build(osm)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
-    km = sum(s["len"] for s in data["segments"]) / 1000
+    km = sum(s["len"] * (0.5 if "pair" in s else 1) for s in data["segments"]) / 1000
     print(f"{len(data['routes'])} 路線 / {len(data['segments'])} 区間 / {km:,.0f} km → {args.out}", file=sys.stderr)
 
 
