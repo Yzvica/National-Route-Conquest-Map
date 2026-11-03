@@ -1,11 +1,12 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 process.env.RECORD_FILE = join(mkdtempSync(join(tmpdir(), "kokudo-")), "record.json");
 process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-logs-"));
-const { createApp, mergeRecord } = await import("./server.mjs");
+const { createApp, dedupeLogs, mergeRecord } = await import("./server.mjs");
 
 describe("mergeRecord", () => {
   it("区間ごとに大きい方を残し、ログは足す", () => {
@@ -113,6 +114,31 @@ describe("/api/logs", () => {
     list = await (await fetch(base)).json();
     expect(list.find((l) => l.id === old)).toMatchObject({ date: "2021-08-28", m: 59000 });
     expect(list.some((l) => l.id === "meta.json")).toBe(false);
+  });
+
+  it("同じログをもう一度読み込んでも、新しく保存しない", async () => {
+    const post = (name, body, q = "") => fetch(`${base}?name=${name}${q}`, { method: "POST", body }).then((r) => r.json());
+    const { id } = await post("again.csv", "1,2,3\n");
+    expect((await post("again.csv", "1,2,3\n", "&date=2025-01-02&m=10")).id).toBe(id);
+    expect((await post("again.csv", "4,5,6\n")).id).not.toBe(id);
+    const list = await (await fetch(base)).json();
+    expect(list.filter((l) => l.name === "again.csv")).toHaveLength(2);
+    expect(list.find((l) => l.id === id)).toMatchObject({ date: "2025-01-02", m: 10 });
+  });
+
+  it("前に重複して保存されたログは古いものだけ残し、ほかは duplicates に移す", async () => {
+    const dir = process.env.LOGS_DIR;
+    writeFileSync(join(dir, "100-dup.csv.gz"), gzipSync("a\n"));
+    writeFileSync(join(dir, "200-dup.csv.gz"), gzipSync("a\n"));
+    writeFileSync(join(dir, "300-dup.csv.gz"), gzipSync("b\n"));
+    await fetch(`${base}/200-dup.csv.gz`, { method: "PATCH", body: JSON.stringify({ date: "2024-05-06", m: 7 }) });
+    expect(dedupeLogs()).toBe(1);
+    expect(existsSync(join(dir, "duplicates", "200-dup.csv.gz"))).toBe(true);
+    const list = await (await fetch(base)).json();
+    expect(list.filter((l) => l.name === "dup.csv").map((l) => l.id)).toEqual(["100-dup.csv.gz", "300-dup.csv.gz"]);
+    // 移したログの日付と距離は、残したログに引き継ぐ
+    expect(list.find((l) => l.id === "100-dup.csv.gz")).toMatchObject({ date: "2024-05-06", m: 7 });
+    expect(dedupeLogs()).toBe(0);
   });
 
   it("ログフォルダの外は読めない", async () => {
