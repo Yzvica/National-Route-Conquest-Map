@@ -298,12 +298,16 @@ def wiki_check(segments: list[dict], route_len: dict, rel_routes: set[str], drop
         info = wiki.get(code, {}).get(ref)
         if not info or "from" not in info:
             continue
-        a = place_point(info["from"], int(code), places, shapes)
-        b = place_point(info["to"], int(code), places, shapes)
+        # 起点・終点は記事の座標があればそれを、無ければ市町村の点を使う。主な経由地があれば間に入れる
+        a = tuple(info["from_pt"]) if "from_pt" in info else place_point(info["from"], int(code), places, shapes)
+        b = tuple(info["to_pt"]) if "to_pt" in info else place_point(info["to"], int(code), places, shapes)
         if a is None or b is None:
             continue
-        line = shapely.LineString([a, b]) if a != b else shapely.Point(a)
-        corridor[k] = (line, max(WIKI_CORRIDOR_KM, WIKI_SPREAD * dist(a, b) / 1000))
+        vias = [v for v in (place_point(n, int(code), places, shapes) for n in info.get("via", [])) if v is not None]
+        pts = list(dict.fromkeys([a, *vias, b]))
+        line = shapely.LineString(pts) if len(pts) > 1 else shapely.Point(a)
+        span = max(dist(p, q) for p in pts for q in pts)
+        corridor[k] = (line, max(WIKI_CORRIDOR_KM, WIKI_SPREAD * span / 1000))
     rel_pts: dict[str, list] = defaultdict(list)
     for s in segments:
         if s["_rel"]:

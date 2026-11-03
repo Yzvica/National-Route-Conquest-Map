@@ -115,7 +115,29 @@ def first_muni(text: str) -> str | None:
 ROADS = "|".join(re.escape("北海道道" if p == "北海道" else p + "道") for p in PREFS)
 ROUTE = re.compile(rf"((?:{ROADS})(?:・(?:{ROADS}))*)\s*(\d+)\s*号")
 LINK = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]")
-ENDS = re.compile(r"(起点|終点)\s*[=:：]\s*([^\n]+)")
+ENDS = re.compile(r"(起点|終点|主な経由都市)\s*[=:：]\s*([^\n]+)")
+COORD = re.compile(r"\{\{\s*[Cc]oord\s*\|([^}]*)\}\}")
+
+
+def coord(text: str) -> list[float] | None:
+    """{{Coord|43|3|50.4|N|141|21|58.7|E|…}} や {{Coord|35.1|139.2|…}} → [経度, 緯度]"""
+    m = COORD.search(text)
+    if not m:
+        return None
+    parts = [p.strip() for p in m.group(1).split("|")]
+    try:
+        if "N" in parts or "S" in parts:
+            i = parts.index("N") if "N" in parts else parts.index("S")
+            j = next(k for k in range(i + 1, len(parts)) if parts[k] in ("E", "W"))
+            dms = lambda xs: sum(float(x) / 60 ** n for n, x in enumerate(xs) if x)  # noqa: E731
+            lat, lon = dms(parts[:i]), dms(parts[i + 1:j])
+        else:
+            lat, lon = float(parts[0]), float(parts[1])
+    except (ValueError, StopIteration, IndexError):
+        return None
+    if 20 < lat < 46 and 122 < lon < 154:
+        return [round(lon, 5), round(lat, 5)]
+    return None
 
 
 def route_in(pref: str, text: str) -> tuple[str, str] | None:
@@ -172,17 +194,25 @@ def parse(pref: str, text: str) -> dict[str, dict]:
     return routes
 
 
-def ends_of_article(text: str) -> tuple[str, str] | None:
-    """路線の記事(基本情報の表など)から 起点・終点の市町村"""
-    got: dict[str, str] = {}
+def ends_of_article(text: str) -> dict | None:
+    """路線の記事(基本情報の表など)から 起点・終点の市町村(と、あれば座標)、主な経由地"""
+    got: dict = {}
     for m in ENDS.finditer(text):
-        if m.group(1) not in got:
-            muni = first_muni(m.group(2))
-            if muni:
-                got[m.group(1)] = muni
-    if "起点" in got and "終点" in got:
-        return got["起点"], got["終点"]
-    return None
+        key = {"起点": "from", "終点": "to", "主な経由都市": "via"}[m.group(1)]
+        if key in got:
+            continue
+        if key == "via":
+            vias = [v for v in (first_muni(t) for t in re.split(r"[、,・]|\]\]\s*\[\[", m.group(2))) if v]
+            if vias:
+                got["via"] = list(dict.fromkeys(vias))
+            continue
+        muni = first_muni(m.group(2))
+        if muni:
+            got[key] = muni
+            pt = coord(m.group(2))
+            if pt:
+                got[key + "_pt"] = pt
+    return got if "from" in got and "to" in got else None
 
 
 def main() -> None:
@@ -220,7 +250,7 @@ def main() -> None:
                     continue
                 ends = ends_of_article(art[1])
                 if ends:
-                    r["from"], r["to"] = ends
+                    r.update(ends)
                 if args.sample and shown < 6:
                     shown += 1
                     print(f"    [{art[0]}] → {ends}", file=sys.stderr)
