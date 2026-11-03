@@ -47,7 +47,7 @@ jobs:
       - name: Wikipedia から都道府県道の一覧を取得
         if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
         continue-on-error: true
-        run: python3 scripts/fetch_wiki_prefroads.py --out wiki_prefroads.json --raw-dir wiki-raw --sample
+        run: python3 scripts/fetch_wiki_prefroads.py --out wiki_prefroads.json --raw-dir wiki-raw
       - name: 取得した一覧を確認用に置く
         if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'prefroad')
         continue-on-error: true
