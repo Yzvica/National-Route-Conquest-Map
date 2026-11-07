@@ -126,18 +126,43 @@ export function addMapControls(map: maplibregl.Map, notify: (lines: string[]) =>
     return;
   }
   const geolocate = new maplibregl.GeolocateControl({
-    positionOptions: { enableHighAccuracy: true, timeout: 15000 },
+    // iPhone の Safari は、追いかけ中(watchPosition)に止まっていて新しい位置が来ないと、
+    // timeout ごとに TIMEOUT エラーを出す。屋内では GPS の最初の測位にも 15 秒以上かかることがある。
+    // そのため時間切れは長めにし、少し前の位置(30 秒以内)も使う
+    positionOptions: { enableHighAccuracy: true, timeout: 60000, maximumAge: 30000 },
     // 押すと現在位置へ移動し、そのあとも動きに合わせて追いかける(もう一度押すと止める)
     trackUserLocation: true,
     showAccuracyCircle: true,
     fitBoundsOptions: { maxZoom: 14 },
   });
+  // 一度でも位置が取れたあとの時間切れは「止まっていて更新が無い」だけなので知らせない
+  let gotPosition = false;
+  geolocate.on("geolocate", () => {
+    gotPosition = true;
+  });
+  geolocate.on("trackuserlocationend", () => {
+    gotPosition = false;
+  });
   geolocate.on("error", (e: GeolocationPositionError) => {
-    notify([
-      e.code === 1
-        ? "📍 位置情報の利用が許可されていません。ブラウザ(iPhone は 設定 → プライバシー → 位置情報サービス)で許可してください"
-        : "📍 現在位置を取得できませんでした",
-    ]);
+    if (e.code === 3 && gotPosition) return;
+    const detail = `(コード ${e.code}${e.message ? `: ${e.message}` : ""})`;
+    if (e.code === 1) {
+      notify([
+        "📍 位置情報の利用が許可されていません " + detail,
+        "iPhone: 設定 → プライバシーとセキュリティ → 位置情報サービス → Safari Webサイト を「使用中のみ」に",
+        "Chrome などの場合は 設定 → (アプリ名) → 位置情報 を許可してください",
+      ]);
+    } else if (e.code === 3) {
+      notify([
+        "📍 現在位置の取得が時間切れになりました " + detail,
+        "空が見える場所でもう一度押してください",
+      ]);
+    } else {
+      notify([
+        "📍 現在位置を取得できませんでした " + detail,
+        "iPhone: 位置情報サービスがオンか、Safari Webサイト の「正確な位置情報」がオンかを確認してください",
+      ]);
+    }
   });
   map.addControl(geolocate, "bottom-right");
 }
