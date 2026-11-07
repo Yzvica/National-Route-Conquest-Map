@@ -281,7 +281,14 @@ describe("運転評価", () => {
     expect((await (await fetch(`${base}/${encodeURIComponent(id)}/eval`)).json()).score).toBe(72.5);
   });
 
-  it("iPhone のロガー以外のログには評価がない", async () => {
+  it("GBowl のログは evals フォルダの評価を使う", async () => {
+    const id = await upload("2026-10-24_11-21-05.csv", "a,b\n3,4\n");
+    mkdirSync(join(process.env.RAW_LOG_DIR, "evals"), { recursive: true });
+    writeFileSync(join(process.env.RAW_LOG_DIR, "evals", "2026-10-24_11-21-05.json"), ev(73.1));
+    expect((await (await fetch(`${base}/${encodeURIComponent(id)}/eval`)).json()).score).toBe(73.1);
+  });
+
+  it("評価のないログには点数を付けない", async () => {
     const id = await upload("2026-11-01_12-00-00.csv", "a,b\n1,2\n");
     expect((await fetch(`${base}/${encodeURIComponent(id)}/eval`)).status).toBe(404);
     const list = await (await fetch(base)).json();

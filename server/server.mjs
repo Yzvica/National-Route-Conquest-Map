@@ -203,16 +203,22 @@ function listLogs() {
 
 // --- 運転評価 ---
 // iPhone の走行ロガーのログ(名前は「<走行ID>.gpx」)は、生データの走行フォルダに DriveLog(gbowl-log-formatter)が
-// evaluation.json を作る。使い終わった走行フォルダは old に移すので、そちらも探す
+// evaluation.json を作る。使い終わった走行フォルダは old に移すので、そちらも探す。
+// GBowl の CSV など、それ以外のログは、まとめて評価したものを RAW_LOG_DIR/evals/<ログの名前から拡張子を除いたもの>.json に置く
 
 const SESSION_RE = /^(\d{8}-\d{6})\.gpx$/i;
 
+function evalPaths(id) {
+  const name = logName(id);
+  const dir = RAW_LOG_DIR();
+  const m = SESSION_RE.exec(name);
+  if (m) return [join(dir, m[1], "evaluation.json"), join(dir, "old", m[1], "evaluation.json")];
+  return [join(dir, "evals", `${name.replace(/\.[^.]+$/, "")}.json`)];
+}
+
 /** ログの運転評価(evaluation.json の中身)。なければ null */
 export function loadEval(id) {
-  const m = SESSION_RE.exec(logName(id));
-  if (!m) return null;
-  const dir = RAW_LOG_DIR();
-  for (const path of [join(dir, m[1], "evaluation.json"), join(dir, "old", m[1], "evaluation.json")]) {
+  for (const path of evalPaths(id)) {
     try {
       const ev = JSON.parse(readFileSync(path, "utf8"));
       if (ev && typeof ev.score === "number" && Array.isArray(ev.items)) return ev;
