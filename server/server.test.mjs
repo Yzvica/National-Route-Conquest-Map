@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 process.env.RECORD_FILE = join(mkdtempSync(join(tmpdir(), "kokudo-")), "record.json");
 process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-logs-"));
+process.env.RAW_LOG_DIR = mkdtempSync(join(tmpdir(), "kokudo-raw-"));
 process.env.JUDGE_WORKER = ""; // サーバーでの判定は server/judge.test.mjs で確かめる
 const { createApp, dedupeLogs, mergeRecord } = await import("./server.mjs");
 
@@ -217,5 +218,31 @@ describe("配信", () => {
     expect(first.headers.get("cache-control")).toBe("no-cache");
     const again = await fetch(`${base}/index.html`, { headers: { "If-None-Match": etag } });
     expect(again.status).toBe(304);
+  });
+});
+
+describe("/api/rawlog", () => {
+  let server;
+  let root;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    root = `http://127.0.0.1:${server.address().port}/api`;
+  });
+  afterAll(() => server.close());
+
+  const put = (session, file, body) =>
+    fetch(`${root}/rawlog?session=${encodeURIComponent(session)}&file=${encodeURIComponent(file)}`, { method: "PUT", body });
+
+  it("走行ごとのフォルダに保存し、送り直すと上書きする", async () => {
+    expect((await put("20261107-093000", "motion.csv", "t,ax\n0,1\n")).status).toBe(200);
+    expect((await put("20261107-093000", "motion.csv", "t,ax\n0,2\n")).status).toBe(200);
+    expect(readFileSync(join(process.env.RAW_LOG_DIR, "20261107-093000", "motion.csv"), "utf8")).toBe("t,ax\n0,2\n");
+  });
+
+  it("フォルダの外には書けない", async () => {
+    expect((await put("..", "x.csv", "a")).status).toBe(400);
+    expect((await put("a", "../x.csv", "a")).status).toBe(400);
+    expect((await put("a", ".hidden", "a")).status).toBe(400);
   });
 });

@@ -19,6 +19,16 @@ const JUDGE_WORKER = process.env.JUDGE_WORKER ?? join(ROOT, "server", "build", "
 const JUDGE_DATA = process.env.JUDGE_DATA_DIR ?? join(DIST, "data");
 // 判定し終えてから worker(道路データで数百MB使う)を止めるまでの時間。続けて送られてきたログで読み直さないよう少し待つ
 const JUDGE_IDLE_MS = Number(process.env.JUDGE_IDLE_MS ?? 3 * 60_000);
+// iPhone の走行ロガー(drive-logger-ios)が送る生データ(加速度など)の置き場所。
+// RAW_LOG_DIR → data/rawlog_dir.txt の1行目(Google ドライブの _drivelog など)→ data/rawlogs の順に決める
+const RAW_LOG_DIR = () => {
+  if (process.env.RAW_LOG_DIR) return process.env.RAW_LOG_DIR;
+  try {
+    const line = readFileSync(join(dirname(RECORD), "rawlog_dir.txt"), "utf8").split(/\r?\n/)[0].trim();
+    if (line) return line;
+  } catch {}
+  return join(dirname(RECORD), "rawlogs");
+};
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -512,6 +522,20 @@ export function createApp() {
           return json(res, 200, { id, duplicate: !added });
         }
         return json(res, 405, { error: "method not allowed" });
+      }
+      // 走行ロガーの生データを1ファイルずつ受け取る(?session=走行ID&file=ファイル名)。同じファイルは上書きする
+      if (url.pathname === "/api/rawlog") {
+        if (req.method !== "PUT" && req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+        const session = url.searchParams.get("session") ?? "";
+        const file = url.searchParams.get("file") ?? "";
+        const ok = (s) => /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,119}$/u.test(s) && !s.includes("..");
+        if (!ok(session) || !ok(file)) return json(res, 400, { error: "bad session or file" });
+        const body = Buffer.concat(await readChunks(req));
+        const dir = join(RAW_LOG_DIR(), session);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `${file}.part`), body);
+        renameSync(join(dir, `${file}.part`), join(dir, file));
+        return json(res, 200, { saved: `${session}/${file}`, bytes: body.length });
       }
       const inboxMatch = /^\/api\/inbox\/([^/]+)$/.exec(url.pathname);
       if (inboxMatch && req.method === "DELETE") {
