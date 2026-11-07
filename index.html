@@ -14,6 +14,7 @@
           <button type="button" role="tab" data-kind="kokudo" aria-selected="true">国道</button>
           <button type="button" role="tab" data-kind="expressway" aria-selected="false">高速道路</button>
           <button type="button" role="tab" data-kind="prefroad" aria-selected="false">都道府県道</button>
+          <button type="button" role="tab" data-view="logs" aria-selected="false">ログ</button>
         </div>
         <section id="pref-picker" class="pref-picker" hidden></section>
         <section class="actions">
@@ -25,7 +26,8 @@
         </section>
         <section id="overall"></section>
         <section id="categories"></section>
-        <section>
+        <section id="log-view" class="log-view" hidden></section>
+        <section id="routes-section">
           <h2 id="routes-title">国道別</h2>
           <input id="route-filter" type="search" placeholder="番号で絞り込み(例: 1)" />
           <ol id="routes"></ol>
