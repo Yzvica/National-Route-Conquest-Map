@@ -9,7 +9,7 @@ import {
   type DatasetSummary,
   type GameContext,
 } from "./game";
-import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
+import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView, type OpenEval } from "./gameView";
 import {
   addMapControls,
   addRoutes,
@@ -22,6 +22,8 @@ import {
   showPrefFill,
   showSelected,
   showTrack,
+  showDriveEvents,
+  flyToEvent,
   type PrefShapes,
 } from "./map";
 import { judgeLog, logDate, parseTrackText, type JudgeData } from "./judge";
@@ -29,7 +31,7 @@ import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, splitPrefRef } from "./prefroads";
 import { trackLength } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
-import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type JudgeRun, type Record, type SavedLog } from "./store";
+import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
   CATEGORY_LABELS,
   DATASET_LABELS,
@@ -175,6 +177,21 @@ let gameTab: GameTab = "achievements";
 let savedLogs: SavedLog[] | null = null;
 /** ログ一覧で地図に出しているログ */
 let shownLog: string | null = null;
+/** ログ一覧で開いている運転評価 */
+let openEval: OpenEval | null = null;
+/** 読み込んだ運転評価(ログ ID → 評価。読めなければ null) */
+const evals = new Map<string, DriveEval | null>();
+
+async function getEval(id: string): Promise<DriveEval | null> {
+  if (!evals.has(id)) {
+    const store = await storePromise;
+    evals.set(id, await store.loadEval(id).catch(() => null));
+  }
+  return evals.get(id)!;
+}
+
+const eventLabel = (e: DriveEvent) =>
+  `${e.kind} ${e.value.toFixed(2)}${e.unit === "G" ? "G" : " m/s³"}(${Math.round(e.kmh)} km/h)`;
 
 async function refreshLogs() {
   const store = await storePromise;
@@ -215,7 +232,7 @@ function renderGame() {
         ? suggestionsView({ kind: active, data, summary, coverage: coverage() }, routeName)
         : gameTab === "prefs"
           ? prefsView(summary, active, prefFill, !!prefShapes)
-          : reviewView(summary, record.trips, today(), routeName, active, savedLogs, shownLog);
+          : reviewView(summary, record.trips, today(), routeName, active, savedLogs, shownLog, openEval);
   }
 }
 
@@ -727,6 +744,7 @@ async function importFiles(
       else record = await store.add(added);
       for (const id of result.keys()) passed.add(id);
       showTrack(map, track);
+      showDriveEvents(map, []);
     } catch (e) {
       failed.push(`${file.name}: ${(e as Error).message}`);
     }
@@ -1066,6 +1084,11 @@ async function showSavedLog(id: string) {
     select(null, false);
     showTrack(map, track);
     shownLog = id;
+    showDriveEvents(map, []);
+    if (log?.score !== undefined) {
+      const ev = await getEval(id);
+      if (shownLog === id) showDriveEvents(map, (ev?.events ?? []).map((e) => ({ lat: e.lat, lon: e.lon, label: eventLabel(e) })));
+    }
     const trip = { date: logDate(track, name, Number(id.split("-")[0]) || Date.now()), m: Math.round(trackLength(track)) };
     if (log && (log.date !== trip.date || log.m !== trip.m)) {
       Object.assign(log, trip);
@@ -1086,8 +1109,39 @@ $("game-body").addEventListener("click", (e) => {
     void showSavedLog(log.dataset.log!);
     return;
   }
+  const evBtn = el.closest<HTMLElement>("[data-eval]");
+  if (evBtn) {
+    const id = evBtn.dataset.eval!;
+    if (openEval?.id === id) openEval = null;
+    else {
+      openEval = { id, ev: evals.get(id) };
+      if (openEval.ev === undefined) {
+        void getEval(id).then((ev) => {
+          if (openEval?.id !== id) return;
+          openEval = { id, ev };
+          keepScroll(renderGame);
+        });
+      }
+    }
+    keepScroll(renderGame);
+    return;
+  }
+  const evLink = el.closest<HTMLElement>("[data-ev]");
+  if (evLink) {
+    e.preventDefault();
+    const id = evLink.dataset.logId!;
+    const ev = evals.get(id)?.events[Number(evLink.dataset.ev)];
+    if (!ev) return;
+    void (async () => {
+      if (shownLog !== id) await showSavedLog(id);
+      $<HTMLDialogElement>("game").close();
+      flyToEvent(map, ev.lat, ev.lon, eventLabel(ev));
+    })();
+    return;
+  }
   if (el.closest("#clear-track")) {
     showTrack(map, []);
+    showDriveEvents(map, []);
     shownLog = null;
     renderGame();
     return;

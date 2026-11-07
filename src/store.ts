@@ -85,6 +85,8 @@ export interface RecordStore {
   pendingLogs(): Promise<SavedLog[]>;
   /** これから判定するログを、まだ判定していない一覧から外す。ほかの端末が先に外していれば false */
   claimLog(id: string): Promise<boolean>;
+  /** ログの運転評価(iPhone の走行ロガーのログで、DriveLog が評価を作ったものだけ。なければ null) */
+  loadEval(id: string): Promise<DriveEval | null>;
   /** MiniPC のサーバーで判定している様子(サーバーがなければ null) */
   judgeStatus(): Promise<JudgeStatus | null>;
   /** 保存したログをすべて MiniPC のサーバーで判定し直す。始められなければ null */
@@ -125,6 +127,39 @@ export interface SavedLog {
   /** ログの日付と走行距離(m)。付ける前に保存したログにはない */
   date?: string;
   m?: number;
+  /** 運転評価の総合点(評価があるログだけ) */
+  score?: number;
+}
+
+/** 運転評価の1項目(gbowl-log-formatter の drive_eval.py が作る evaluation.json) */
+export interface DriveEvalItem {
+  key: string;
+  name: string;
+  value: number;
+  score: number;
+  weight: number;
+  good: number;
+  bad: number;
+}
+
+/** 運転評価で点数を下げた出来事(急ブレーキ・急ハンドル・カックンなど) */
+export interface DriveEvent {
+  kind: string;
+  type: string;
+  value: number;
+  unit: string;
+  t_unix: number;
+  lat: number;
+  lon: number;
+  kmh: number;
+}
+
+export interface DriveEval {
+  score: number;
+  items: DriveEvalItem[];
+  moving_s: number;
+  stops: number;
+  events: DriveEvent[];
 }
 
 const LOGS_API = `${import.meta.env.BASE_URL}api/logs`;
@@ -193,6 +228,11 @@ class ServerStore implements RecordStore {
   async pendingLogs(): Promise<SavedLog[]> {
     const res = await fetch(INBOX_API);
     return res.ok ? res.json() : [];
+  }
+
+  async loadEval(id: string): Promise<DriveEval | null> {
+    const res = await fetch(`${LOGS_API}/${encodeURIComponent(id)}/eval`);
+    return res.ok ? res.json() : null;
   }
 
   async claimLog(id: string) {
@@ -265,6 +305,9 @@ class LocalStore implements RecordStore {
   }
   async claimLog() {
     return false;
+  }
+  async loadEval() {
+    return null;
   }
   async judgeStatus() {
     return null;
