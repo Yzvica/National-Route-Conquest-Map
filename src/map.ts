@@ -466,6 +466,41 @@ export function showTrack(map: maplibregl.Map, track: TrackPoint[]) {
   }
 }
 
+/** 運転評価の出来事(急ブレーキ・急ハンドルなど)を地図に点で出す。空なら消す */
+export function showDriveEvents(map: maplibregl.Map, events: { lat: number; lon: number; label: string }[]) {
+  const data = {
+    type: "FeatureCollection" as const,
+    features: events.map((e) => ({
+      type: "Feature" as const,
+      properties: { label: e.label },
+      geometry: { type: "Point" as const, coordinates: [e.lon, e.lat] },
+    })),
+  };
+  const src = map.getSource("drive-events") as GeoJSONSource | undefined;
+  if (src) {
+    src.setData(data);
+    return;
+  }
+  map.addSource("drive-events", { type: "geojson", data });
+  map.addLayer({
+    id: "drive-events",
+    type: "circle",
+    source: "drive-events",
+    paint: { "circle-radius": 6, "circle-color": "#f57c00", "circle-stroke-color": "#fff", "circle-stroke-width": 2 },
+  });
+  map.on("click", "drive-events", (e) => {
+    const f = e.features?.[0];
+    if (!f) return;
+    new maplibregl.Popup().setLngLat(e.lngLat).setText(String(f.properties.label)).addTo(map);
+  });
+}
+
+/** 出来事の1つを地図の真ん中に出す */
+export function flyToEvent(map: maplibregl.Map, lat: number, lon: number, label: string) {
+  map.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 15) });
+  new maplibregl.Popup().setLngLat([lon, lat]).setText(label).addTo(map);
+}
+
 export function fitRoute(map: maplibregl.Map, data: RouteData, ref: string, padding: maplibregl.PaddingOptions | number = 40) {
   fitSegments(map, data.segments.filter((s) => s.routes.includes(ref)), padding);
 }

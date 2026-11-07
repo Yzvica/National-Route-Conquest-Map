@@ -189,12 +189,36 @@ function claimPending(id) {
 function listLogs() {
   if (!existsSync(LOGS)) return [];
   const meta = loadMeta();
-  return logFiles().map((id) => ({
-    id,
-    name: logName(id),
-    size: statSync(join(LOGS, id)).size,
-    ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
-  }));
+  return logFiles().map((id) => {
+    const score = loadEval(id)?.score;
+    return {
+      id,
+      name: logName(id),
+      size: statSync(join(LOGS, id)).size,
+      ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
+      ...(typeof score === "number" ? { score } : {}),
+    };
+  });
+}
+
+// --- 運転評価 ---
+// iPhone の走行ロガーのログ(名前は「<走行ID>.gpx」)は、生データの走行フォルダに DriveLog(gbowl-log-formatter)が
+// evaluation.json を作る。使い終わった走行フォルダは old に移すので、そちらも探す
+
+const SESSION_RE = /^(\d{8}-\d{6})\.gpx$/i;
+
+/** ログの運転評価(evaluation.json の中身)。なければ null */
+export function loadEval(id) {
+  const m = SESSION_RE.exec(logName(id));
+  if (!m) return null;
+  const dir = RAW_LOG_DIR();
+  for (const path of [join(dir, m[1], "evaluation.json"), join(dir, "old", m[1], "evaluation.json")]) {
+    try {
+      const ev = JSON.parse(readFileSync(path, "utf8"));
+      if (ev && typeof ev.score === "number" && Array.isArray(ev.items)) return ev;
+    } catch {}
+  }
+  return null;
 }
 
 /**
@@ -540,6 +564,11 @@ export function createApp() {
       const inboxMatch = /^\/api\/inbox\/([^/]+)$/.exec(url.pathname);
       if (inboxMatch && req.method === "DELETE") {
         return json(res, 200, { claimed: claimPending(decodeURIComponent(inboxMatch[1])) });
+      }
+      const evalMatch = /^\/api\/logs\/([^/]+)\/eval$/.exec(url.pathname);
+      if (evalMatch && req.method === "GET") {
+        const ev = loadEval(decodeURIComponent(evalMatch[1]));
+        return ev ? json(res, 200, ev) : json(res, 404, { error: "not found" });
       }
       const logMatch = /^\/api\/logs\/([^/]+)$/.exec(url.pathname);
       if (logMatch && (req.method === "GET" || req.method === "PATCH")) {

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -244,5 +244,47 @@ describe("/api/rawlog", () => {
     expect((await put("..", "x.csv", "a")).status).toBe(400);
     expect((await put("a", "../x.csv", "a")).status).toBe(400);
     expect((await put("a", ".hidden", "a")).status).toBe(400);
+  });
+});
+
+describe("運転評価", () => {
+  let server;
+  let base;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    base = `http://127.0.0.1:${server.address().port}/api/logs`;
+  });
+  afterAll(() => server.close());
+
+  const ev = (score) => JSON.stringify({ version: 1, score, items: [], moving_s: 600, stops: 2, events: [] });
+  const upload = async (name, body) => (await (await fetch(`${base}?name=${encodeURIComponent(name)}`, { method: "POST", body })).json()).id;
+
+  it("走行フォルダの evaluation.json を返し、一覧に総合点を付ける", async () => {
+    const id = await upload("20261108-002228.gpx", "<gpx>eval</gpx>");
+    expect((await fetch(`${base}/${encodeURIComponent(id)}/eval`)).status).toBe(404);
+    const dir = join(process.env.RAW_LOG_DIR, "20261108-002228");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "evaluation.json"), ev(59));
+    const res = await fetch(`${base}/${encodeURIComponent(id)}/eval`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).score).toBe(59);
+    const list = await (await fetch(base)).json();
+    expect(list.find((l) => l.id === id).score).toBe(59);
+  });
+
+  it("old に移した走行フォルダも探す", async () => {
+    const id = await upload("20261101-120000.gpx", "<gpx>old</gpx>");
+    const dir = join(process.env.RAW_LOG_DIR, "old", "20261101-120000");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "evaluation.json"), ev(72.5));
+    expect((await (await fetch(`${base}/${encodeURIComponent(id)}/eval`)).json()).score).toBe(72.5);
+  });
+
+  it("iPhone のロガー以外のログには評価がない", async () => {
+    const id = await upload("2026-11-01_12-00-00.csv", "a,b\n1,2\n");
+    expect((await fetch(`${base}/${encodeURIComponent(id)}/eval`)).status).toBe(404);
+    const list = await (await fetch(base)).json();
+    expect(list.find((l) => l.id === id).score).toBeUndefined();
   });
 });
