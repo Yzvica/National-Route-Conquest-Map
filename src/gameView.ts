@@ -23,12 +23,12 @@ import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData } from 
 
 // toLocaleString は呼ぶたびに書式を作り直して遅いので、桁数ごとに一度だけ作る
 const formats = new Map<number, Intl.NumberFormat>();
-const num = (n: number, digits = 0) => {
+export const num = (n: number, digits = 0) => {
   let f = formats.get(digits);
   if (!f) formats.set(digits, (f = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: digits })));
   return f.format(n);
 };
-const km = (m: number, digits = 1) => num(m / 1000, digits);
+export const km = (m: number, digits = 1) => num(m / 1000, digits);
 export const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 export function levelCard(lv: Level, unlocked: number, total: number, regionTitle?: string): string {
@@ -256,27 +256,8 @@ export function driveEvalView(open: OpenEval): string {
   </div>`;
 }
 
-/** MiniPC に保存してある走行ログの一覧。押すと軌跡を地図に出す */
-function logListView(logs: SavedLog[] | null, shown: string | null, openEval: OpenEval | null = null): string {
-  if (logs === null) return `<h3>走行ログ</h3><p class="muted">読み込み中…</p>`;
-  if (logs.length === 0) {
-    return `<h3>走行ログ</h3><p class="muted">保存してあるログはまだありません。MiniPC のサーバーで開いて読み込んだログがここに並びます。</p>`;
-  }
-  const undated = logs.filter((l) => l.date === undefined).length;
-  return `<h3>走行ログ <span class="muted">(${logs.length} 本)</span></h3>
-    <p class="muted">名前を押すと、その走行の軌跡を地図に出します。
-      ${shown ? `<button type="button" id="clear-track">地図の軌跡を消す</button>` : ""}</p>
-    <ol class="timeline logs" data-scroll="logs">${sortLogs(logs)
-      .map(
-        (l) => `<li${l.id === shown ? ` class="shown"` : ""}><span class="muted">${l.date ?? "日付なし"}</span>
-          <a href="#" data-log="${esc(l.id)}">${esc(l.name)}</a>
-          <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span>
-          ${l.score !== undefined ? `<button type="button" class="eval-badge ${grade(l.score)}" data-eval="${esc(l.id)}" aria-expanded="${openEval?.id === l.id}">運転 ${Math.round(l.score)} 点</button>` : ""}
-          ${openEval?.id === l.id ? driveEvalView(openEval) : ""}</li>`,
-      )
-      .join("")}</ol>
-    ${undated ? `<p class="muted">日付のない ${undated} 本は、押して開くか「保存したログで判定し直す」で日付と距離が付きます。</p>` : ""}`;
-}
+const LOGS_HINT = `<p class="muted">走行ログの一覧と、ログごとの時間・速度・運転評価・通った道路は「ログ」タブで見られます。
+  <button type="button" id="open-logs" class="link">ログタブを開く</button></p>`;
 
 export function reviewView(
   s: DatasetSummary,
@@ -284,9 +265,6 @@ export function reviewView(
   today: string,
   name: (ref: string) => string,
   kind: DatasetKind,
-  logs: SavedLog[] | null = null,
-  shownLog: string | null = null,
-  openEval: OpenEval | null = null,
 ): string {
   const label = DATASET_LABELS[kind];
   const years = yearly(s);
@@ -301,7 +279,7 @@ export function reviewView(
   const events = timeline(s);
   if (points.length === 0 && t.count === 0) {
     return `<p class="muted">${label}の日付つきの記録がまだありません。走行ログを読み込むと、ここに月ごとの記録や制覇の歴史が出ます。</p>
-      ${logListView(logs, shownLog, openEval)}`;
+      ${LOGS_HINT}`;
   }
   // ログ上の距離だけの年もあるので、両方の年を並べる
   const yearKeys = [...new Set([...years.map((y) => y.year), ...t.byYear.keys()])].sort((a, b) => b.localeCompare(a));
@@ -326,7 +304,7 @@ export function reviewView(
     <h3>年ごとのまとめ</h3>
     <table class="table"><thead><tr><th>年</th><th>走行距離</th><th>開拓距離</th><th>初めて走った路線</th><th>制覇した路線</th></tr></thead>
       <tbody>${yearRows}</tbody></table>
-    ${logListView(logs, shownLog, openEval)}
+    ${LOGS_HINT}
     ${t.count ? `<h3>月ごとの走行距離(ログ上・km)</h3>${monthlyChart(tripMonths, "月ごとの走行距離")}` : ""}
     ${months.length ? `<h3>月ごとの開拓距離(${label}・km)</h3>${monthlyChart(months, "月ごとの開拓距離")}` : ""}
     ${points.length ? `<h3>制覇率の推移</h3>${progressChart(points, start, s.stats.overall.total)}` : ""}

@@ -9,7 +9,8 @@ import {
   type DatasetSummary,
   type GameContext,
 } from "./game";
-import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView, type OpenEval } from "./gameView";
+import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
+import { logDetailPanel, logListPanel, passedRoutes, tripStats, type LogDetail, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -26,9 +27,9 @@ import {
   flyToEvent,
   type PrefShapes,
 } from "./map";
-import { judgeLog, logDate, parseTrackText, type JudgeData } from "./judge";
+import { judgeLog, logDate, matchAll, parseTrackText, type JudgeData } from "./judge";
 import { REGIONS, prefName } from "./prefs";
-import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, splitPrefRef } from "./prefroads";
+import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type JudgeRun, type Record, type SavedLog } from "./store";
@@ -40,6 +41,7 @@ import {
   type DatasetKind,
   type PrefRoadIndex,
   type RouteData,
+  type TrackPoint,
 } from "./types";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -173,12 +175,19 @@ const today = () => {
 
 type GameTab = "achievements" | "suggest" | "review" | "prefs";
 let gameTab: GameTab = "achievements";
-/** 振り返りのログ一覧に出す、MiniPC に保存してあるログ。読み込む前は null */
+/** ログタブに出す、MiniPC に保存してあるログ。読み込む前は null */
 let savedLogs: SavedLog[] | null = null;
-/** ログ一覧で地図に出しているログ */
-let shownLog: string | null = null;
-/** ログ一覧で開いている運転評価 */
-let openEval: OpenEval | null = null;
+/** 「ログ」タブを開いているか */
+let logMode = false;
+/** ログタブで絞り込んでいる年("all" ならすべて) */
+let logYear = "all";
+/** ログタブで選んでいるログの詳細 */
+let logDetail: LogDetail | null = null;
+/** MiniPC にログを保存しているか(ブラウザだけで使っているときは false) */
+let storeShared = false;
+/** 読み込んだログの軌跡(いちばん最後に開いたものだけ)と、通った路線 */
+const trackCache = new Map<string, TrackPoint[]>();
+const passedCache = new Map<string, PassedRoute[]>();
 /** 読み込んだ運転評価(ログ ID → 評価。読めなければ null) */
 const evals = new Map<string, DriveEval | null>();
 
@@ -196,7 +205,7 @@ const eventLabel = (e: DriveEvent) =>
 async function refreshLogs() {
   const store = await storePromise;
   savedLogs = store.shared ? await store.listLogs().catch(() => []) : [];
-  if (gameTab === "review") keepScroll(renderGame);
+  renderLogs();
 }
 /** 都道府県の形(地図の色分け用)。データがなければ undefined */
 let prefShapes: PrefShapes | undefined;
@@ -232,13 +241,12 @@ function renderGame() {
         ? suggestionsView({ kind: active, data, summary, coverage: coverage() }, routeName)
         : gameTab === "prefs"
           ? prefsView(summary, active, prefFill, !!prefShapes)
-          : reviewView(summary, record.trips, today(), routeName, active, savedLogs, shownLog, openEval);
+          : reviewView(summary, record.trips, today(), routeName, active);
   }
 }
 
 function openGame(tab: GameTab) {
   gameTab = tab;
-  if (tab === "review") void refreshLogs();
   const dialog = $<HTMLDialogElement>("game");
   if (!dialog.open) dialog.showModal();
   renderGame();
@@ -586,7 +594,7 @@ function prefroadStatus(): string {
 /** 都道府県道のタブで、表示する都道府県を選ぶ欄(1つずつ選ぶ。データが多いので一度に1都道府県だけ読む) */
 function renderPrefPicker() {
   const box = $("pref-picker");
-  box.hidden = active !== "prefroad" || !prefIndex;
+  box.hidden = logMode || active !== "prefroad" || !prefIndex;
   const idx = prefIndex;
   if (box.hidden || !idx) return;
   const current = prefSelection[0];
@@ -619,9 +627,12 @@ $("pref-picker").addEventListener("change", (e) => {
 /** 国道・高速道路・都道府県道を切り替える */
 function showDataset(kind: DatasetKind) {
   active = kind;
+  logMode = false;
   for (const b of $("tabs").querySelectorAll<HTMLButtonElement>("button")) {
     b.setAttribute("aria-selected", String(b.dataset.kind === kind));
   }
+  for (const id of ["overall", "categories", "routes-section"]) $(id).hidden = false;
+  $("log-view").hidden = true;
   $("routes-title").textContent = kind === "kokudo" ? "国道別" : "路線別";
   $<HTMLInputElement>("route-filter").placeholder =
     kind === "kokudo" ? "番号で絞り込み(例: 1)" : kind === "prefroad" ? "名前か番号で絞り込み(例: 413)" : "名前で絞り込み(例: 東名)";
@@ -666,23 +677,25 @@ map.on("load", async () => {
     datasets.kokudo = kokudo;
     record = rec;
     $("rematch").hidden = !store.shared;
+    storeShared = store.shared;
     const statusText = (expressway?: RouteData) =>
       `国道データ: ${Object.keys(kokudo.routes).length} 路線` +
       (expressway ? ` / 高速道路: ${Object.keys(expressway.routes).length} 路線` : " / 高速道路のデータを読み込み中…") +
       `(${kokudo.generatedAt.slice(0, 10)} 時点)` +
       (store.shared ? " / 記録は MiniPC に保存されます" : " / 記録はこのブラウザに保存されます");
-    if (active === "kokudo") showDataset(active);
+    if (active === "kokudo" && !logMode) showDataset(active);
+    else renderLogs();
     status.textContent = statusText();
     // 都道府県道の一覧(小さい)。都道府県ごとのファイルは、タブを開いたときやログの判定のときに読む
     prefIndexReady = loadPrefIndex().then(() => {
-      if (active === "prefroad") showDataset(active);
+      if (active === "prefroad" && !logMode) showDataset(active);
     });
     let done = () => {};
     expresswayReady = new Promise((ok) => (done = ok));
     const expressway = await loadData("expressway").catch(() => undefined);
     datasets.expressway = expressway;
     done();
-    if (active === "expressway") showDataset(active);
+    if (active === "expressway" && !logMode) showDataset(active);
     else render(); // 実績やレベルに高速道路の分を足す
     status.textContent = statusText(expressway).replace(" / 高速道路のデータを読み込み中…", "");
     await checkJudge();
@@ -693,8 +706,13 @@ map.on("load", async () => {
 });
 
 $("tabs").addEventListener("click", (e) => {
-  const kind = (e.target as HTMLElement).closest<HTMLElement>("button")?.dataset.kind as DatasetKind | undefined;
-  if (kind && kind !== active) showDataset(kind);
+  const button = (e.target as HTMLElement).closest<HTMLElement>("button");
+  if (button?.dataset.view === "logs") {
+    if (!logMode) showLogs();
+    return;
+  }
+  const kind = button?.dataset.kind as DatasetKind | undefined;
+  if (kind && (kind !== active || logMode)) showDataset(kind);
 });
 
 const isTrackFile = (f: File) => /\.(csv|gpx)$/i.test(f.name);
@@ -1071,79 +1089,146 @@ $("game-close").addEventListener("click", () => $<HTMLDialogElement>("game").clo
 $("game").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) $<HTMLDialogElement>("game").close();
 });
-/** 保存してあるログの軌跡を地図に出す */
-async function showSavedLog(id: string) {
-  const store = await storePromise;
-  const log = savedLogs?.find((l) => l.id === id);
-  const name = log?.name ?? id;
-  status.textContent = `${name} を読み込み中…`;
-  try {
-    const track = parseTrackText(await store.loadLog(id), name);
-    if (track.length === 0) throw new Error("位置の記録がありません");
-    $<HTMLDialogElement>("game").close();
-    select(null, false);
-    showTrack(map, track);
-    shownLog = id;
-    showDriveEvents(map, []);
-    if (log?.score !== undefined) {
-      const ev = await getEval(id);
-      if (shownLog === id) showDriveEvents(map, (ev?.events ?? []).map((e) => ({ lat: e.lat, lon: e.lon, label: eventLabel(e) })));
+// ---- ログタブ ----
+
+/** 「ログ」タブを開く。左の一覧が、路線の代わりに保存してあるログになる */
+function showLogs() {
+  logMode = true;
+  for (const b of $("tabs").querySelectorAll<HTMLButtonElement>("button")) {
+    b.setAttribute("aria-selected", String(b.dataset.view === "logs"));
+  }
+  for (const id of ["pref-picker", "overall", "categories", "routes-section"]) $(id).hidden = true;
+  $("log-view").hidden = false;
+  select(null, false);
+  renderLogs();
+  void refreshLogs();
+}
+
+function renderLogs() {
+  if (!logMode) return;
+  keepScroll(() => {
+    $("log-view").innerHTML = logDetail ? logDetailPanel(logDetail) : logListPanel(savedLogs, logYear, storeShared);
+  });
+}
+
+/** 開いているログの詳細を更新する(ほかのログに切り替わっていたら何もしない) */
+function updateDetail(id: string, part: Partial<LogDetail>) {
+  if (logDetail?.log.id !== id) return false;
+  logDetail = { ...logDetail, ...part };
+  renderLogs();
+  return true;
+}
+
+const datasetRouteName = (kind: DatasetKind, ref: string, d: RouteData) =>
+  kind === "prefroad"
+    ? prefRouteLabel(ref, d.routes[ref]?.name, prefName)
+    : (d.routes[ref]?.name ?? (kind === "kokudo" ? `国道${ref}号` : ref));
+
+/** ログで通った路線を調べる(国道・高速道路と、通った都道府県の都道府県道)。道路データがなければ null */
+async function logRoutes(id: string, track: TrackPoint[]): Promise<PassedRoute[] | null> {
+  const hit = passedCache.get(id);
+  if (hit) return hit;
+  if (!datasets.kokudo) return null;
+  if (expresswayReady) await expresswayReady;
+  if (prefIndexReady) await prefIndexReady;
+  const cov = await matchAll(track, judgeData());
+  const sets: [DatasetKind, RouteData][] = [["kokudo", datasets.kokudo]];
+  if (datasets.expressway) sets.push(["expressway", datasets.expressway]);
+  if (prefIndex) {
+    for (const code of prefsOfTrack(prefIndex, track)) {
+      const d = await loadPrefFile(code);
+      if (d) sets.push(["prefroad", d]);
     }
-    const trip = { date: logDate(track, name, Number(id.split("-")[0]) || Date.now()), m: Math.round(trackLength(track)) };
-    if (log && (log.date !== trip.date || log.m !== trip.m)) {
+  }
+  const list = passedRoutes(cov, sets, datasetRouteName);
+  dropUnselectedPrefFiles();
+  passedCache.set(id, list);
+  return list;
+}
+
+/** 保存してあるログを開く: 地図に軌跡と出来事を出し、左に詳細を出す */
+async function openLog(id: string) {
+  const store = await storePromise;
+  const log = savedLogs?.find((l) => l.id === id) ?? { id, name: id, size: 0 };
+  logDetail = { log };
+  renderLogs();
+  $("panel").scrollTop = 0;
+  try {
+    let track = trackCache.get(id);
+    if (!track) {
+      track = parseTrackText(await store.loadLog(id), log.name);
+      trackCache.clear();
+      trackCache.set(id, track);
+    }
+    if (track.length === 0) throw new Error("位置の記録がありません");
+    if (logDetail?.log.id !== id) return;
+    showTrack(map, track);
+    showDriveEvents(map, []);
+    const trip = { date: logDate(track, log.name, Number(id.split("-")[0]) || Date.now()), m: Math.round(trackLength(track)) };
+    if (log.date !== trip.date || log.m !== trip.m) {
       Object.assign(log, trip);
       await store.setLogTrip(id, trip).catch(() => undefined);
     }
-    status.textContent = `${name}(${trip.date}・${(trip.m / 1000).toFixed(1)} km)の軌跡を表示しています`;
+    if (!updateDetail(id, { stats: tripStats(track) })) return;
+    if (log.score !== undefined) {
+      const ev = await getEval(id);
+      if (!updateDetail(id, { ev })) return;
+      showDriveEvents(map, (ev?.events ?? []).map((e) => ({ lat: e.lat, lon: e.lon, label: eventLabel(e) })));
+    }
+    updateDetail(id, { routes: await logRoutes(id, track) });
   } catch (e) {
-    status.textContent = `${name} を表示できませんでした: ${(e as Error).message}`;
+    updateDetail(id, { error: (e as Error).message });
   }
 }
 
-// 路線名を押したら、その路線を地図で表示する
-$("game-body").addEventListener("click", (e) => {
+/** ログの詳細を閉じて一覧に戻る(地図の軌跡も消す) */
+function closeLog() {
+  logDetail = null;
+  showTrack(map, []);
+  showDriveEvents(map, []);
+  renderLogs();
+}
+
+$("log-view").addEventListener("click", (e) => {
   const el = e.target as HTMLElement;
-  const log = el.closest<HTMLElement>("[data-log]");
-  if (log) {
+  const open = el.closest<HTMLElement>("[data-log-open]");
+  if (open) {
     e.preventDefault();
-    void showSavedLog(log.dataset.log!);
+    void openLog(open.dataset.logOpen!);
     return;
   }
-  const evBtn = el.closest<HTMLElement>("[data-eval]");
-  if (evBtn) {
-    const id = evBtn.dataset.eval!;
-    if (openEval?.id === id) openEval = null;
-    else {
-      openEval = { id, ev: evals.get(id) };
-      if (openEval.ev === undefined) {
-        void getEval(id).then((ev) => {
-          if (openEval?.id !== id) return;
-          openEval = { id, ev };
-          keepScroll(renderGame);
-        });
-      }
-    }
-    keepScroll(renderGame);
+  if (el.closest("#log-back")) {
+    closeLog();
     return;
   }
   const evLink = el.closest<HTMLElement>("[data-ev]");
   if (evLink) {
     e.preventDefault();
-    const id = evLink.dataset.logId!;
-    const ev = evals.get(id)?.events[Number(evLink.dataset.ev)];
-    if (!ev) return;
-    void (async () => {
-      if (shownLog !== id) await showSavedLog(id);
-      $<HTMLDialogElement>("game").close();
-      flyToEvent(map, ev.lat, ev.lon, eventLabel(ev));
-    })();
+    const ev = evals.get(evLink.dataset.logId!)?.events[Number(evLink.dataset.ev)];
+    if (ev) flyToEvent(map, ev.lat, ev.lon, eventLabel(ev));
     return;
   }
-  if (el.closest("#clear-track")) {
-    showTrack(map, []);
-    showDriveEvents(map, []);
-    shownLog = null;
-    renderGame();
+  const route = el.closest<HTMLElement>("[data-route]");
+  if (route) {
+    e.preventDefault();
+    // 路線のタブに移ってその路線を出す。ログの軌跡は地図に残す
+    showDataset(route.dataset.kind as DatasetKind);
+    select(route.dataset.route!, true);
+  }
+});
+$("log-view").addEventListener("change", (e) => {
+  const sel = e.target as HTMLSelectElement;
+  if (sel.id !== "log-year") return;
+  logYear = sel.value;
+  renderLogs();
+});
+
+// 路線名を押したら、その路線を地図で表示する
+$("game-body").addEventListener("click", (e) => {
+  const el = e.target as HTMLElement;
+  if (el.closest("#open-logs")) {
+    $<HTMLDialogElement>("game").close();
+    showLogs();
     return;
   }
   if (el.closest("#pref-fill")) {
