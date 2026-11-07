@@ -126,18 +126,32 @@ export function addMapControls(map: maplibregl.Map, notify: (lines: string[]) =>
     return;
   }
   const geolocate = new maplibregl.GeolocateControl({
-    positionOptions: { enableHighAccuracy: true, timeout: 15000 },
+    // timeout は付けない。watchPosition では「次の位置が来るまで」の時間にも効くので、
+    // iPhone で止まっていたり屋内で GPS が遅かったりすると、取れていてもタイムアウトのエラーになる
+    positionOptions: { enableHighAccuracy: true, maximumAge: 10000 },
     // 押すと現在位置へ移動し、そのあとも動きに合わせて追いかける(もう一度押すと止める)
     trackUserLocation: true,
     showAccuracyCircle: true,
     fitBoundsOptions: { maxZoom: 14 },
   });
+  let lastFix = 0;
+  geolocate.on("geolocate", () => {
+    lastFix = Date.now();
+  });
   geolocate.on("error", (e: GeolocationPositionError) => {
-    notify([
+    // 一度取れたあとの一時的な取得失敗は、追いかけ続けていれば戻るので知らせない
+    if (e.code !== 1 && Date.now() - lastFix < 60000) return;
+    notify(
       e.code === 1
-        ? "📍 位置情報の利用が許可されていません。ブラウザ(iPhone は 設定 → プライバシー → 位置情報サービス)で許可してください"
-        : "📍 現在位置を取得できませんでした",
-    ]);
+        ? [
+            "📍 位置情報の利用が許可されていません",
+            "iPhone は 設定 → プライバシーとセキュリティ → 位置情報サービス → Safari Webサイト を「使用中のみ」にしてください",
+          ]
+        : [
+            `📍 現在位置を取得できませんでした(${e.code === 3 ? "時間切れ" : "位置が分からない"}: コード ${e.code})`,
+            "屋外や窓際でもう一度押してください。iPhone は 位置情報サービス → Safari Webサイト の「正確な位置情報」もオンに",
+          ],
+    );
   });
   map.addControl(geolocate, "bottom-right");
 }
