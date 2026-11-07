@@ -151,3 +151,16 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 - `npm run dev` で開いたときなど、サーバーがない場合はブラウザの中に保存します
 
 地図の背景には[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)、道路データには © OpenStreetMap contributors を使っています。
+
+## 背景の地図と現在位置
+
+- 地図右下の欄で背景を「淡色地図 / 白地図 / 標準地図 / 写真」(地理院タイル)から選べます。選んだものはブラウザに覚えます。白地図は ZL5〜14 のタイルなので、それより拡大すると粗くなります。
+- 地図右下の📍ボタンで現在位置を出し、動きに合わせて追いかけます(もう一度押すと止める)。
+- 現在位置はブラウザの決まりで **HTTPS で開いたとき(と `localhost`)だけ** 使えます。`http://192.168.x.x:8080/` や `http://<Tailscale の IP>:8080/` ではボタンが薄くなり、押すと理由が出ます。
+- MiniPC で次を一度実行すると、Tailscale の中だけで使える HTTPS のアドレス `https://<MiniPC名>.<tailnet名>.ts.net/` ができます(インターネットには公開されません)。事前に Tailscale の管理画面 → DNS で MagicDNS と HTTPS Certificates を有効にしておきます。
+
+  ```powershell
+  tailscale serve --bg 8080
+  ```
+
+  止めるときは `tailscale serve reset`。iPhone では Safari の設定で位置情報を許可してください。

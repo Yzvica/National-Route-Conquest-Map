@@ -11,6 +11,7 @@ import {
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
 import {
+  addMapControls,
   addRoutes,
   clearRoutes,
   createMap,
@@ -66,6 +67,7 @@ let breakdownItems = new Map<string, BreakdownItem>();
 const BREAKDOWN_CATS: Category[] = (Object.keys(CATEGORY_LABELS) as Category[]).filter((c) => c !== "main");
 
 const map = createMap($("map"));
+addMapControls(map, (lines) => toast(lines));
 // toLocaleString は呼ぶたびに書式を作り直して遅い(一覧の描き直しで数百回呼ぶ)ので、書式は一度だけ作る
 const kmFormat = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 1 });
 const km = (m: number) => kmFormat.format(m / 1000);

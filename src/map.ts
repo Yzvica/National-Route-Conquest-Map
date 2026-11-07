@@ -3,27 +3,143 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { PassDates } from "./store";
 import type { Coverage, LonLat, RouteData, Segment, TrackPoint } from "./types";
 
+const GSI_ATTRIBUTION =
+  '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a> / 道路: © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>';
+
+/** 背景の地図(地理院タイル)。白地図は道路や地名がほぼなく、走った線だけが目立つ */
+export const BASEMAPS = [
+  { id: "pale", label: "淡色地図", url: "pale/{z}/{x}/{y}.png", minzoom: 2, maxzoom: 18 },
+  { id: "blank", label: "白地図", url: "blank/{z}/{x}/{y}.png", minzoom: 5, maxzoom: 14 },
+  { id: "std", label: "標準地図", url: "std/{z}/{x}/{y}.png", minzoom: 2, maxzoom: 18 },
+  { id: "photo", label: "写真", url: "seamlessphoto/{z}/{x}/{y}.jpg", minzoom: 2, maxzoom: 18 },
+] as const;
+export type BasemapId = (typeof BASEMAPS)[number]["id"];
+const BASEMAP_KEY = "kokudo-basemap";
+
+function savedBasemap(): BasemapId {
+  try {
+    const v = localStorage.getItem(BASEMAP_KEY);
+    if (BASEMAPS.some((b) => b.id === v)) return v as BasemapId;
+  } catch {
+    // 保存できないブラウザでは毎回淡色地図にする
+  }
+  return "pale";
+}
+
 export function createMap(container: HTMLElement): maplibregl.Map {
+  const current = savedBasemap();
+  const sources: Record<string, maplibregl.SourceSpecification> = {};
+  // 白地図は ZL5 未満のタイルがないので、その下に白い下地を敷いておく
+  const layers: maplibregl.LayerSpecification[] = [
+    { id: "basemap-bg", type: "background", paint: { "background-color": "#ffffff" } },
+  ];
+  for (const b of BASEMAPS) {
+    sources[`basemap-${b.id}`] = {
+      type: "raster",
+      tiles: [`https://cyberjapandata.gsi.go.jp/xyz/${b.url}`],
+      tileSize: 256,
+      minzoom: b.minzoom,
+      maxzoom: b.maxzoom,
+      attribution: GSI_ATTRIBUTION,
+    };
+    // 表示していない背景は visibility: none なのでタイルを読まない
+    layers.push({
+      id: `basemap-${b.id}`,
+      type: "raster",
+      source: `basemap-${b.id}`,
+      layout: { visibility: b.id === current ? "visible" : "none" },
+    });
+  }
   return new maplibregl.Map({
     container,
     // 北海道から沖縄まで入るように
     bounds: [[123, 24], [146, 45.6]],
     fitBoundsOptions: { padding: 20 },
-    style: {
-      version: 8,
-      sources: {
-        gsi: {
-          type: "raster",
-          tiles: ["https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"],
-          tileSize: 256,
-          maxzoom: 18,
-          attribution:
-            '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a> / 道路: © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>',
-        },
-      },
-      layers: [{ id: "gsi", type: "raster", source: "gsi" }],
-    },
+    style: { version: 8, sources, layers },
   });
+}
+
+export function setBasemap(map: maplibregl.Map, id: BasemapId) {
+  for (const b of BASEMAPS) map.setLayoutProperty(`basemap-${b.id}`, "visibility", b.id === id ? "visible" : "none");
+  try {
+    localStorage.setItem(BASEMAP_KEY, id);
+  } catch {
+    // 保存できなくても切り替えはできる
+  }
+}
+
+/** 背景の地図を選ぶ欄 */
+class BasemapControl implements maplibregl.IControl {
+  private el?: HTMLElement;
+  onAdd(map: maplibregl.Map) {
+    const el = document.createElement("div");
+    el.className = "maplibregl-ctrl maplibregl-ctrl-group basemap-ctrl";
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", "背景の地図");
+    select.title = "背景の地図";
+    const current = savedBasemap();
+    for (const b of BASEMAPS) select.add(new Option(b.label, b.id, false, b.id === current));
+    select.addEventListener("change", () => setBasemap(map, select.value as BasemapId));
+    el.append(select);
+    this.el = el;
+    return el;
+  }
+  onRemove() {
+    this.el?.remove();
+  }
+}
+
+/** 位置情報が使えない(HTTP で開いた)ときに代わりに置くボタン。押すと理由を出す */
+class NoGeolocateControl implements maplibregl.IControl {
+  private el?: HTMLElement;
+  constructor(private notify: (lines: string[]) => void) {}
+  onAdd() {
+    const el = document.createElement("div");
+    el.className = "maplibregl-ctrl maplibregl-ctrl-group";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "maplibregl-ctrl-geolocate geolocate-unavailable";
+    button.title = "現在位置(HTTPS で開いたときだけ使えます)";
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>';
+    button.addEventListener("click", () =>
+      this.notify([
+        "📍 現在位置は HTTPS で開いたときだけ使えます",
+        "Tailscale の https://〜.ts.net/ のアドレスで開いてください",
+      ]),
+    );
+    el.append(button);
+    this.el = el;
+    return el;
+  }
+  onRemove() {
+    this.el?.remove();
+  }
+}
+
+/** 背景の切り替えと現在位置のボタンを地図に置く */
+export function addMapControls(map: maplibregl.Map, notify: (lines: string[]) => void) {
+  // 右上は詳細の枠と重なるので右下に置く
+  map.addControl(new BasemapControl(), "bottom-right");
+  if (!window.isSecureContext || !("geolocation" in navigator)) {
+    map.addControl(new NoGeolocateControl(notify), "bottom-right");
+    return;
+  }
+  const geolocate = new maplibregl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true, timeout: 15000 },
+    // 押すと現在位置へ移動し、そのあとも動きに合わせて追いかける(もう一度押すと止める)
+    trackUserLocation: true,
+    showAccuracyCircle: true,
+    fitBoundsOptions: { maxZoom: 14 },
+  });
+  geolocate.on("error", (e: GeolocationPositionError) => {
+    notify([
+      e.code === 1
+        ? "📍 位置情報の利用が許可されていません。ブラウザ(iPhone は 設定 → プライバシー → 位置情報サービス)で許可してください"
+        : "📍 現在位置を取得できませんでした",
+    ]);
+  });
+  map.addControl(geolocate, "bottom-right");
 }
 
 /** 今のデータ(国道/高速道路)で登録したイベントの後始末。データを切り替えるときに呼ぶ */
