@@ -196,3 +196,10 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .pref-select { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .pref-select select { flex: 1; padding: 6px; font-size: 14px; }
 .pref-picker p { margin: 6px 0 0; font-size: 12px; }
+/* 背景の地図の選択欄(地図右下) */
+.basemap-ctrl select {
+  display: block; height: 29px; padding: 0 6px; border: 0; border-radius: 4px;
+  background: #fff; color: #333; font: inherit; font-size: 13px; cursor: pointer;
+}
+/* HTTP で開いていて現在位置が使えないときのボタン */
+.geolocate-unavailable { opacity: 0.45; }
