@@ -20,6 +20,9 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+/* iPhone の Safari ではアドレスバーの分だけ 100% が画面より高くなるので、見えている高さに合わせる */
+@supports (height: 100dvh) { html, body { height: 100dvh; } }
+button, .button, a, select, summary { touch-action: manipulation; }
 #app { display: flex; height: 100%; position: relative; }
 #panel { width: 340px; overflow-y: auto; padding: 16px; border-right: 1px solid var(--line); }
 #map { flex: 1; }
@@ -241,3 +244,52 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .chart .hit:hover .event-mark { stroke-width: 3; }
 .drive-eval .timeline.events a { color: var(--accent); }
 .timeline.events li .muted { min-width: 0; }
+
+/* ログタブ: 一覧は左に残し、選んだログの詳細は地図の右の枠に出す(国道と同じ) */
+#detail.log-detail { width: 380px; padding-top: 0; }
+#detail.log-detail .detail-head {
+  position: sticky; top: 0; z-index: 1; margin: 0 -14px; padding: 10px 14px 6px; background: var(--bg); gap: 6px;
+}
+#detail.log-detail .detail-head .spacer { flex: 1; }
+#detail.log-detail .nav { padding: 2px 12px; font-size: 20px; line-height: 1; }
+#detail.log-detail .nav:disabled { opacity: 0.35; cursor: default; }
+#detail.log-detail .log-pos { font-variant-numeric: tabular-nums; min-width: 4.5em; text-align: center; }
+#detail.log-detail h2.log-title { font-size: 16px; margin: 4px 0 8px; word-break: break-all; }
+#detail.log-detail h3 { font-size: 15px; margin: 16px 0 6px; }
+#detail.log-detail h4 { font-size: 14px; margin: 10px 0 4px; }
+.log-list li.selected > a { background: var(--bar); box-shadow: inset 4px 0 0 #8e24aa; font-weight: 700; }
+
+/* ---- スマホ(iPhone)の狭い画面 ---- */
+@media (max-width: 720px) {
+  /* 入力欄の文字が 16px より小さいと、iPhone は押したときに画面を拡大してしまう */
+  input, select, textarea { font-size: 16px !important; }
+  #panel { padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }
+  #panel h1 { display: none; }
+  .level { padding: 6px 10px; margin-bottom: 8px; }
+  .level p { margin: 2px 0 6px; font-size: 13px; }
+  .tabs { margin-bottom: 8px; }
+  .tabs button { padding: 10px 2px; font-size: 14px; }
+  .big { font-size: 32px; }
+  /* 指で押しやすいように行を高くする */
+  #routes li { padding: 6px 0; }
+  .log-list a { padding: 10px 4px; }
+  .breakdown li .row { margin: 0; padding: 6px 0; }
+  .button, button { padding: 10px 14px; }
+  button.link { padding: 6px 10px; font-size: 13px; }
+  #detail-close, #detail-fold { padding: 6px 12px; }
+  /* ログの詳細は中身が多いので、選んでいる間は詳細を広く、一覧を狭くする。
+     読み込みの途中で高さが変わると地図の映す範囲がずれるので、高さは決めておく */
+  #detail.log-detail { width: 100%; height: 38%; max-height: none; padding: 0 12px 8px; }
+  #detail.log-detail .detail-head { margin: 0 -12px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+  #detail.log-detail .nav { padding: 6px 16px; }
+  #detail.log-detail h2.log-title { font-size: 15px; margin: 6px 0; }
+  body:has(#detail.log-detail:not([hidden])) #panel { height: 27%; }
+  /* 地図だけ表示: ‹ › で地図を見ながらログを移れるよう、ボタンとログの名前だけ残す */
+  body.map-only #detail.log-detail { height: auto; }
+  body.map-only #detail.log-detail > :not(.detail-head, .log-title) { display: none; }
+  body.map-only #detail.log-detail .log-title { display: block; font-size: 13px; margin: 4px 0 0; }
+  .facts { font-size: 13px; }
+  #game { width: 100%; max-width: 100%; max-height: calc(100% - 24px); margin: auto 0 0; border-radius: 14px 14px 0 0; }
+  #game-body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+  #toast { bottom: calc(16px + env(safe-area-inset-bottom)); }
+}

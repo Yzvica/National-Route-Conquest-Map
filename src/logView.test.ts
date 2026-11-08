@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { logDetailPanel, logListPanel, passedRoutes, speedChart, tripStats } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripStats } from "./logView";
 import type { RouteData, TrackPoint } from "./types";
 
 // 北へ 1 秒に約 11.1m(時速 40km)で進むログ。途中 60 秒止まる
@@ -73,6 +73,15 @@ describe("ログタブの画面", () => {
     expect(html).toContain("最高速度");
     expect(html).toContain('data-route="1"');
     expect(html).toContain("<svg");
+  });
+
+  it("一覧で選んだログに印を付け、詳細に前後のログへのボタンを出す", () => {
+    expect(logListPanel(logs, "all", true, logs[1].id)).toMatch(/<li class="selected"[^>]*><a href="#" data-log-open="2-b\.csv\.gz"/);
+    expect(shownLogs(logs, "all").map((l) => l.id)).toEqual([logs[0].id, logs[1].id]);
+    const html = logDetailPanel({ log: logs[0] }, { next: logs[1].id, index: 1, count: 2, folded: false });
+    expect(html).toMatch(/id="log-prev"[^>]*disabled/);
+    expect(html).toContain(`id="log-next" class="nav" aria-label="古いログへ" data-log-open="${logs[1].id}"`);
+    expect(html).toContain("1 / 2");
   });
 
   it("速度のグラフに出来事の印を付ける", () => {

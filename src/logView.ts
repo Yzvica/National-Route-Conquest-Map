@@ -171,15 +171,20 @@ export function logYears(logs: SavedLog[]): string[] {
   return [...new Set(logs.map(yearOf))].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : b.localeCompare(a)));
 }
 
-/** ログタブの一覧 */
-export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean): string {
+/** 一覧に出す順(新しい順・年で絞り込み)。前後のログへ移るときもこの順 */
+export function shownLogs(logs: SavedLog[], year: string): SavedLog[] {
+  return sortLogs(logs).filter((l) => year === "all" || yearOf(l) === year);
+}
+
+/** ログタブの一覧。selectedId: 右に詳細を出しているログ */
+export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean, selectedId?: string): string {
   if (logs === null) return `<p class="muted">読み込み中…</p>`;
   if (!shared) {
     return `<p class="muted">ログを残せるのは、MiniPC のサーバーで開いたときだけです(このブラウザだけで使っているときは、読み込んだログを保存しません)。</p>`;
   }
   if (logs.length === 0) return `<p class="muted">保存してあるログはまだありません。読み込んだログや、iPhone のロガーから送られたログがここに並びます。</p>`;
   const years = logYears(logs);
-  const shown = sortLogs(logs).filter((l) => year === "all" || yearOf(l) === year);
+  const shown = shownLogs(logs, year);
   const total = shown.reduce((s, l) => s + (l.m ?? 0), 0);
   const scored = shown.filter((l) => l.score !== undefined);
   const avg = scored.length ? scored.reduce((s, l) => s + l.score!, 0) / scored.length : undefined;
@@ -188,9 +193,9 @@ export function logListPanel(logs: SavedLog[] | null, year: string, shared: bool
         .map((y) => `<option value="${y}"${y === year ? " selected" : ""}>${y === "" ? "日付なし" : `${y}年`}</option>`)
         .join("")}</select></label>
     <p class="muted">${shown.length} 本・${km(total, 0)} km${avg !== undefined ? `・運転の平均 ${num(avg, 0)} 点(${scored.length} 本)` : ""}</p>
-    <ol class="log-list">${shown
+    <ol class="log-list" data-scroll="logs">${shown
       .map(
-        (l) => `<li><a href="#" data-log-open="${esc(l.id)}">
+        (l) => `<li${l.id === selectedId ? ` class="selected" aria-current="true"` : ""}><a href="#" data-log-open="${esc(l.id)}">
           <span class="muted">${l.date ?? "日付なし"}</span>
           <span class="log-name">${esc(l.name)}</span>
           <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span>
@@ -201,10 +206,30 @@ export function logListPanel(logs: SavedLog[] | null, year: string, shared: bool
 
 const grade = (score: number) => (score >= 80 ? "good" : score >= 50 ? "fair" : "poor");
 
-/** 選んだログの詳細 */
-export function logDetailPanel(d: LogDetail): string {
+/** 詳細の上に出す、前後のログへ移るボタンのための情報 */
+export interface LogNav {
+  /** 一覧で上(新しい方)・下(古い方)のログ */
+  prev?: string;
+  next?: string;
+  /** 一覧の何番目か(1から)。一覧にないときは undefined */
+  index?: number;
+  count: number;
+  /** スマホで地図を広く表示しているか(たたむボタンの向き) */
+  folded: boolean;
+}
+
+/** 選んだログの詳細(地図の右の枠に出す) */
+export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: false }): string {
   const s = d.stats;
-  const head = `<button type="button" id="log-back" class="link">← 一覧に戻る</button>
+  const navBtn = (id: string, to: string | undefined, label: string, text: string) =>
+    `<button type="button" id="${id}" class="nav" aria-label="${label}"${to ? ` data-log-open="${esc(to)}"` : " disabled"}>${text}</button>`;
+  const head = `<div class="detail-head">
+      ${navBtn("log-prev", nav.prev, "新しいログへ", "‹")}
+      <span class="muted log-pos">${nav.index !== undefined ? `${nav.index} / ${nav.count}` : ""}</span>
+      ${navBtn("log-next", nav.next, "古いログへ", "›")}
+      <span class="spacer"></span>
+      <button id="detail-fold" type="button" aria-label="${nav.folded ? "詳細を開く" : "地図を広く表示"}">${nav.folded ? "▾" : "▴"}</button>
+      <button id="detail-close" type="button" aria-label="閉じる">×</button></div>
     <h2 class="log-title">${esc(d.log.name)}</h2>`;
   if (d.error) return `${head}<p class="muted">読み込めませんでした: ${esc(d.error)}</p>`;
   if (!s) return `${head}<p class="muted">読み込み中…</p>`;
