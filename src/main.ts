@@ -10,7 +10,7 @@ import {
   type GameContext,
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
-import { logDetailPanel, logListPanel, passedRoutes, tripStats, type LogDetail, type PassedRoute } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, tripStats, type LogDetail, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -398,6 +398,12 @@ function renderDetail(stats: ReturnType<typeof computeStats>) {
   const box = $("detail");
   const route = selected ? stats.byRoute.get(selected) : undefined;
   showSelected(map, data, route ? selected : null, coverage());
+  // ログタブでは、同じ枠に選んだログの詳細を出す
+  if (logMode) {
+    renderLogDetail();
+    return;
+  }
+  box.classList.remove("log-detail");
   if (!selected || !route) {
     box.hidden = true;
     return;
@@ -459,14 +465,20 @@ function overlapList(ref: string): string {
       .join("")}</ul></details>`;
 }
 
-/** 詳細の枠に路線が隠れないよう、その分の余白をとって全体(または ids の区間)を映す */
-function fitSelected(ids?: string[]) {
-  if (!data || !selected) return;
+/** 地図を映すときの余白。右の詳細の枠に隠れないよう、その分を足す */
+function detailPadding() {
   const box = $("detail");
   const pad = { top: 40, bottom: 40, left: 40, right: 40 };
   // スマホでは枠が地図の外にあるので余白は要らない
-  if (getComputedStyle(box).position === "absolute") pad.right += Math.min(box.offsetWidth, $("map").clientWidth / 2);
+  if (!box.hidden && getComputedStyle(box).position === "absolute") pad.right += Math.min(box.offsetWidth, $("map").clientWidth / 2);
   map.resize(); // スマホでは枠が出た分だけ地図が縮むので、先に大きさを合わせる
+  return pad;
+}
+
+/** 詳細の枠に路線が隠れないよう、その分の余白をとって全体(または ids の区間)を映す */
+function fitSelected(ids?: string[]) {
+  if (!data || !selected) return;
+  const pad = detailPadding();
   const want = ids ? new Set(ids) : null;
   const ref = selected;
   fitSegments(map, data.segments.filter((s) => (want ? want.has(s.id) : s.routes.includes(ref))), pad);
@@ -979,6 +991,10 @@ $("map-restore").addEventListener("click", (e) => {
 mobile.addEventListener("change", () => {
   if (!mobile.matches && mapOnly()) setMapOnly(false);
 });
+// スマホでは地図が狭いので、出典の文字は最初からたたんでおく(右下の i で開ける。地図を動かしてもたたまれる)
+map.once("idle", () => {
+  if (mobile.matches) document.querySelector(".maplibregl-ctrl-attrib.maplibregl-compact-show")?.classList.remove("maplibregl-compact-show");
+});
 
 $("route-filter").addEventListener("input", render);
 $("routes").addEventListener("click", (e) => {
@@ -986,6 +1002,7 @@ $("routes").addEventListener("click", (e) => {
   if (li?.dataset.ref) select(li.dataset.ref, true);
 });
 $("detail").addEventListener("click", (e) => {
+  if (onLogClick(e)) return;
   const el = e.target as HTMLElement;
   if (el.id === "detail-close") select(null, false);
   if (el.id === "detail-fold") setMapOnly(!mapOnly());
@@ -1107,8 +1124,33 @@ function showLogs() {
 function renderLogs() {
   if (!logMode) return;
   keepScroll(() => {
-    $("log-view").innerHTML = logDetail ? logDetailPanel(logDetail) : logListPanel(savedLogs, logYear, storeShared);
+    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id);
+    renderLogDetail();
   });
+}
+
+/** 一覧での前後のログ(一覧に出ている順) */
+function logNeighbors(id: string) {
+  const list = savedLogs ? shownLogs(savedLogs, logYear) : [];
+  const i = list.findIndex((l) => l.id === id);
+  return {
+    prev: i > 0 ? list[i - 1].id : undefined,
+    next: i >= 0 && i < list.length - 1 ? list[i + 1].id : undefined,
+    index: i >= 0 ? i + 1 : undefined,
+    count: list.length,
+  };
+}
+
+/** 選んだログの詳細を、地図の右(スマホでは地図の上)の枠に出す */
+function renderLogDetail() {
+  const box = $("detail");
+  box.classList.add("log-detail");
+  if (!logDetail) {
+    box.hidden = true;
+    return;
+  }
+  box.innerHTML = logDetailPanel(logDetail, { ...logNeighbors(logDetail.log.id), folded: mapOnly() });
+  box.hidden = false;
 }
 
 /** 開いているログの詳細を更新する(ほかのログに切り替わっていたら何もしない) */
@@ -1152,7 +1194,9 @@ async function openLog(id: string) {
   const log = savedLogs?.find((l) => l.id === id) ?? { id, name: id, size: 0 };
   logDetail = { log };
   renderLogs();
-  $("panel").scrollTop = 0;
+  $("detail").scrollTop = 0;
+  // 前後のボタンで移ったときも、一覧の選んだ行が見えるようにする
+  $("log-view").querySelector(".log-list li.selected")?.scrollIntoView({ block: "nearest" });
   try {
     let track = trackCache.get(id);
     if (!track) {
@@ -1162,7 +1206,7 @@ async function openLog(id: string) {
     }
     if (track.length === 0) throw new Error("位置の記録がありません");
     if (logDetail?.log.id !== id) return;
-    showTrack(map, track);
+    showTrack(map, track, detailPadding());
     showDriveEvents(map, []);
     const trip = { date: logDate(track, log.name, Number(id.split("-")[0]) || Date.now()), m: Math.round(trackLength(track)) };
     if (log.date !== trip.date || log.m !== trip.m) {
@@ -1189,24 +1233,30 @@ function closeLog() {
   renderLogs();
 }
 
-$("log-view").addEventListener("click", (e) => {
+/** ログの一覧と詳細の枠のクリック。ログタブでなければ false(国道の詳細として扱う) */
+function onLogClick(e: MouseEvent) {
+  if (!logMode) return false;
   const el = e.target as HTMLElement;
   const open = el.closest<HTMLElement>("[data-log-open]");
   if (open) {
     e.preventDefault();
     void openLog(open.dataset.logOpen!);
-    return;
+    return true;
   }
-  if (el.closest("#log-back")) {
+  if (el.closest("#detail-close")) {
     closeLog();
-    return;
+    return true;
+  }
+  if (el.closest("#detail-fold")) {
+    setMapOnly(!mapOnly());
+    return true;
   }
   const evLink = el.closest<HTMLElement>("[data-ev]");
   if (evLink) {
     e.preventDefault();
     const ev = evals.get(evLink.dataset.logId!)?.events[Number(evLink.dataset.ev)];
     if (ev) flyToEvent(map, ev.lat, ev.lon, eventLabel(ev));
-    return;
+    return true;
   }
   const route = el.closest<HTMLElement>("[data-route]");
   if (route) {
@@ -1215,6 +1265,20 @@ $("log-view").addEventListener("click", (e) => {
     showDataset(route.dataset.kind as DatasetKind);
     select(route.dataset.route!, true);
   }
+  return true;
+}
+$("log-view").addEventListener("click", onLogClick);
+
+// ログタブ: ↑↓(または J/K)で前後のログへ。文字を打っているときと地図を操作しているときは除く
+document.addEventListener("keydown", (e) => {
+  if (!logMode || !logDetail || e.altKey || e.ctrlKey || e.metaKey) return;
+  const t = e.target as HTMLElement;
+  if (t.closest("input, select, textarea, dialog[open], #map")) return;
+  const dir = e.key === "ArrowUp" || e.key === "k" ? "prev" : e.key === "ArrowDown" || e.key === "j" ? "next" : null;
+  if (!dir) return;
+  const to = logNeighbors(logDetail.log.id)[dir];
+  e.preventDefault();
+  if (to) void openLog(to);
 });
 $("log-view").addEventListener("change", (e) => {
   const sel = e.target as HTMLSelectElement;

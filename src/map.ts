@@ -447,7 +447,7 @@ export function paintCoverage(map: maplibregl.Map, data: RouteData, coverage: Co
   (map.getSource("overview") as GeoJSONSource | undefined)?.setData(buildOverview(data, coverage));
 }
 
-export function showTrack(map: maplibregl.Map, track: TrackPoint[]) {
+export function showTrack(map: maplibregl.Map, track: TrackPoint[], padding: number | maplibregl.PaddingOptions = 40) {
   const data = {
     type: "Feature" as const,
     properties: {},
@@ -462,7 +462,7 @@ export function showTrack(map: maplibregl.Map, track: TrackPoint[]) {
   if (track.length > 0) {
     const b = new maplibregl.LngLatBounds();
     for (const p of track) b.extend([p.lon, p.lat]);
-    map.fitBounds(b, { padding: 40, maxZoom: 13 });
+    map.fitBounds(b, { padding, maxZoom: 13 });
   }
 }
 
