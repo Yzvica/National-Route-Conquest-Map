@@ -554,18 +554,21 @@ export function createApp() {
         return json(res, 405, { error: "method not allowed" });
       }
       // 走行ロガーの生データを1ファイルずつ受け取る(?session=走行ID&file=ファイル名)。同じファイルは上書きする
+      // 車以外の移動(電車・飛行機など)は &kind=trip を付けて送られ、trips フォルダの下に分けて置く
       if (url.pathname === "/api/rawlog") {
         if (req.method !== "PUT" && req.method !== "POST") return json(res, 405, { error: "method not allowed" });
         const session = url.searchParams.get("session") ?? "";
         const file = url.searchParams.get("file") ?? "";
         const ok = (s) => /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,119}$/u.test(s) && !s.includes("..");
         if (!ok(session) || !ok(file)) return json(res, 400, { error: "bad session or file" });
+        const kind = url.searchParams.get("kind") ?? "drive";
+        if (kind !== "drive" && kind !== "trip") return json(res, 400, { error: "bad kind" });
         const body = Buffer.concat(await readChunks(req));
-        const dir = join(RAW_LOG_DIR(), session);
+        const dir = kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session);
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `${file}.part`), body);
         renameSync(join(dir, `${file}.part`), join(dir, file));
-        return json(res, 200, { saved: `${session}/${file}`, bytes: body.length });
+        return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
       }
       const inboxMatch = /^\/api\/inbox\/([^/]+)$/.exec(url.pathname);
       if (inboxMatch && req.method === "DELETE") {

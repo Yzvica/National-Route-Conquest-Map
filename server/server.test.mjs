@@ -240,6 +240,14 @@ describe("/api/rawlog", () => {
     expect(readFileSync(join(process.env.RAW_LOG_DIR, "20261107-093000", "motion.csv"), "utf8")).toBe("t,ax\n0,2\n");
   });
 
+  it("車以外の移動(kind=trip)は trips フォルダの下に置く", async () => {
+    const res = await fetch(`${root}/rawlog?session=20261108-161500&file=location.csv&kind=trip`, { method: "PUT", body: "a\n" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).saved).toBe("trips/20261108-161500/location.csv");
+    expect(readFileSync(join(process.env.RAW_LOG_DIR, "trips", "20261108-161500", "location.csv"), "utf8")).toBe("a\n");
+    expect((await fetch(`${root}/rawlog?session=a&file=b.csv&kind=../x`, { method: "PUT", body: "a" })).status).toBe(400);
+  });
+
   it("フォルダの外には書けない", async () => {
     expect((await put("..", "x.csv", "a")).status).toBe(400);
     expect((await put("a", "../x.csv", "a")).status).toBe(400);
