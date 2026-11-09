@@ -9,8 +9,9 @@ process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-logs-"));
 process.env.JUDGE_WORKER = join(import.meta.dirname, "__fixtures__", "fakeJudgeWorker.mjs");
 process.env.JUDGE_DATA_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-data-"));
 process.env.JUDGE_IDLE_MS = "10";
+process.env.RAW_LOG_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-raw-"));
 writeFileSync(join(process.env.JUDGE_DATA_DIR, "routes.json"), "{}");
-const { createApp, judgeIdle } = await import("./server.mjs");
+const { createApp, judgeIdle, shouldFill } = await import("./server.mjs");
 
 describe("サーバーでの判定", () => {
   let server;
@@ -79,5 +80,56 @@ describe("サーバーでの判定", () => {
     await judgeIdle();
     expect((await get("/record")).coverage.s9).toBe(1);
     expect(existsSync(dirname(process.env.RECORD_FILE))).toBe(true);
+  });
+});
+
+describe("トンネルの補間", () => {
+  let server;
+  let root;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    root = `http://127.0.0.1:${server.address().port}/api`;
+  });
+  afterAll(() => server.close());
+
+  const put = (q, body) => fetch(`${root}/rawlog?${q}`, { method: "PUT", body });
+  const raw = (...p) => join(process.env.RAW_LOG_DIR, ...p);
+
+  it("車と同乗だけ自動で補う(mode のない古い記録は、車のフォルダなら車)", () => {
+    expect(shouldFill("drive", { mode: "car" })).toBe(true);
+    expect(shouldFill("trip", { mode: "ride" })).toBe(true);
+    expect(shouldFill("trip", { mode: "train" })).toBe(false);
+    expect(shouldFill("trip", { mode: "plane" })).toBe(false);
+    expect(shouldFill("drive", null)).toBe(true);
+    expect(shouldFill("trip", {})).toBe(false);
+  });
+
+  it("生データを受け取り終えたら補い、結果を GET で返す", async () => {
+    await put("session=20261109-100000&file=location.csv", "unix_s,lat,lon\n1,35,139\n2,35,139\n");
+    expect(existsSync(raw("20261109-100000", "tunnel_fill.json"))).toBe(false);
+    await put("session=20261109-100000&file=meta.json", JSON.stringify({ mode: "car" }));
+    await judgeIdle();
+    const r = await fetch(`${root}/rawlog/fill?session=20261109-100000`);
+    expect(r.status).toBe(200);
+    expect((await r.json()).sections[0].points).toBe(2);
+  });
+
+  it("電車は自動では補わず、POST すれば補う", async () => {
+    await put("session=20261109-110000&file=location.csv&kind=trip", "unix_s,lat,lon\n1,35,139\n");
+    await put("session=20261109-110000&file=meta.json&kind=trip", JSON.stringify({ mode: "train" }));
+    await judgeIdle();
+    expect(existsSync(raw("trips", "20261109-110000", "tunnel_fill.json"))).toBe(false);
+    expect((await fetch(`${root}/rawlog/fill?session=20261109-110000&kind=trip`)).status).toBe(404);
+    const r = await fetch(`${root}/rawlog/fill?session=20261109-110000&kind=trip`, { method: "POST" });
+    expect(r.status).toBe(200);
+    expect((await r.json()).sections[0].points).toBe(1);
+    expect(existsSync(raw("trips", "20261109-110000", "tunnel_fill.json"))).toBe(true);
+  });
+
+  it("おかしな走行IDやない走行は断る", async () => {
+    expect((await fetch(`${root}/rawlog/fill?session=..`, { method: "POST" })).status).toBe(400);
+    expect((await fetch(`${root}/rawlog/fill?session=a&kind=x`)).status).toBe(400);
+    expect((await fetch(`${root}/rawlog/fill?session=20200101-000000`, { method: "POST" })).status).toBe(404);
   });
 });

@@ -285,7 +285,7 @@ function startWorker() {
       if (!p) return;
       waiting.delete(m.seq);
       if (m.error) p.ng(new Error(m.error));
-      else p.ok(m.result);
+      else p.ok(m.result ?? m.fill);
     });
     const fail = (e) => {
       if (worker === w) {
@@ -313,6 +313,44 @@ async function judgeOne(id) {
     waiting.set(n, { ok, ng });
     worker.postMessage({ seq: n, logId: id });
   });
+}
+
+/**
+ * iPhone の走行ロガーの走行フォルダで、トンネルなどで GPS が途切れた区間を道路に沿って補う。
+ * worker が location_filled.csv と tunnel_fill.json を書き、まとめを返す
+ */
+async function fillOne(dir) {
+  clearTimeout(idleTimer);
+  if (!worker) startWorker();
+  await workerReady;
+  const n = ++seq;
+  return new Promise((ok, ng) => {
+    waiting.set(n, { ok, ng });
+    worker.postMessage({ seq: n, fillDir: dir });
+  });
+}
+
+/** 走行ごとのフォルダ(車は RAW_LOG_DIR/<走行ID>、車以外は trips/<走行ID>) */
+const rawDir = (session, kind) => (kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session));
+
+/**
+ * 自動で補う走行か。車(運転)と同乗(バス・タクシー)だけ。電車・飛行機は道路に沿わないので補わない。
+ * meta.json の mode がない古い記録は、車のフォルダなら車とみなす
+ */
+export function shouldFill(kind, meta) {
+  const mode = meta?.mode ?? (kind === "trip" ? "other" : "car");
+  return mode === "car" || mode === "ride";
+}
+
+/** 生データを受け取り終えたら(meta.json は最後に送られる)、トンネルの区間を補う */
+function fillAfterUpload(dir, kind) {
+  if (!serverJudge() || !existsSync(join(dir, "location.csv"))) return;
+  let meta = null;
+  try {
+    meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+  } catch {}
+  if (!shouldFill(kind, meta)) return;
+  void enqueue(() => fillOne(dir).catch((e) => console.error(`トンネルの補間に失敗: ${dir}: ${e.message}`)));
 }
 
 /** 判定した結果を、記録に足す形にする。logEntry なら読み込み履歴にも足す */
@@ -564,11 +602,38 @@ export function createApp() {
         const kind = url.searchParams.get("kind") ?? "drive";
         if (kind !== "drive" && kind !== "trip") return json(res, 400, { error: "bad kind" });
         const body = Buffer.concat(await readChunks(req));
-        const dir = kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session);
+        const dir = rawDir(session, kind);
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `${file}.part`), body);
         renameSync(join(dir, `${file}.part`), join(dir, file));
+        if (file === "meta.json") fillAfterUpload(dir, kind);
         return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
+      }
+      // トンネルなどで途切れた区間を道路に沿って補った結果(?session=走行ID[&kind=trip])。
+      // GET は tunnel_fill.json を返す。POST は今すぐ補い直す(電車などの自動で補わない走行も補う)
+      if (url.pathname === "/api/rawlog/fill") {
+        const session = url.searchParams.get("session") ?? "";
+        const kind = url.searchParams.get("kind") ?? "drive";
+        if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]{0,119}$/u.test(session) || session.includes("..") || (kind !== "drive" && kind !== "trip")) {
+          return json(res, 400, { error: "bad session or kind" });
+        }
+        const dir = rawDir(session, kind);
+        if (req.method === "GET") {
+          try {
+            return json(res, 200, JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8")));
+          } catch {
+            return json(res, 404, { error: "not filled" });
+          }
+        }
+        if (req.method === "POST") {
+          if (!existsSync(join(dir, "location.csv"))) return json(res, 404, { error: "no location.csv" });
+          if (!serverJudge()) return json(res, 503, { error: "道路データがないので補えません" });
+          let out = null;
+          let err = null;
+          await enqueue(() => fillOne(dir).then((r) => (out = r), (e) => (err = e)));
+          return err ? json(res, 500, { error: err.message }) : json(res, 200, out);
+        }
+        return json(res, 405, { error: "method not allowed" });
       }
       const inboxMatch = /^\/api\/inbox\/([^/]+)$/.exec(url.pathname);
       if (inboxMatch && req.method === "DELETE") {

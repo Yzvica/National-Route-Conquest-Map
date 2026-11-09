@@ -1,10 +1,17 @@
-// テスト用の判定 worker。ログの各行「区間ID,割合,日付」をそのまま判定結果として返す。"BAD" を含むログは読めないことにする
-import { readFileSync } from "node:fs";
+// テスト用の判定 worker。ログの各行「区間ID,割合,日付」をそのまま判定結果として返す。"BAD" を含むログは読めないことにする。
+// トンネルの補間(fillDir)は、location.csv の行数だけをまとめに入れて返す
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
 import { gunzipSync } from "node:zlib";
 
-parentPort.on("message", ({ seq, logId }) => {
+parentPort.on("message", ({ seq, logId, fillDir }) => {
+  if (fillDir) {
+    const rows = readFileSync(join(fillDir, "location.csv"), "utf8").trim().split("\n").length - 1;
+    const fill = { version: 1, generatedAt: "x", sections: [{ points: rows }], skipped: [] };
+    writeFileSync(join(fillDir, "tunnel_fill.json"), JSON.stringify(fill));
+    return parentPort.postMessage({ seq, fill });
+  }
   const text = gunzipSync(readFileSync(join(workerData.logsDir, logId))).toString("utf8");
   if (text.includes("BAD")) return parentPort.postMessage({ seq, error: "読めないログ" });
   const rows = text.trim().split("\n").map((l) => l.split(","));
