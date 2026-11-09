@@ -293,3 +293,11 @@ button.link { padding: 1px 8px; font-size: 12px; }
   #game-body { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   #toast { bottom: calc(16px + env(safe-area-inset-bottom)); }
 }
+
+/* 走ったときの天気 */
+.wx-badge { font-size: 12px; white-space: nowrap; }
+.wx-summary { margin: 4px 0; }
+.wx-detail summary { cursor: pointer; font-size: 13px; }
+.wx-table { border-collapse: collapse; font-size: 12px; margin: 4px 0; width: 100%; }
+.wx-table th, .wx-table td { padding: 2px 6px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.wx-note { font-size: 11px; }

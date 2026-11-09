@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripStats } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripStats, weatherPoints } from "./logView";
 import type { RouteData, TrackPoint } from "./types";
 
 // 北へ 1 秒に約 11.1m(時速 40km)で進むログ。途中 60 秒止まる
@@ -87,5 +87,26 @@ describe("ログタブの画面", () => {
   it("速度のグラフに出来事の印を付ける", () => {
     const s = tripStats(track());
     expect(speedChart(s.speeds, [{ t: s.start! + 30_000, label: "急ブレーキ" }])).toContain("急ブレーキ");
+  });
+
+  it("天気を一覧と詳細に出し、MiniPC に送る点は1分おきにする", () => {
+    const sample = { t: 1762675200, lat: 35, lon: 139, code: 61, label: "小雨", icon: "🌧️", temp: 12.3, feels: 10, humidity: 80, precip: 0.8, snow: 0, cloud: 100, pressure: 1010, wind: 4, windDir: 0, gust: 9, isDay: true };
+    const weather = {
+      source: "Open-Meteo",
+      api: "forecast" as const,
+      fetchedAt: "",
+      summary: { code: 61, label: "小雨", icon: "🌧️", tMin: 11.6, tMax: 13.2, precipMax: 0.8, windMax: 4, gustMax: 9, rain: true, night: false, sunrise: 1762636000, sunset: 1762675000 },
+      samples: [sample],
+    };
+    const list = logListPanel([{ ...logs[0], weather: { icon: "🌧️", label: "小雨", tMin: 11.6, tMax: 13.2 } }], "all", true);
+    expect(list).toContain("🌧️ 12〜13℃");
+    const html = logDetailPanel({ log: logs[0], stats: tripStats(track()), weather });
+    expect(html).toContain("<h3>天気</h3>");
+    expect(html).toContain("小雨・12〜13℃・雨 最大 0.8 mm/時・風 最大 4 m/s(瞬間 9)");
+    expect(html).toContain("北の風 4 m/s");
+    expect(logDetailPanel({ log: logs[0], stats: tripStats(track()) })).toContain("天気を調べています");
+    const pts = weatherPoints(track());
+    expect(pts.length).toBeGreaterThan(1);
+    for (let i = 1; i < pts.length - 1; i++) expect(pts[i][0] - pts[i - 1][0]).toBeGreaterThanOrEqual(60);
   });
 });

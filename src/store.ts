@@ -87,6 +87,10 @@ export interface RecordStore {
   claimLog(id: string): Promise<boolean>;
   /** ログの運転評価(iPhone の走行ロガーのログで、DriveLog が評価を作ったものだけ。なければ null) */
   loadEval(id: string): Promise<DriveEval | null>;
+  /** ログの天気。なければ null */
+  loadWeather(id: string): Promise<DriveWeather | null>;
+  /** 軌跡の点([UNIX秒, 緯度, 経度])を送って、MiniPC に天気を取ってもらう。取れなければ null */
+  fetchWeather(id: string, points: [number, number, number][]): Promise<DriveWeather | null>;
   /** MiniPC のサーバーで判定している様子(サーバーがなければ null) */
   judgeStatus(): Promise<JudgeStatus | null>;
   /** 保存したログをすべて MiniPC のサーバーで判定し直す。始められなければ null */
@@ -129,6 +133,53 @@ export interface SavedLog {
   m?: number;
   /** 運転評価の総合点(評価があるログだけ) */
   score?: number;
+  /** 走ったときの天気のまとめ(MiniPC が取ったものだけ) */
+  weather?: { icon: string; label: string; tMin: number | null; tMax: number | null };
+}
+
+/** 走ったときの天気の1地点(MiniPC が Open-Meteo から取った weather.json) */
+export interface WeatherSample {
+  /** UNIX 秒 */
+  t: number;
+  lat: number;
+  lon: number;
+  code: number | null;
+  label: string;
+  icon: string;
+  temp: number | null;
+  feels: number | null;
+  humidity: number | null;
+  /** その時刻を含む1時間の降水量(mm) */
+  precip: number | null;
+  snow: number | null;
+  cloud: number | null;
+  pressure: number | null;
+  /** 風速・最大瞬間風速(m/s)と風向(度、北=0) */
+  wind: number | null;
+  windDir: number | null;
+  gust: number | null;
+  isDay: boolean | null;
+}
+
+export interface DriveWeather {
+  source: string;
+  api: "forecast" | "archive";
+  fetchedAt: string;
+  summary: {
+    code: number;
+    label: string;
+    icon: string;
+    tMin: number | null;
+    tMax: number | null;
+    precipMax: number | null;
+    windMax: number | null;
+    gustMax: number | null;
+    rain: boolean;
+    night: boolean;
+    sunrise?: number;
+    sunset?: number;
+  };
+  samples: WeatherSample[];
 }
 
 /** 運転評価の1項目(gbowl-log-formatter の drive_eval.py が作る evaluation.json) */
@@ -235,6 +286,16 @@ class ServerStore implements RecordStore {
     return res.ok ? res.json() : null;
   }
 
+  async loadWeather(id: string): Promise<DriveWeather | null> {
+    const res = await fetch(`${LOGS_API}/${encodeURIComponent(id)}/weather`);
+    return res.ok ? res.json() : null;
+  }
+
+  async fetchWeather(id: string, points: [number, number, number][]): Promise<DriveWeather | null> {
+    const res = await fetch(`${LOGS_API}/${encodeURIComponent(id)}/weather`, { method: "POST", body: JSON.stringify({ points }) });
+    return res.ok ? res.json() : null;
+  }
+
   async claimLog(id: string) {
     const res = await fetch(`${INBOX_API}/${encodeURIComponent(id)}`, { method: "DELETE" });
     return res.ok && (await res.json()).claimed === true;
@@ -307,6 +368,12 @@ class LocalStore implements RecordStore {
     return false;
   }
   async loadEval() {
+    return null;
+  }
+  async loadWeather() {
+    return null;
+  }
+  async fetchWeather() {
     return null;
   }
   async judgeStatus() {

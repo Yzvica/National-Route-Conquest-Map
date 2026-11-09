@@ -10,7 +10,7 @@ import {
   type GameContext,
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, tripStats, type LogDetail, type PassedRoute } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, tripStats, weatherPoints, type LogDetail, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -32,7 +32,7 @@ import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength } from "./trips";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
-import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type JudgeRun, type Record, type SavedLog } from "./store";
+import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
   CATEGORY_LABELS,
   DATASET_LABELS,
@@ -1188,6 +1188,21 @@ async function logRoutes(id: string, track: TrackPoint[]): Promise<PassedRoute[]
   return list;
 }
 
+/** 読み込んだ天気(ログ ID → 天気。取れなければ null) */
+const weathers = new Map<string, DriveWeather | null>();
+
+/** ログの天気。MiniPC になければ、軌跡の点を送って取ってもらう */
+async function logWeather(id: string, track: TrackPoint[]): Promise<DriveWeather | null> {
+  if (!weathers.has(id)) {
+    const store = await storePromise;
+    let w = await store.loadWeather(id).catch(() => null);
+    const points = weatherPoints(track);
+    if (!w && points.length) w = await store.fetchWeather(id, points).catch(() => null);
+    weathers.set(id, w);
+  }
+  return weathers.get(id)!;
+}
+
 /** 保存してあるログを開く: 地図に軌跡と出来事を出し、左に詳細を出す */
 async function openLog(id: string) {
   const store = await storePromise;
@@ -1214,6 +1229,13 @@ async function openLog(id: string) {
       await store.setLogTrip(id, trip).catch(() => undefined);
     }
     if (!updateDetail(id, { stats: tripStats(track) })) return;
+    void logWeather(id, track).then((weather) => {
+      updateDetail(id, { weather });
+      if (weather && log.weather === undefined) {
+        const w = weather.summary;
+        log.weather = { icon: w.icon, label: w.label, tMin: w.tMin, tMax: w.tMax };
+      }
+    });
     if (log.score !== undefined) {
       const ev = await getEval(id);
       if (!updateDetail(id, { ev })) return;

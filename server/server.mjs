@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { fetchWeather, parseLocationCsv } from "./weather.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -191,12 +192,14 @@ function listLogs() {
   const meta = loadMeta();
   return logFiles().map((id) => {
     const score = loadEval(id)?.score;
+    const wx = loadWeather(id)?.summary;
     return {
       id,
       name: logName(id),
       size: statSync(join(LOGS, id)).size,
       ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
       ...(typeof score === "number" ? { score } : {}),
+      ...(wx ? { weather: { icon: wx.icon, label: wx.label, tMin: wx.tMin, tMax: wx.tMax } } : {}),
     };
   });
 }
@@ -331,7 +334,7 @@ async function fillOne(dir) {
 }
 
 /** GET /api/rawlog で返してよいファイル(サーバーが作るもの) */
-const RAW_READABLE = new Set(["location_filled.csv", "tunnel_fill.json"]);
+const RAW_READABLE = new Set(["location_filled.csv", "tunnel_fill.json", "weather.json"]);
 
 /** 走行ごとのフォルダ(車は RAW_LOG_DIR/<走行ID>、車以外は trips/<走行ID>) */
 const rawDir = (session, kind) => (kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session));
@@ -354,6 +357,153 @@ function fillAfterUpload(dir, kind) {
   } catch {}
   if (!shouldFill(kind, meta)) return;
   void enqueue(() => fillOne(dir).catch((e) => console.error(`トンネルの補間に失敗: ${dir}: ${e.message}`)));
+}
+
+// --- 天気 ---
+// 走り終えて生データ(meta.json は最後)が届いたら、走った時刻・場所の天気を Open-Meteo から取って
+// 走行フォルダの weather.json に書く。つながらなかった走行は data/weather_pending.json に残し、あとで取り直す。
+// iPhone のロガー以外のログ(GBowl・GoPro など)は、地図でログを開いたときにブラウザが軌跡の点を送り、
+// RAW_LOG_DIR/weather/<ログの名前から拡張子を除いたもの>.json に残す。WEATHER=off で取らない
+
+const weatherOn = () => process.env.WEATHER !== "off";
+const WEATHER_PENDING = () => join(dirname(RECORD), "weather_pending.json");
+/** 取れなかった走行を取り直す間隔と、あきらめるまでの日数 */
+const WEATHER_RETRY_MS = Number(process.env.WEATHER_RETRY_MS ?? 30 * 60_000);
+const WEATHER_GIVE_UP_DAYS = 14;
+
+/** 天気を取る走行か。飛行機は地上の天気が意味をなさないので取らない */
+export const shouldWeather = (meta) => meta?.mode !== "plane";
+
+function loadWeatherPending() {
+  try {
+    const j = JSON.parse(readFileSync(WEATHER_PENDING(), "utf8"));
+    return Array.isArray(j) ? j.filter((p) => p && typeof p.dir === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveWeatherPending(list) {
+  mkdirSync(dirname(WEATHER_PENDING()), { recursive: true });
+  writeFileSync(`${WEATHER_PENDING()}.tmp`, JSON.stringify(list, null, 1));
+  renameSync(`${WEATHER_PENDING()}.tmp`, WEATHER_PENDING());
+}
+
+let weatherQueue = Promise.resolve();
+const weatherEnqueue = (fn) => (weatherQueue = weatherQueue.then(fn).catch((e) => console.error(e)));
+/** 天気を取り終えるまで待つ(テスト用) */
+export const weatherIdle = () => weatherQueue;
+
+/** 位置のファイルを読む(トンネルを補ったものがあればそちら) */
+function readTrackPoints(dir) {
+  for (const f of ["location_filled.csv", "location.csv"]) {
+    const path = join(dir, f);
+    if (existsSync(path)) return parseLocationCsv(readFileSync(path, "utf8"));
+  }
+  return [];
+}
+
+/** 走行フォルダの天気を取って weather.json に書く。取れなければ例外 */
+async function weatherForDir(dir) {
+  const w = await fetchWeather(readTrackPoints(dir));
+  writeFileSync(join(dir, "weather.json.part"), JSON.stringify(w, null, 1));
+  renameSync(join(dir, "weather.json.part"), join(dir, "weather.json"));
+  return w;
+}
+
+/** 走行フォルダの天気を取る。失敗したら取り直す一覧に残す */
+function weatherLater(dir) {
+  if (!weatherOn()) return;
+  void weatherEnqueue(async () => {
+    try {
+      await weatherForDir(dir);
+      const rest = loadWeatherPending().filter((p) => p.dir !== dir);
+      if (rest.length !== loadWeatherPending().length) saveWeatherPending(rest);
+    } catch (e) {
+      console.error(`天気を取れませんでした: ${dir}: ${e.message}`);
+      const list = loadWeatherPending();
+      const cur = list.find((p) => p.dir === dir);
+      if (cur) cur.error = e.message;
+      else list.push({ dir, since: new Date().toISOString(), error: e.message });
+      saveWeatherPending(list);
+    }
+  });
+}
+
+/** 生データを受け取り終えたら、天気を取る */
+function weatherAfterUpload(dir) {
+  if (!existsSync(join(dir, "location.csv"))) return;
+  let meta = null;
+  try {
+    meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+  } catch {}
+  if (shouldWeather(meta)) weatherLater(dir);
+}
+
+/** 取れなかった走行を取り直す(古すぎるものはあきらめる) */
+export function retryWeather() {
+  const list = loadWeatherPending();
+  const keep = list.filter((p) => Date.now() - Date.parse(p.since) < WEATHER_GIVE_UP_DAYS * 86400_000 && existsSync(p.dir));
+  if (keep.length !== list.length) saveWeatherPending(keep);
+  for (const p of keep) if (!existsSync(join(p.dir, "weather.json"))) weatherLater(p.dir);
+  return keep.length;
+}
+
+/** 前からある走行フォルダ(車・old・trips)で、まだ天気のないものを探す */
+export function weatherMissingDirs() {
+  const root = RAW_LOG_DIR();
+  const out = [];
+  for (const base of [root, join(root, "old"), join(root, "trips")]) {
+    let names = [];
+    try {
+      names = readdirSync(base).filter((n) => /^\d{8}-\d{6}$/.test(n));
+    } catch {
+      continue;
+    }
+    for (const n of names) {
+      const dir = join(base, n);
+      if (!existsSync(join(dir, "location.csv")) || existsSync(join(dir, "weather.json"))) continue;
+      let meta = null;
+      try {
+        meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+      } catch {
+        continue; // まだ送り終えていない
+      }
+      if (shouldWeather(meta)) out.push(dir);
+    }
+  }
+  return out;
+}
+
+/** ログ(地図に保存したもの)の天気の置き場所。iPhone のロガーのログは走行フォルダ、それ以外は weather フォルダ */
+function weatherPaths(id) {
+  const name = logName(id);
+  const dir = RAW_LOG_DIR();
+  const m = SESSION_RE.exec(name);
+  const own = join(dir, "weather", `${name.replace(/\.[^.]+$/, "")}.json`);
+  if (m) return [join(dir, m[1], "weather.json"), join(dir, "old", m[1], "weather.json"), own];
+  return [own];
+}
+
+/** ログの天気(weather.json の中身)。なければ null */
+export function loadWeather(id) {
+  for (const path of weatherPaths(id)) {
+    try {
+      const w = JSON.parse(readFileSync(path, "utf8"));
+      if (w && w.summary && Array.isArray(w.samples)) return w;
+    } catch {}
+  }
+  return null;
+}
+
+/** ブラウザが送ってきた軌跡の点([UNIX秒, 緯度, 経度] の並び)で天気を取って残す */
+async function weatherForLog(id, points) {
+  const w = await fetchWeather(points);
+  const path = weatherPaths(id).at(-1);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(`${path}.part`, JSON.stringify(w, null, 1));
+  renameSync(`${path}.part`, path);
+  return w;
 }
 
 /** 判定した結果を、記録に足す形にする。logEntry なら読み込み履歴にも足す */
@@ -617,7 +767,10 @@ export function createApp() {
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, `${file}.part`), body);
         renameSync(join(dir, `${file}.part`), join(dir, file));
-        if (file === "meta.json") fillAfterUpload(dir, kind);
+        if (file === "meta.json") {
+          fillAfterUpload(dir, kind);
+          weatherAfterUpload(dir);
+        }
         return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
       }
       // トンネルなどで途切れた区間を道路に沿って補った結果(?session=走行ID[&kind=trip])。
@@ -646,6 +799,30 @@ export function createApp() {
         }
         return json(res, 405, { error: "method not allowed" });
       }
+      // 走行の天気(?session=走行ID[&kind=trip])。GET は weather.json、POST は今すぐ取り直す
+      if (url.pathname === "/api/rawlog/weather") {
+        const session = url.searchParams.get("session") ?? "";
+        const kind = url.searchParams.get("kind") ?? "drive";
+        if (!/^[\p{L}\p{N}][\p{L}\p{N}._-]{0,119}$/u.test(session) || session.includes("..") || (kind !== "drive" && kind !== "trip")) {
+          return json(res, 400, { error: "bad session or kind" });
+        }
+        const dir = rawDir(session, kind);
+        if (req.method === "GET") {
+          try {
+            return json(res, 200, JSON.parse(readFileSync(join(dir, "weather.json"), "utf8")));
+          } catch {
+            return json(res, 404, { error: "no weather" });
+          }
+        }
+        if (req.method === "POST") {
+          if (!existsSync(join(dir, "location.csv"))) return json(res, 404, { error: "no location.csv" });
+          let out = null;
+          let err = null;
+          await weatherEnqueue(() => weatherForDir(dir).then((r) => (out = r), (e) => (err = e)));
+          return err ? json(res, 502, { error: err.message }) : json(res, 200, out);
+        }
+        return json(res, 405, { error: "method not allowed" });
+      }
       const inboxMatch = /^\/api\/inbox\/([^/]+)$/.exec(url.pathname);
       if (inboxMatch && req.method === "DELETE") {
         return json(res, 200, { claimed: claimPending(decodeURIComponent(inboxMatch[1])) });
@@ -654,6 +831,27 @@ export function createApp() {
       if (evalMatch && req.method === "GET") {
         const ev = loadEval(decodeURIComponent(evalMatch[1]));
         return ev ? json(res, 200, ev) : json(res, 404, { error: "not found" });
+      }
+      // ログの天気。GET はあるものを返す。POST は本文の軌跡の点 { points: [[UNIX秒, 緯度, 経度], …] } で取る
+      const wxMatch = /^\/api\/logs\/([^/]+)\/weather$/.exec(url.pathname);
+      if (wxMatch) {
+        const id = decodeURIComponent(wxMatch[1]);
+        if (id !== safeName(id) || !id.endsWith(".gz") || !existsSync(join(LOGS, id))) return json(res, 404, { error: "not found" });
+        if (req.method === "GET") {
+          const w = loadWeather(id);
+          return w ? json(res, 200, w) : json(res, 404, { error: "no weather" });
+        }
+        if (req.method === "POST") {
+          if (!weatherOn()) return json(res, 503, { error: "天気の取得は止めてあります" });
+          const pts = JSON.parse(await readBody(req))?.points;
+          if (!Array.isArray(pts) || pts.length === 0 || pts.length > 20000) return json(res, 400, { error: "bad points" });
+          const points = pts.filter((p) => Array.isArray(p) && p.length >= 3).map(([t, lat, lon]) => ({ t: Number(t), lat: Number(lat), lon: Number(lon) }));
+          let out = null;
+          let err = null;
+          await weatherEnqueue(() => weatherForLog(id, points).then((r) => (out = r), (e) => (err = e)));
+          return err ? json(res, 502, { error: err.message }) : json(res, 200, out);
+        }
+        return json(res, 405, { error: "method not allowed" });
       }
       const logMatch = /^\/api\/logs\/([^/]+)$/.exec(url.pathname);
       if (logMatch && (req.method === "GET" || req.method === "PATCH")) {
@@ -700,6 +898,13 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`${new Date().toISOString()} 国道制覇マップ: http://localhost:${PORT}/ (LAN からは http://<このPCのIPアドレス>:${PORT}/)`);
     console.log(`走行記録の保存先: ${RECORD}`);
+    if (weatherOn()) {
+      // 止まっている間に届いた走行・前からある走行で、天気のないものを取る。取れなかったものは定期的に取り直す
+      const missing = [...new Set([...loadWeatherPending().map((p) => p.dir), ...weatherMissingDirs()])];
+      if (missing.length) console.log(`天気のない走行 ${missing.length} 本の天気を取ります`);
+      for (const dir of missing) weatherLater(dir);
+      setInterval(retryWeather, WEATHER_RETRY_MS).unref();
+    }
     if (serverJudge()) {
       console.log("走行ログはこのサーバーで判定します");
       // 止まっている間に残っていた、まだ判定していないログ

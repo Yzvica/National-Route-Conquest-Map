@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const recordDir = mkdtempSync(join(tmpdir(), "kokudo-judge-"));
+process.env.WEATHER = "off";
 process.env.RECORD_FILE = join(recordDir, "record.json");
 process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-logs-"));
 process.env.JUDGE_WORKER = join(import.meta.dirname, "__fixtures__", "fakeJudgeWorker.mjs");

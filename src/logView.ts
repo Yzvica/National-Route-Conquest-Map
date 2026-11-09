@@ -2,7 +2,7 @@
 // HTML の文字列を作るだけで、イベントは main.ts で扱う
 import { distance } from "./geo";
 import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
-import type { DriveEval, SavedLog } from "./store";
+import type { DriveEval, DriveWeather, SavedLog } from "./store";
 import { trackLength } from "./trips";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
@@ -105,6 +105,55 @@ const duration = (ms: number) => {
   return min >= 60 ? `${Math.floor(min / 60)}時間${pad(min % 60)}分` : `${min}分`;
 };
 
+/** 天気を取ってもらうために MiniPC に送る軌跡の点(時刻のある点を1分おきに)。[UNIX秒, 緯度, 経度] */
+export function weatherPoints(track: TrackPoint[]): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  let last = -Infinity;
+  for (const p of track) {
+    if (p.time === undefined || p.time - last < 60_000) continue;
+    out.push([Math.round(p.time / 1000), Math.round(p.lat * 1e5) / 1e5, Math.round(p.lon * 1e5) / 1e5]);
+    last = p.time;
+  }
+  const end = track.at(-1);
+  if (end?.time !== undefined && end.time !== last) out.push([Math.round(end.time / 1000), end.lat, end.lon]);
+  return out;
+}
+
+const temp = (v: number | null) => (v === null ? "—" : `${num(v, 1)}℃`);
+const tempRange = (a: number | null, b: number | null) =>
+  a === null || b === null ? "" : Math.round(a) === Math.round(b) ? `${Math.round(a)}℃` : `${Math.round(a)}〜${Math.round(b)}℃`;
+const DIRS = ["北", "北東", "東", "南東", "南", "南西", "西", "北西"];
+/** 風向(風が吹いてくる方角) */
+const windDir = (deg: number | null) => (deg === null ? "" : `${DIRS[Math.round(deg / 45) % 8]}の風 `);
+
+/** 一覧の行に出す天気(アイコンと気温) */
+export const weatherBadge = (w: SavedLog["weather"]) =>
+  w ? `<span class="wx-badge" title="${esc(w.label)}">${w.icon}${tempRange(w.tMin, w.tMax) ? ` ${tempRange(w.tMin, w.tMax)}` : ""}</span>` : "";
+
+/** ログの詳細に出す天気 */
+export function weatherView(w: DriveWeather | null | undefined): string {
+  if (w === undefined) return `<p class="muted">天気を調べています…</p>`;
+  if (w === null) return `<p class="muted">天気を取れませんでした(時刻のないログや、MiniPC がインターネットにつながっていないときなど)。</p>`;
+  const s = w.summary;
+  const facts = [
+    `${s.icon} ${esc(s.label)}`,
+    tempRange(s.tMin, s.tMax),
+    s.precipMax ? `雨 最大 ${num(s.precipMax, 1)} mm/時` : "",
+    s.windMax !== null ? `風 最大 ${num(s.windMax, 0)} m/s${s.gustMax ? `(瞬間 ${num(s.gustMax, 0)})` : ""}` : "",
+  ].filter(Boolean);
+  const sun = s.sunrise !== undefined && s.sunset !== undefined ? `<p class="muted">日の出 ${hm(s.sunrise * 1000)}・日の入り ${hm(s.sunset * 1000)}</p>` : "";
+  const rows = w.samples
+    .map(
+      (x) => `<tr><td>${hm(x.t * 1000)}</td><td title="${esc(x.label)}">${x.icon} ${esc(x.label)}</td><td>${temp(x.temp)}</td>
+        <td>${x.precip ? `${num(x.precip, 1)} mm` : "—"}</td><td>${x.wind === null ? "—" : `${windDir(x.windDir)}${num(x.wind, 0)} m/s`}</td></tr>`,
+    )
+    .join("");
+  return `<p class="wx-summary">${facts.join("・")}</p>${sun}
+    <details class="wx-detail"><summary>${w.samples.length} 地点の天気</summary>
+    <table class="wx-table"><thead><tr><th>時刻</th><th>天気</th><th>気温</th><th>雨</th><th>風</th></tr></thead><tbody>${rows}</tbody></table></details>
+    <p class="muted wx-note">${esc(w.source)} の${w.api === "archive" ? "過去データ(再解析)" : "気象モデルの値"}です(観測所の実測ではありません)。</p>`;
+}
+
 const W = 360;
 const H = 140;
 const PAD = { l: 36, r: 8, t: 8, b: 20 };
@@ -160,6 +209,8 @@ export interface LogDetail {
   /** 読めなかったときの理由 */
   error?: string;
   ev?: DriveEval | null;
+  /** 走ったときの天気。調べている間は undefined、取れなければ null */
+  weather?: DriveWeather | null;
   /** 通った路線。調べている間は undefined、道路データがなければ null */
   routes?: PassedRoute[] | null;
 }
@@ -199,6 +250,7 @@ export function logListPanel(logs: SavedLog[] | null, year: string, shared: bool
           <span class="muted">${l.date ?? "日付なし"}</span>
           <span class="log-name">${esc(l.name)}</span>
           <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span>
+          ${weatherBadge(l.weather)}
           ${l.score !== undefined ? `<span class="eval-badge ${grade(l.score)}">${Math.round(l.score)} 点</span>` : ""}</a></li>`,
       )
       .join("")}</ol>`;
@@ -273,6 +325,7 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
   return `${head}
     <dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
     ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
+    ${s.start !== undefined ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
     ${evalPart}
     <h3>通った道路</h3>${routes}`;
 }
