@@ -127,6 +127,16 @@ describe("トンネルの補間", () => {
     expect(existsSync(raw("trips", "20261109-110000", "tunnel_fill.json"))).toBe(true);
   });
 
+  it("補った結果はアプリが GET で取れる(生データは取れない)", async () => {
+    const get = (q) => fetch(`${root}/rawlog?${q}`);
+    const r = await get("session=20261109-100000&file=tunnel_fill.json");
+    expect(r.status).toBe(200);
+    expect((await r.json()).sections[0].points).toBe(2);
+    expect((await get("session=20261109-100000&file=location.csv")).status).toBe(403);
+    expect((await get("session=20261109-100000&file=location_filled.csv")).status).toBe(404);
+    expect((await get("session=..&file=tunnel_fill.json")).status).toBe(400);
+  });
+
   it("おかしな走行IDやない走行は断る", async () => {
     expect((await fetch(`${root}/rawlog/fill?session=..`, { method: "POST" })).status).toBe(400);
     expect((await fetch(`${root}/rawlog/fill?session=a&kind=x`)).status).toBe(400);
