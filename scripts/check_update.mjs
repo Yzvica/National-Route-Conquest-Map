@@ -1,7 +1,9 @@
 // 新しいコード(GitHub の main)や国道データ(リリース route-data)が出ているかを調べる。
-// run-server.ps1 が定期的に呼び、出ていれば update.ps1 で取り込んでサーバーを再起動する。
+// auto-update.ps1(タスク KokudoMapUpdate)が定期的に呼び、出ていれば update.ps1 で取り込んでサーバーを再起動する。
 //   node scripts/check_update.mjs
 // 終了コード: 0 = 最新 / 10 = 更新がある / 1 = 調べられなかった
+// fetch のあとに process.exit() で終えると、Windows の Node 24 で libuv のアサーション
+// (src\win\async.c)で落ち、終了コードが 0xC0000409 になる。exitCode を入れて自然に終わらせる。
 // データは download_release.mjs が覚えた public/data/.release-state.json と比べる。
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -49,12 +51,13 @@ async function main() {
 
   if (reasons.length) {
     console.log(`更新があります: ${reasons.join("、")}`);
-    process.exit(10);
+    process.exitCode = 10;
+    return;
   }
   console.log("最新です");
 }
 
 main().catch((e) => {
   console.error(`更新を調べられませんでした: ${e.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 });
