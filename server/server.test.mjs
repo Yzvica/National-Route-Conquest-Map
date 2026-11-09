@@ -303,3 +303,23 @@ describe("運転評価", () => {
     expect(list.find((l) => l.id === id).score).toBeUndefined();
   });
 });
+
+describe("GET /api/trips", () => {
+  it("trips フォルダの電車などの移動を線にして返す", async () => {
+    const dir = join(process.env.RAW_LOG_DIR, "trips", "20261109-090000");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ mode: "train", start: "2026-11-09T00:00:00.000Z" }));
+    writeFileSync(join(dir, "location.csv"), "unix_s,lat,lon,h_acc_m\n0,35,139,10\n60,35,139.01,10\n");
+    const app = createApp().listen(0);
+    await new Promise((ok) => app.once("listening", ok));
+    try {
+      const r = await fetch(`http://localhost:${app.address().port}/api/trips`);
+      expect(r.status).toBe(200);
+      const { trips } = await r.json();
+      expect(trips).toHaveLength(1);
+      expect(trips[0]).toMatchObject({ id: "20261109-090000", mode: "train", lines: [[[139, 35], [139.01, 35]]] });
+    } finally {
+      app.close();
+    }
+  });
+});

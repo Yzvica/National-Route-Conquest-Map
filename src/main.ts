@@ -31,6 +31,7 @@ import { judgeLog, logDate, matchAll, parseTrackText, type JudgeData } from "./j
 import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { trackLength } from "./trips";
+import { addTravelLayer } from "./travel";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
@@ -675,6 +676,8 @@ function showDataset(kind: DatasetKind) {
 let expresswayReady: Promise<void> | null = null;
 
 map.on("load", async () => {
+  // 電車・飛行機などの移動の線(制覇の判定には使わない)。道路のデータとは別に読む
+  addTravelLayer(map);
   try {
     const store = await storePromise;
     // 高速道路のデータ(約27MB)は国道を表示してから読む。最初に地図が出るまでを短くするため
