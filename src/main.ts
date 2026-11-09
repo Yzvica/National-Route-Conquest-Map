@@ -33,10 +33,10 @@ import { judgeLog, logDate, matchAll, parseTrackText, type JudgeData } from "./j
 import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
 import { isSplitIndex, openSplit } from "./splitData";
-import { trackLength } from "./trips";
+import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
 import { addTravelLayer, loadTravelTrips, showOnlyTrips, tripBounds, tripDay, type TravelTrip } from "./travel";
-import { inPeriod, loadPeriod, makePeriod, periodItems, savePeriod, type Period } from "./period";
+import { addJourney, deleteJourney, fetchJourneys, inPeriod, journeyOf, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period } from "./period";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
@@ -194,6 +194,8 @@ let logPeriod: Period =
     const pad = (n: number) => String(n).padStart(2, "0");
     return { from: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, to: today() };
   })();
+/** 名前を付けて保存した期間(旅行) */
+let journeys: Journey[] = [];
 /** 期間の一覧に出す旅の記録(電車・飛行機など) */
 let periodTrips: TravelTrip[] = [];
 /** 期間の地図に出すため読んだ車のログ(ログ ID → 間引いた線と開始時刻) */
@@ -226,8 +228,54 @@ const eventLabel = (e: DriveEvent) =>
 async function refreshLogs() {
   const store = await storePromise;
   savedLogs = store.shared ? await store.listLogs().catch(() => []) : [];
+  if (store.shared) journeys = await fetchJourneys().catch(() => journeys);
+  renderLogs();
+  void fillLogStarts();
+}
+
+/** ログの日付・距離・走り始めた時刻 */
+function logTrip(id: string, name: string, track: TrackPoint[]): Trip {
+  const start = trackStart(track);
+  return {
+    date: logDate(track, name, Number(id.split("-")[0]) || Date.now()),
+    m: Math.round(trackLength(track)),
+    ...(start !== undefined ? { start } : {}),
+  };
+}
+
+/** 走り始めた時刻を調べていないログ(前から保存してあるもの)を読んで時刻を付ける。一覧を時刻順に並べるため */
+let fillingStarts = false;
+async function fillLogStarts() {
+  if (fillingStarts || !savedLogs) return;
+  // 一度読んで時刻がなかったログは、このあと読み直さない
+  const todo = savedLogs.filter((l) => l.start === undefined && !noStart.has(l.id));
+  if (!todo.length) return;
+  fillingStarts = true;
+  const store = await storePromise;
+  const next = async (): Promise<void> => {
+    const log = todo.shift();
+    if (!log) return;
+    try {
+      const track = parseTrackText(await store.loadLog(log.id), log.name);
+      const trip = logTrip(log.id, log.name, track);
+      if (trip.start === undefined) noStart.add(log.id);
+      else {
+        Object.assign(log, trip);
+        await store.setLogTrip(log.id, trip).catch(() => undefined);
+      }
+    } catch {
+      noStart.add(log.id);
+    }
+    return next();
+  };
+  try {
+    await Promise.all([next(), next(), next(), next()]);
+  } finally {
+    fillingStarts = false;
+  }
   renderLogs();
 }
+const noStart = new Set<string>();
 /** 都道府県の形(地図の色分け用)。データがなければ undefined */
 let prefShapes: PrefShapes | undefined;
 /** 地図を都道府県で色分けしているか */
@@ -795,7 +843,7 @@ async function importFiles(
       if (opts.save) await store.saveLog(file.name, await file.text(), trip).catch(() => undefined);
       // 保存してあるログには、ログ一覧に出す日付と距離をここで付ける(前に時刻を読み違えて 1970年になっていたものも直す)
       const saved = opts.saved?.[i];
-      if (saved && (saved.date !== trip.date || saved.m !== trip.m)) await store.setLogTrip(saved.id, trip).catch(() => undefined);
+      if (saved && (saved.date !== trip.date || saved.m !== trip.m || saved.start !== trip.start)) await store.setLogTrip(saved.id, trip).catch(() => undefined);
       const dates = new Map([...result.keys()].map((id) => [id, [day, day] as [string, string]]));
       const logs = opts.logEntry ? [{ name: file.name, importedAt: new Date().toISOString(), points: track.length }] : [];
       const trips = new Map([[key, trip]]);
@@ -1156,7 +1204,7 @@ function showLogs() {
 function renderLogs() {
   if (!logMode) return;
   keepScroll(() => {
-    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id, logYear === "range" ? periodView() : undefined);
+    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id, logYear === "range" ? periodView() : undefined, journeys);
     renderLogDetail();
   });
 }
@@ -1171,6 +1219,7 @@ function currentPeriodItems() {
 function periodView() {
   const items = currentPeriodItems();
   const known = new Set([...periodTracks].filter(([, t]) => t.start !== undefined).map(([id]) => id));
+  for (const l of savedLogs ?? []) if (l.start !== undefined) known.add(l.id);
   return { period: logPeriod, items, known, note: periodNote };
 }
 
@@ -1356,8 +1405,8 @@ async function openLog(id: string) {
     if (logDetail?.log.id !== id) return;
     showTrack(map, track, detailPadding());
     showDriveEvents(map, []);
-    const trip = { date: logDate(track, log.name, Number(id.split("-")[0]) || Date.now()), m: Math.round(trackLength(track)) };
-    if (log.date !== trip.date || log.m !== trip.m) {
+    const trip = logTrip(id, log.name, track);
+    if (log.date !== trip.date || log.m !== trip.m || log.start !== trip.start) {
       Object.assign(log, trip);
       await store.setLogTrip(id, trip).catch(() => undefined);
     }
@@ -1397,6 +1446,23 @@ function onLogClick(e: MouseEvent) {
     e.preventDefault();
     const box = tripBounds(periodTrips.filter((t) => t.id === tripOpen.dataset.tripOpen));
     if (box) fitBox(map, box, detailPadding());
+    return true;
+  }
+  const del = el.closest<HTMLElement>("#journey-delete");
+  if (del) {
+    const j = journeys.find((x) => x.id === del.dataset.journey);
+    if (j && confirm(`旅行「${j.name}」を消しますか?(ログは消えません)`)) {
+      void deleteJourney(j.id).then(
+        (list) => ((journeys = list), renderLogs()),
+        (err: Error) => toast([err.message]),
+      );
+    }
+    return true;
+  }
+  if (el.closest("#journey-rename")) {
+    const j = journeyOf(journeys, logPeriod);
+    const name = j && prompt("旅行の名前", j.name)?.trim();
+    if (j && name) void saveJourney(name);
     return true;
   }
   if (el.closest("#period-fit")) {
@@ -1446,6 +1512,22 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   if (to) void openLog(to);
 });
+/** いまの期間を旅行として保存する(同じ期間なら名前を変える) */
+async function saveJourney(name: string) {
+  try {
+    journeys = await addJourney(name, logPeriod);
+    renderLogs();
+    toast([`🧳 旅行「${name}」を保存しました`]);
+  } catch (err) {
+    toast([(err as Error).message]);
+  }
+}
+$("log-view").addEventListener("submit", (e) => {
+  if ((e.target as HTMLElement).id !== "journey-save") return;
+  e.preventDefault();
+  const name = $<HTMLInputElement>("journey-name").value.trim();
+  if (name) void saveJourney(name);
+});
 $("log-view").addEventListener("change", (e) => {
   const el = e.target as HTMLInputElement | HTMLSelectElement;
   if (el.id === "log-from" || el.id === "log-to") {
@@ -1458,6 +1540,16 @@ $("log-view").addEventListener("change", (e) => {
   }
   if (el.id !== "log-year") return;
   const wasRange = logYear === "range";
+  // 保存した旅行を選んだら、その期間を出す
+  const j = el.value.startsWith("journey:") ? journeys.find((x) => `journey:${x.id}` === el.value) : undefined;
+  if (j) {
+    logPeriod = { from: j.from, to: j.to };
+    savePeriod(logPeriod);
+    logYear = "range";
+    void showPeriod(true);
+    renderLogs();
+    return;
+  }
   logYear = el.value;
   if (logYear === "range") void showPeriod(true);
   else if (wasRange) clearPeriod();

@@ -5,7 +5,7 @@ import { parseGpx } from "./parsers/gpx";
 import { fileNameTime, parseTrackCsv } from "./parsers/csv";
 import { prefsOfTrack } from "./prefroads";
 import { prepareForTrack } from "./splitData";
-import { trackLength, tripKey, type Trip } from "./trips";
+import { trackLength, trackStart, tripKey, type Trip } from "./trips";
 import type { Coverage, PrefRoadIndex, RouteData, TrackPoint } from "./types";
 
 /** 判定に使う道路データ。都道府県道は都道府県ごとのファイルを、要るときに読む */
@@ -65,6 +65,7 @@ export interface JudgedLog {
 export async function judgeLog(text: string, name: string, fallback: number, data: JudgeData): Promise<JudgedLog> {
   const track = parseTrackText(text, name);
   const day = logDate(track, name, fallback);
-  const trip = { date: day, m: Math.round(trackLength(track)) };
+  const start = trackStart(track);
+  const trip: Trip = { date: day, m: Math.round(trackLength(track)), ...(start !== undefined ? { start } : {}) };
   return { track, day, trip, tripKey: tripKey(track, day), coverage: await matchAll(track, data) };
 }

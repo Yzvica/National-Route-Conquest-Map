@@ -204,6 +204,9 @@ function progressChart(points: [string, number][], start: number, total: number)
 export function sortLogs(logs: SavedLog[]): SavedLog[] {
   return [...logs].sort((a, b) => {
     if (a.date !== b.date) return a.date === undefined ? 1 : b.date === undefined ? -1 : b.date.localeCompare(a.date);
+    // 同じ日は走り始めた時刻の新しい順。時刻が分からないものは保存した順(id の先頭は保存した時刻)
+    if (a.start !== undefined && b.start !== undefined && a.start !== b.start) return b.start - a.start;
+    if ((a.start === undefined) !== (b.start === undefined)) return a.start === undefined ? 1 : -1;
     return b.id.localeCompare(a.id);
   });
 }

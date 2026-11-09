@@ -324,3 +324,24 @@ describe("GET /api/trips", () => {
     }
   });
 });
+
+describe("旅行(/api/journeys)", () => {
+  it("足す・同じ期間は名前を付け直す・逆の日付は入れ替える・消す", async () => {
+    const app = createApp().listen(0);
+    await new Promise((ok) => app.once("listening", ok));
+    const base = `http://localhost:${app.address().port}/api/journeys`;
+    try {
+      const post = (b) => fetch(base, { method: "POST", body: JSON.stringify(b) });
+      expect((await post({ name: "", from: "2026-11-07", to: "2026-11-10" })).status).toBe(400);
+      let list = await (await post({ name: "九州", from: "2026-11-10", to: "2026-11-07" })).json();
+      expect(list).toMatchObject([{ name: "九州", from: "2026-11-07", to: "2026-11-10" }]);
+      list = await (await post({ name: "北海道", from: "2026-12-01", to: "2026-12-03" })).json();
+      list = await (await post({ name: "九州旅行", from: "2026-11-07", to: "2026-11-10" })).json();
+      expect(list.map((j) => j.name)).toEqual(["北海道", "九州旅行"]);
+      list = await (await fetch(`${base}/${list[0].id}`, { method: "DELETE" })).json();
+      expect((await (await fetch(base)).json()).map((j) => j.name)).toEqual(["九州旅行"]);
+    } finally {
+      app.close();
+    }
+  });
+});
