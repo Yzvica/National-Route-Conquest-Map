@@ -30,6 +30,7 @@ import {
 import { judgeLog, logDate, matchAll, parseTrackText, type JudgeData } from "./judge";
 import { REGIONS, prefName } from "./prefs";
 import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTrack, splitPrefRef } from "./prefroads";
+import { isSplitIndex, openSplit } from "./splitData";
 import { trackLength } from "./trips";
 import { addTravelLayer } from "./travel";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
@@ -494,7 +495,13 @@ function select(ref: string | null, fit: boolean | string[]) {
 }
 
 async function loadData(kind: "kokudo" | "expressway") {
-  const res = await fetch(`${import.meta.env.BASE_URL}data/${DATA_FILES[kind]}`);
+  // 分けたデータ(npm run build で作る)があれば、一覧だけ読む。区間の形は地図を拡大したときやログの判定のときに読む
+  const dir = `${BASE}data/split/${kind}/`;
+  const index = await fetch(`${dir}index.json`)
+    .then((r) => (r.ok && r.headers.get("content-type")?.includes("json") ? r.json() : null))
+    .catch(() => null);
+  if (isSplitIndex(index)) return openSplit(index, dir);
+  const res = await fetch(`${BASE}data/${DATA_FILES[kind]}`);
   if (!res.ok) throw new Error(`${DATASET_LABELS[kind]}のデータ(data/${DATA_FILES[kind]})がありません。README の手順で作成してください。`);
   return (await res.json()) as RouteData;
 }
