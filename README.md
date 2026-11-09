@@ -155,6 +155,16 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 
 地図の背景には[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)、道路データには © OpenStreetMap contributors を使っています。
 
+## 走ったときの天気
+
+- iPhone の走行ロガーの生データ(`meta.json` は最後に届く)を受け取ると、MiniPC が走った時刻・場所の天気を [Open-Meteo](https://open-meteo.com/)(無料・キー不要)から取り、走行フォルダに `weather.json` を書きます。飛行機の記録は取りません
+- 最初と最後、その間は30分か30kmごとの地点(最大48)で、天気・気温・体感温度・湿度・1時間の降水量・雲量・海面気圧・風(向き・速さ・瞬間)・昼夜を取ります。まとめは「雨か雪に一度でも当たればそれ、降っていなければいちばん多かった天気」
+- 値は気象モデルの解析値で、観測所の実測ではありません。約3か月より前の走行は過去データ(ERA5、1940年〜)で取ります
+- インターネットにつながらず取れなかった走行は `data\weather_pending.json` に残し、30分ごとに取り直します(14日であきらめる)。サーバーを起動したときも、天気のない走行フォルダ(`old`・`trips` も)を探して取ります
+- 地図の「ログ」タブで、一覧にアイコンと気温、詳細に天気が出ます。iPhone 以外のログ(GBowl・GoPro)は、開いたときにブラウザが軌跡の点を送り、`<RAW_LOG_DIR>\weather\<ログ名>.json` に残します
+- API: `GET /api/rawlog?session=&file=weather.json`(アプリ用)、`GET|POST /api/rawlog/weather?session=[&kind=trip]`(POST は取り直し)、`GET|POST /api/logs/<id>/weather`
+- 環境変数 `WEATHER=off` で取らないようにできます
+
 ## 背景の地図と現在位置
 
 - 地図右下の欄で背景を「淡色地図 / 白地図 / 標準地図 / 写真」(地理院タイル)から選べます。選んだものはブラウザに覚えます。白地図は ZL5〜14 のタイルなので、それより拡大すると粗くなります。

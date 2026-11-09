@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+process.env.WEATHER = "off";
 process.env.RECORD_FILE = join(mkdtempSync(join(tmpdir(), "kokudo-")), "record.json");
 process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-logs-"));
 process.env.RAW_LOG_DIR = mkdtempSync(join(tmpdir(), "kokudo-raw-"));
