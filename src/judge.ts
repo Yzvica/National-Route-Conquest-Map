@@ -4,6 +4,7 @@ import { DEFAULT_OPTIONS, matchTrack } from "./matcher";
 import { parseGpx } from "./parsers/gpx";
 import { fileNameTime, parseTrackCsv } from "./parsers/csv";
 import { prefsOfTrack } from "./prefroads";
+import { prepareForTrack } from "./splitData";
 import { trackLength, tripKey, type Trip } from "./trips";
 import type { Coverage, PrefRoadIndex, RouteData, TrackPoint } from "./types";
 
@@ -33,6 +34,8 @@ export function logDate(track: TrackPoint[], name: string, fallback: number): st
  */
 export async function matchAll(track: TrackPoint[], data: JudgeData): Promise<Coverage> {
   const out: Coverage = new Map();
+  // 画面で分けて読んでいるデータなら、ログが通った場所の区間の形を先に読む
+  await Promise.all([prepareForTrack(data.kokudo, track), prepareForTrack(data.expressway, track)]);
   const generals: RouteData[] = [];
   if (data.kokudo) generals.push(data.kokudo);
   if (data.prefIndex) {

@@ -84,6 +84,12 @@ OpenStreetMap の `network=JP:national` の路線リレーションから作り�
 Actions では [Geofabrik](https://download.geofabrik.de/asia/japan.html) の日本全体のファイルから抽出します(`scripts/extract_pbf.py`)。
 Overpass API から直接取ることもできますが、混雑で断られることがあります。
 
+画面では、国道・高速道路のデータを分けて読みます(`scripts/split_data.mjs`。`npm run build` の最初に `public/data/split/` を作ります)。
+区間の番号・長さ・両端の点などの一覧(国道は約18MB。gzip で約4MB)を先に読んで制覇率や引いた縮尺の線を出し、
+区間の途中の点は 0.5 度ごとのマスに分けて、拡大した場所やログが通った場所の分だけあとから読みます。
+`split/` がないとき(`npm run dev` で作り忘れたときなど)は、前と同じく `routes.json` を丸ごと読みます。
+MiniPC のサーバーでの判定は、今までどおり `routes.json` をそのまま使います。
+
 種別の判定方法:
 
 - 海上区間: `route=ferry`

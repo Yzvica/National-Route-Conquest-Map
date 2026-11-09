@@ -1,5 +1,6 @@
 import maplibregl, { type GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { splitLoaderOf } from "./splitData";
 import type { PassDates } from "./store";
 import type { Coverage, LonLat, RouteData, Segment, TrackPoint } from "./types";
 
@@ -210,6 +211,20 @@ export function addRoutes(
     onSelect(refs[0]);
   });
 
+  // 分けて読んでいるデータでは、区間の形をあとから読むので、選んでいる路線の線もそのときに描き直す
+  const loader = splitLoaderOf(data);
+  if (loader) {
+    let timer = 0;
+    const off = loader.onLoad(() => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (lastSelected?.data === data && lastSelected.ref) showSelected(map, data, lastSelected.ref, lastSelected.coverage);
+        if (lastFocus?.data === data && lastFocus.ids.length) showFocus(map, data, lastFocus.ids);
+      }, 300);
+    });
+    cleanups.push(off, () => clearTimeout(timer));
+  }
+
   // 区間ごとのソース(約36万本)は重いので、拡大したときに初めて作る
   const check = () => {
     if (map.getZoom() >= DETAIL_ZOOM - 1) {
@@ -392,30 +407,90 @@ export function buildOverview(data: RouteData, coverage: Coverage) {
 
 let painted: Coverage | null = null;
 
+const detailFeature = (s: Segment) => ({
+  type: "Feature" as const,
+  properties: {
+    id: s.id,
+    routes: s.routes.join(","),
+    dotted: s.cats.includes("dotted"),
+    ferry: s.cats.includes("ferry"),
+    old: s.cats.includes("old"),
+  },
+  geometry: { type: "LineString" as const, coordinates: s.coords },
+});
+
+/** 地図に出している範囲より、これ(度)だけ広くマスを読んでおく(少し動かしただけで線が欠けないように) */
+const DETAIL_MARGIN = 0.2;
+/** 区間を地図に足すときの、1回の数 */
+const DETAIL_CHUNK = 5000;
+
 function addDetail(
   map: maplibregl.Map,
   data: RouteData,
   datesOf: (id: string) => PassDates | undefined,
   onSelect: (ref: string) => void,
 ) {
+  const loader = splitLoaderOf(data);
   map.addSource("routes", {
     type: "geojson",
     promoteId: "id",
-    data: {
-      type: "FeatureCollection",
-      features: data.segments.map((s) => ({
-        type: "Feature",
-        properties: {
-          id: s.id,
-          routes: s.routes.join(","),
-          dotted: s.cats.includes("dotted"),
-          ferry: s.cats.includes("ferry"),
-          old: s.cats.includes("old"),
-        },
-        geometry: { type: "LineString", coordinates: s.coords },
-      })),
-    },
+    data: { type: "FeatureCollection", features: loader ? [] : data.segments.map(detailFeature) },
   });
+  if (loader) {
+    // 分けて読んでいるデータでは、見ている場所のマスを読み、読んだ区間から足していく
+    const added = new Uint8Array(data.segments.length);
+    let pending: number[] = [];
+    let timer = 0;
+    let flushing = false;
+    let removed = false;
+    // 一度にたくさん足すと MapLibre の中で「Maximum call stack size exceeded」になるので、少しずつ足し、
+    // 前の分を描き終えてから次を足す(続けて足すと MapLibre が1つにまとめてしまう)
+    const flush = async () => {
+      timer = 0;
+      if (flushing) return;
+      flushing = true;
+      try {
+        while (pending.length && !removed) {
+          const src = map.getSource("routes") as GeoJSONSource | undefined;
+          if (!src) break;
+          const add = [];
+          while (pending.length && add.length < DETAIL_CHUNK) {
+            const i = pending.pop()!;
+            if (added[i]) continue;
+            added[i] = 1;
+            add.push(detailFeature(data.segments[i]));
+          }
+          if (add.length) await src.updateData({ add }, true);
+        }
+      } finally {
+        flushing = false;
+      }
+    };
+    const schedule = () => {
+      if (pending.length && !timer && !flushing) timer = window.setTimeout(() => void flush(), 50);
+    };
+    const off = loader.onLoad((segs) => {
+      for (const i of segs) if (!added[i]) pending.push(i);
+      schedule();
+    });
+    const want = () => {
+      if (map.getZoom() < DETAIL_ZOOM - 0.5) return;
+      const b = map.getBounds();
+      const keys = loader.cellsIn(
+        b.getWest() - DETAIL_MARGIN,
+        b.getSouth() - DETAIL_MARGIN,
+        b.getEast() + DETAIL_MARGIN,
+        b.getNorth() + DETAIL_MARGIN,
+      );
+      loader.load(keys).catch(() => undefined); // 読めなかったマスは、次に動かしたときに読み直す
+    };
+    map.on("moveend", want);
+    cleanups.push(off, () => map.off("moveend", want), () => clearTimeout(timer), () => (removed = true));
+    // ログの判定などで先に読んであったマスの区間も描く
+    for (let i = 0; i < data.segments.length; i++) if (loader.hasShape(i)) pending.push(i);
+    void flush().then(schedule);
+    want();
+  }
   const ratio = ["coalesce", ["feature-state", "r"], 0];
   const color = ["case", [">=", ratio, 1], "#d93025", [">", ratio, 0], "#f29900", "#9aa0a6"];
   addLineLayers(map, "routes", "routes", color, { minzoom: DETAIL_ZOOM }, "overview-road");
@@ -517,7 +592,12 @@ export function fitSegments(map: maplibregl.Map, segs: Segment[], padding: mapli
  * 全体の source は引いた縮尺で短い区間(約200m)を間引くので、国道4号のような長い路線を
  * 全体表示すると消えてしまう。こちらは1路線分だけなので tolerance 0 で間引かずに描く。
  */
+/** 最後に描いた選んだ路線と、目立たせた区間(区間の形を読んだときに描き直すため) */
+let lastSelected: { data: RouteData; ref: string | null; coverage: Coverage } | null = null;
+let lastFocus: { data: RouteData; ids: string[] } | null = null;
+
 export function showSelected(map: maplibregl.Map, data: RouteData, ref: string | null, coverage: Coverage) {
+  lastSelected = { data, ref, coverage };
   const features = !ref
     ? []
     : data.segments
@@ -555,6 +635,7 @@ export function showSelected(map: maplibregl.Map, data: RouteData, ref: string |
 
 /** 内訳や重複区間から選んだ区間を、黄色い帯で目立たせる。ids が空なら消す */
 export function showFocus(map: maplibregl.Map, data: RouteData, ids: string[]) {
+  lastFocus = { data, ids };
   const want = new Set(ids);
   const fc = {
     type: "FeatureCollection" as const,
