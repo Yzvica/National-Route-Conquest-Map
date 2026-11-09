@@ -131,6 +131,8 @@ export interface SavedLog {
   /** ログの日付と走行距離(m)。付ける前に保存したログにはない */
   date?: string;
   m?: number;
+  /** 走り始めた時刻(UNIX ミリ秒)。時刻のないログや、まだ調べていないログにはない */
+  start?: number;
   /** 運転評価の総合点(評価があるログだけ) */
   score?: number;
   /** 走ったときの天気のまとめ(MiniPC が取ったものだけ) */
@@ -256,6 +258,7 @@ class ServerStore implements RecordStore {
     if (trip) {
       q.set("date", trip.date);
       q.set("m", String(trip.m));
+      if (trip.start !== undefined) q.set("start", String(trip.start));
     }
     const res = await fetch(`${LOGS_API}?${q}`, { method: "POST", body: text });
     if (!res.ok) throw new Error(`ログを保存できませんでした(${res.status})`);

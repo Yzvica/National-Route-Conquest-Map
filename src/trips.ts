@@ -7,7 +7,12 @@ import type { TrackPoint } from "./types";
 export interface Trip {
   date: string;
   m: number;
+  /** 走り始めた時刻(UNIX ミリ秒)。ログに時刻がなければない。ログの一覧を時刻順に並べるのに使う */
+  start?: number;
 }
+
+/** ログの最初の時刻(UNIX ミリ秒) */
+export const trackStart = (track: TrackPoint[]) => track.find((p) => p.time !== undefined)?.time;
 
 /**
  * ログの走行距離(m)。点と点を直線でつないで足す。

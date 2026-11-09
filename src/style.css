@@ -278,6 +278,10 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .period-pick input { flex: 1; min-width: 0; padding: 4px; font: inherit; }
 .period-list .period-day { padding: 8px 4px 2px; font-size: 12px; font-weight: 700; color: var(--muted, #666); border-bottom: 1px solid var(--line); }
 #period-fit { margin: 4px 0; }
+.journey-row { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; font-size: 14px; }
+.journey-row input { flex: 1; min-width: 0; padding: 6px; font-size: 16px; }
+.journey-row .journey-name { flex: 1; font-weight: 700; }
+.journey-row button { white-space: nowrap; }
 .log-list li.selected > a { background: var(--bar); box-shadow: inset 4px 0 0 #8e24aa; font-weight: 700; }
 
 /* ---- スマホ(iPhone)の狭い画面 ---- */

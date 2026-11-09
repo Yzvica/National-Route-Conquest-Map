@@ -39,6 +39,40 @@ export function makePeriod(a: string, b: string): Period | null {
   return x <= y ? { from: x, to: y } : { from: y, to: x };
 }
 
+/** 名前を付けて保存した期間(旅行)。MiniPC の data/journeys.json にある */
+export interface Journey extends Period {
+  id: string;
+  name: string;
+}
+
+const API = `${import.meta.env.BASE_URL}api/journeys`;
+
+export async function fetchJourneys(): Promise<Journey[]> {
+  const r = await fetch(API);
+  return r.ok && r.headers.get("content-type")?.includes("json") ? r.json() : [];
+}
+
+export async function addJourney(name: string, p: Period): Promise<Journey[]> {
+  const r = await fetch(API, { method: "POST", body: JSON.stringify({ name, ...p }) });
+  if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `保存できませんでした(${r.status})`);
+  return r.json();
+}
+
+export async function deleteJourney(id: string): Promise<Journey[]> {
+  const r = await fetch(`${API}/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(`消せませんでした(${r.status})`);
+  return r.json();
+}
+
+/** いまの期間と同じ旅行 */
+export const journeyOf = (list: Journey[], p: Period) => list.find((j) => j.from === p.from && j.to === p.to);
+
+/** 「11/7〜11/10」の形(年が今年でなければ年も) */
+export function shortPeriod(p: Period, thisYear = String(new Date().getFullYear())): string {
+  const f = (d: string) => (d.slice(0, 4) === thisYear ? `${Number(d.slice(5, 7))}/${Number(d.slice(8))}` : `${d.slice(0, 4)}/${Number(d.slice(5, 7))}/${Number(d.slice(8))}`);
+  return p.from === p.to ? f(p.from) : `${f(p.from)}〜${f(p.to)}`;
+}
+
 export const inPeriod = (day: string | undefined, p: Period) => !!day && day >= p.from && day <= p.to;
 
 /** 一覧の1行。start: 並べる順(UNIX ミリ秒。分からなければ日付の0時) */
@@ -54,7 +88,7 @@ export function periodItems(logs: SavedLog[], trips: TravelTrip[], p: Period, st
   const items: PeriodItem[] = [];
   for (const log of logs) {
     if (!inPeriod(log.date, p)) continue;
-    items.push({ kind: "log", log, day: log.date!, start: starts.get(log.id) ?? dayStart(log.date!) });
+    items.push({ kind: "log", log, day: log.date!, start: log.start ?? starts.get(log.id) ?? dayStart(log.date!) });
   }
   for (const trip of trips) {
     const day = tripDay(trip);

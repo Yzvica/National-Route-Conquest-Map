@@ -60,6 +60,41 @@ function saveRecord(rec) {
   renameSync(`${RECORD}.tmp`, RECORD);
 }
 
+// --- 旅行(名前を付けた期間)。ログタブの「期間を指定」で保存し、どの端末からも選べるようにする ---
+const JOURNEYS = () => join(dirname(RECORD), "journeys.json");
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function loadJourneys() {
+  try {
+    const list = JSON.parse(readFileSync(JOURNEYS(), "utf8"));
+    return Array.isArray(list) ? list.filter((j) => j && typeof j.id === "string" && typeof j.name === "string" && DAY_RE.test(j.from) && DAY_RE.test(j.to)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveJourneys(list) {
+  mkdirSync(dirname(JOURNEYS()), { recursive: true });
+  // 新しい旅行(始まりが遅い方)が上
+  list.sort((a, b) => b.from.localeCompare(a.from) || b.to.localeCompare(a.to));
+  writeFileSync(`${JOURNEYS()}.tmp`, JSON.stringify(list, null, 1));
+  renameSync(`${JOURNEYS()}.tmp`, JOURNEYS());
+  return list;
+}
+
+/** 旅行を足す。同じ期間の旅行があれば名前を付け直す。おかしな値なら null */
+export function addJourney(body) {
+  const name = typeof body?.name === "string" ? body.name.trim().slice(0, 60) : "";
+  let { from, to } = body ?? {};
+  if (!name || !DAY_RE.test(from) || !DAY_RE.test(to)) return null;
+  if (from > to) [from, to] = [to, from];
+  const list = loadJourneys();
+  const same = list.find((j) => j.from === from && j.to === to);
+  if (same) same.name = name;
+  else list.push({ id: `j${Date.now().toString(36)}`, name, from, to });
+  return saveJourneys(list);
+}
+
 /** 置き換える前の記録を data/backup/record-<時刻>.json に残す(戻せるように) */
 function backupRecord() {
   if (!existsSync(RECORD)) return;
@@ -121,9 +156,12 @@ function loadMeta() {
 
 const isMeta = (m) => m && typeof m.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(m.date) && typeof m.m === "number" && m.m >= 0;
 
+/** 走り始めた時刻(UNIX ミリ秒)として正しい値か */
+const isStart = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+
 function setMeta(id, m) {
   const all = loadMeta();
-  all[id] = { date: m.date, m: Math.round(m.m) };
+  all[id] = { date: m.date, m: Math.round(m.m), ...(isStart(m.start) ? { start: m.start } : {}) };
   writeFileSync(`${META()}.tmp`, JSON.stringify(all));
   renameSync(`${META()}.tmp`, META());
 }
@@ -198,7 +236,7 @@ function listLogs() {
       id,
       name: logName(id),
       size: statSync(join(LOGS, id)).size,
-      ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m } : {}),
+      ...(isMeta(meta[id]) ? { date: meta[id].date, m: meta[id].m, ...(isStart(meta[id].start) ? { start: meta[id].start } : {}) } : {}),
       ...(typeof score === "number" ? { score } : {}),
       ...(wx ? { weather: { icon: wx.icon, label: wx.label, tMin: wx.tMin, tMax: wx.tMax } } : {}),
     };
@@ -518,7 +556,7 @@ const toAdded = (r, logEntry) => ({
 
 function updateMeta(id, trip) {
   const cur = loadMeta()[id];
-  if (!isMeta(cur) || cur.date !== trip.date || cur.m !== trip.m) setMeta(id, trip);
+  if (!isMeta(cur) || cur.date !== trip.date || cur.m !== trip.m || (isStart(trip.start) && cur.start !== trip.start)) setMeta(id, trip);
 }
 
 /** 画面に出す判定の様子。rev は判定で記録が変わるたびに増やす(ブラウザが読み直すため) */
@@ -709,7 +747,7 @@ export function createApp() {
         if (req.method === "GET") return json(res, 200, listLogs());
         if (req.method === "POST") {
           const body = Buffer.concat(await readChunks(req));
-          const meta = { date: url.searchParams.get("date"), m: Number(url.searchParams.get("m") ?? NaN) };
+          const meta = { date: url.searchParams.get("date"), m: Number(url.searchParams.get("m") ?? NaN), start: Number(url.searchParams.get("start") ?? NaN) };
           return json(res, 200, { id: saveLog(url.searchParams.get("name") ?? "log", body, meta).id });
         }
         return json(res, 405, { error: "method not allowed" });
@@ -775,6 +813,19 @@ export function createApp() {
         return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
       }
       // 地図の「旅の記録」: trips フォルダの電車・飛行機などの移動を、間引いた線にして返す(制覇の判定には使わない)
+      if (url.pathname === "/api/journeys") {
+        if (req.method === "GET") return json(res, 200, loadJourneys());
+        if (req.method === "POST") {
+          const list = addJourney(JSON.parse(await readBody(req)));
+          return list ? json(res, 200, list) : json(res, 400, { error: "名前と期間(YYYY-MM-DD)を入れてください" });
+        }
+        return json(res, 405, { error: "method not allowed" });
+      }
+      const journeyMatch = /^\/api\/journeys\/([^/]+)$/.exec(url.pathname);
+      if (journeyMatch && req.method === "DELETE") {
+        const id = decodeURIComponent(journeyMatch[1]);
+        return json(res, 200, saveJourneys(loadJourneys().filter((j) => j.id !== id)));
+      }
       if (url.pathname === "/api/trips") {
         if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
         const body = Buffer.from(JSON.stringify({ trips: listTrips(RAW_LOG_DIR()) }));
@@ -875,7 +926,7 @@ export function createApp() {
           const meta = JSON.parse(await readBody(req));
           if (!isMeta(meta)) return json(res, 400, { error: "bad meta" });
           setMeta(id, meta);
-          return json(res, 200, { id, date: meta.date, m: Math.round(meta.m) });
+          return json(res, 200, { id, date: meta.date, m: Math.round(meta.m), ...(isStart(meta.start) ? { start: meta.start } : {}) });
         }
         // 保存している gzip をそのまま送り、ブラウザに展開してもらう
         res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Encoding": "gzip" });

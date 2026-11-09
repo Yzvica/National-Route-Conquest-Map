@@ -32,7 +32,7 @@ export interface JudgeResponse {
   result?: {
     name: string;
     points: number;
-    trip: { date: string; m: number };
+    trip: { date: string; m: number; start?: number };
     tripKey: string;
     coverage: { [id: string]: number };
     dates: { [id: string]: [string, string] };

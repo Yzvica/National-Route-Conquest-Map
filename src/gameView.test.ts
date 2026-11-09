@@ -12,6 +12,16 @@ describe("sortLogs", () => {
     ];
     expect(sortLogs(logs).map((l) => l.name)).toEqual(["c.gpx", "e.gpx", "a.gpx", "d.gpx", "b.gpx"]);
   });
+
+  it("同じ日は走り始めた時刻の新しい順(保存した順ではない)", () => {
+    const logs = [
+      { id: "100-morning.gpx", name: "morning.gpx", size: 1, date: "2026-11-09", m: 1, start: Date.parse("2026-11-09T08:00:00+09:00") },
+      { id: "300-noon.gpx", name: "noon.gpx", size: 1, date: "2026-11-09", m: 1, start: Date.parse("2026-11-09T12:00:00+09:00") },
+      { id: "200-night.gpx", name: "night.gpx", size: 1, date: "2026-11-09", m: 1, start: Date.parse("2026-11-09T21:00:00+09:00") },
+      { id: "400-unknown.gpx", name: "unknown.gpx", size: 1, date: "2026-11-09", m: 1 },
+    ];
+    expect(sortLogs(logs).map((l) => l.name)).toEqual(["night.gpx", "noon.gpx", "morning.gpx", "unknown.gpx"]);
+  });
 });
 
 describe("driveEvalView", () => {

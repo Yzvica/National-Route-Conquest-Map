@@ -33,3 +33,12 @@ describe("期間を指定", () => {
     expect(periodSummary([])).toBe("この期間の記録はありません");
   });
 });
+
+describe("旅行の表示", () => {
+  it("期間を短く書く", async () => {
+    const { shortPeriod } = await import("./period");
+    expect(shortPeriod({ from: "2026-11-07", to: "2026-11-10" }, "2026")).toBe("11/7〜11/10");
+    expect(shortPeriod({ from: "2025-12-31", to: "2026-01-02" }, "2026")).toBe("2025/12/31〜1/2");
+    expect(shortPeriod({ from: "2026-03-01", to: "2026-03-01" }, "2026")).toBe("3/1");
+  });
+});

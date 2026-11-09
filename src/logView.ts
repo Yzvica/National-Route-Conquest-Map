@@ -3,7 +3,7 @@
 import { distance } from "./geo";
 import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
-import { periodList, periodSummary, type Period, type PeriodItem } from "./period";
+import { journeyOf, periodList, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { trackLength } from "./trips";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
@@ -238,25 +238,43 @@ export interface PeriodView {
   note?: string;
 }
 
+/** 年の欄で、保存した旅行を選んだときの値 */
+export const journeyValue = (id: string) => `journey:${id}`;
+
 /** ログタブの一覧。selectedId: 右に詳細を出しているログ */
-export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean, selectedId?: string, period?: PeriodView): string {
+export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean, selectedId?: string, period?: PeriodView, journeys: Journey[] = []): string {
   if (logs === null) return `<p class="muted">読み込み中…</p>`;
   if (!shared) {
     return `<p class="muted">ログを残せるのは、MiniPC のサーバーで開いたときだけです(このブラウザだけで使っているときは、読み込んだログを保存しません)。</p>`;
   }
   if (logs.length === 0) return `<p class="muted">保存してあるログはまだありません。読み込んだログや、iPhone のロガーから送られたログがここに並びます。</p>`;
   const years = logYears(logs);
+  const journey = year === "range" && period ? journeyOf(journeys, period.period) : undefined;
   const select = `<label class="pref-select">年
       <select id="log-year"><option value="all"${year === "all" ? " selected" : ""}>すべて</option>${years
         .map((y) => `<option value="${y}"${y === year ? " selected" : ""}>${y === "" ? "日付なし" : `${y}年`}</option>`)
-        .join("")}<option value="range"${year === "range" ? " selected" : ""}>期間を指定(旅行など)</option></select></label>`;
+        .join("")}<option value="range"${year === "range" && !journey ? " selected" : ""}>期間を指定(旅行など)</option>${
+        journeys.length
+          ? `<optgroup label="保存した旅行">${journeys
+              .map((j) => `<option value="${esc(journeyValue(j.id))}"${j === journey ? " selected" : ""}>🧳 ${esc(j.name)}(${shortPeriod(j)})</option>`)
+              .join("")}</optgroup>`
+          : ""
+      }</select></label>`;
   if (year === "range" && period) {
     const p = period.period;
+    const save = journey
+      ? `<div class="journey-row"><span class="journey-name">🧳 ${esc(journey.name)}</span>
+          <button id="journey-rename" type="button" class="secondary">名前を変える</button>
+          <button id="journey-delete" type="button" class="secondary" data-journey="${esc(journey.id)}">消す</button></div>`
+      : `<form id="journey-save" class="journey-row">
+          <input id="journey-name" type="text" maxlength="60" placeholder="旅行の名前(例: 九州旅行)" aria-label="旅行の名前" />
+          <button type="submit" class="secondary">この期間を保存</button></form>`;
     return `${select}
       <div class="period-pick">
         <input id="log-from" type="date" value="${esc(p.from)}" aria-label="いつから" /> 〜
         <input id="log-to" type="date" value="${esc(p.to)}" aria-label="いつまで" />
       </div>
+      ${save}
       <p class="muted">${periodSummary(period.items)}</p>
       <p class="muted">車のログと旅の記録(電車・飛行機など)をまとめて地図に出します。${period.note ? ` ${esc(period.note)}` : ""}</p>
       ${period.items.length ? `<button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>` : ""}
@@ -271,7 +289,7 @@ export function logListPanel(logs: SavedLog[] | null, year: string, shared: bool
     <ol class="log-list" data-scroll="logs">${shown
       .map(
         (l) => `<li${l.id === selectedId ? ` class="selected" aria-current="true"` : ""}><a href="#" data-log-open="${esc(l.id)}">
-          <span class="muted">${l.date ?? "日付なし"}</span>
+          <span class="muted">${l.date ?? "日付なし"}${l.start !== undefined ? ` ${hm(l.start)}` : ""}</span>
           <span class="log-name">${esc(l.name)}</span>
           <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span>
           ${weatherBadge(l.weather)}
