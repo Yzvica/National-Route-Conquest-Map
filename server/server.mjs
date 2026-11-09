@@ -330,6 +330,9 @@ async function fillOne(dir) {
   });
 }
 
+/** GET /api/rawlog で返してよいファイル(サーバーが作るもの) */
+const RAW_READABLE = new Set(["location_filled.csv", "tunnel_fill.json"]);
+
 /** 走行ごとのフォルダ(車は RAW_LOG_DIR/<走行ID>、車以外は trips/<走行ID>) */
 const rawDir = (session, kind) => (kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session));
 
@@ -594,13 +597,21 @@ export function createApp() {
       // 走行ロガーの生データを1ファイルずつ受け取る(?session=走行ID&file=ファイル名)。同じファイルは上書きする
       // 車以外の移動(電車・飛行機など)は &kind=trip を付けて送られ、trips フォルダの下に分けて置く
       if (url.pathname === "/api/rawlog") {
-        if (req.method !== "PUT" && req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+        if (req.method !== "PUT" && req.method !== "POST" && req.method !== "GET") return json(res, 405, { error: "method not allowed" });
         const session = url.searchParams.get("session") ?? "";
         const file = url.searchParams.get("file") ?? "";
         const ok = (s) => /^[\p{L}\p{N}][\p{L}\p{N}._-]{0,119}$/u.test(s) && !s.includes("..");
         if (!ok(session) || !ok(file)) return json(res, 400, { error: "bad session or file" });
         const kind = url.searchParams.get("kind") ?? "drive";
         if (kind !== "drive" && kind !== "trip") return json(res, 400, { error: "bad kind" });
+        // サーバーが作ったファイル(トンネルを補った位置)だけは、アプリが取りに来られる
+        if (req.method === "GET") {
+          if (!RAW_READABLE.has(file)) return json(res, 403, { error: "not readable" });
+          const path = join(rawDir(session, kind), file);
+          if (!existsSync(path)) return json(res, 404, { error: "not found" });
+          res.writeHead(200, { "Content-Type": file.endsWith(".json") ? "application/json" : "text/csv; charset=utf-8", "Cache-Control": "no-cache" });
+          return res.end(readFileSync(path));
+        }
         const body = Buffer.concat(await readChunks(req));
         const dir = rawDir(session, kind);
         mkdirSync(dir, { recursive: true });
