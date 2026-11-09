@@ -30,7 +30,7 @@ const modeOf = (id: string) => TRIP_MODES.find((m) => m.id === id) ?? TRIP_MODES
 const SOURCE = "travel";
 const LAYERS = ["travel-casing", "travel-gap", "travel-line"];
 /** 旅の記録より上に置く層(選んだ国道・読み込んだログなど、いま見ているもの) */
-const OVERLAY = /^(selected|selected-casing|focus|track|drive-events)$/;
+const OVERLAY = /^(selected|selected-casing|focus|track|drive-events|period-tracks.*)$/;
 
 interface Settings {
   on: boolean;
@@ -61,7 +61,7 @@ function saveSettings(s: Settings) {
 
 interface TravelFeature {
   type: "Feature";
-  properties: { i: number; mode: TripMode; gap: 0 | 1 };
+  properties: { i: number; id: string; mode: TripMode; gap: 0 | 1 };
   geometry: { type: "LineString"; coordinates: [number, number][] };
 }
 
@@ -69,8 +69,8 @@ interface TravelFeature {
 export function toGeoJSON(trips: TravelTrip[]) {
   const features: TravelFeature[] = [];
   trips.forEach((t, i) => {
-    for (const l of t.lines) features.push({ type: "Feature", properties: { i, mode: t.mode, gap: 0 }, geometry: { type: "LineString", coordinates: l } });
-    for (const g of t.gaps) features.push({ type: "Feature", properties: { i, mode: t.mode, gap: 1 }, geometry: { type: "LineString", coordinates: g } });
+    for (const l of t.lines) features.push({ type: "Feature", properties: { i, id: t.id, mode: t.mode, gap: 0 }, geometry: { type: "LineString", coordinates: l } });
+    for (const g of t.gaps) features.push({ type: "Feature", properties: { i, id: t.id, mode: t.mode, gap: 1 }, geometry: { type: "LineString", coordinates: g } });
   });
   return { type: "FeatureCollection" as const, features };
 }
@@ -102,8 +102,61 @@ export function describeTrip(t: TravelTrip): string[] {
   return lines;
 }
 
-const layerFilter = (id: string, modes: TripMode[]) =>
-  ["all", ["==", ["get", "gap"], id === "travel-gap" ? 1 : 0], ["in", ["get", "mode"], ["literal", modes]]] as never;
+/** only: ログタブで期間を指定しているときに出す移動(手段の設定にかかわらず、これだけを出す) */
+const layerFilter = (id: string, modes: TripMode[], only: string[] | null = null) =>
+  [
+    "all",
+    ["==", ["get", "gap"], id === "travel-gap" ? 1 : 0],
+    only ? ["in", ["get", "id"], ["literal", only]] : ["in", ["get", "mode"], ["literal", modes]],
+  ] as never;
+
+/** 移動の日付(日本時間の YYYY-MM-DD)。時刻がなければ "" */
+export function tripDay(t: TravelTrip): string {
+  return jst(t.start)?.day ?? "";
+}
+
+/** 移動の範囲 [[西, 南], [東, 北]]。点がなければ null */
+export function tripBounds(list: TravelTrip[]): [[number, number], [number, number]] | null {
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const t of list) for (const l of [...t.lines, ...t.gaps]) for (const [x, y] of l) {
+    w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y);
+  }
+  return w === Infinity ? null : [[w, s], [e, n]];
+}
+
+// 読み込んだ移動(地図の線とログタブの一覧で使う)
+let trips: TravelTrip[] = [];
+let loadedAt = 0;
+let failed: string | null = null;
+let loading: Promise<TravelTrip[]> | null = null;
+const listeners: (() => void)[] = [];
+
+/** MiniPC のサーバーから移動を読み込む。force でなければ30秒以内に読んだものを使う */
+export function loadTravelTrips(force = false): Promise<TravelTrip[]> {
+  if (loading) return loading;
+  if (!force && loadedAt && Date.now() - loadedAt < 30_000) return Promise.resolve(trips);
+  loading = (async () => {
+    try {
+      const r = await fetch(`${import.meta.env.BASE_URL}api/trips`);
+      if (!r.ok || !r.headers.get("content-type")?.includes("json")) throw new Error("MiniPC のサーバーで開いたときだけ見られます");
+      trips = ((await r.json()) as { trips: TravelTrip[] }).trips ?? [];
+      failed = null;
+    } catch (e) {
+      failed = (e as Error).message;
+    }
+    loadedAt = Date.now();
+    loading = null;
+    for (const f of listeners) f();
+    return trips;
+  })();
+  return loading;
+}
+
+let highlight: (only: string[] | null) => void = () => {};
+/** ログタブで期間を指定したとき、その期間の移動だけを(旅の記録の設定にかかわらず)出す。null で元に戻す */
+export function showOnlyTrips(only: string[] | null) {
+  highlight(only);
+}
 
 /** 旅の記録の層を、道路の線の上・いま見ているもの(選んだ国道・ログ)の下に保つ */
 function keepOrder(map: maplibregl.Map) {
@@ -119,9 +172,7 @@ function keepOrder(map: maplibregl.Map) {
 /** 旅の記録の線と、表示を切り替えるボタン(地図の右下)を置く */
 export function addTravelLayer(map: maplibregl.Map) {
   let settings = loadSettings();
-  let trips: TravelTrip[] = [];
-  let loadedAt = 0;
-  let failed: string | null = null;
+  let only: string[] | null = null;
 
   map.addSource(SOURCE, { type: "geojson", data: toGeoJSON([]) });
   const color = ["match", ["get", "mode"], ...TRIP_MODES.flatMap((m) => [m.id, m.color]), "#546e7a"] as never;
@@ -156,26 +207,22 @@ export function addTravelLayer(map: maplibregl.Map) {
 
   const apply = () => {
     for (const id of LAYERS) {
-      map.setLayoutProperty(id, "visibility", settings.on ? "visible" : "none");
-      map.setFilter(id, layerFilter(id, settings.modes));
+      map.setLayoutProperty(id, "visibility", settings.on || only ? "visible" : "none");
+      map.setFilter(id, layerFilter(id, settings.modes, only));
     }
     saveSettings(settings);
     control.render();
   };
+  highlight = (o) => {
+    only = o;
+    apply();
+  };
 
-  const load = async () => {
-    try {
-      const r = await fetch(`${import.meta.env.BASE_URL}api/trips`);
-      if (!r.ok || !r.headers.get("content-type")?.includes("json")) throw new Error("MiniPC のサーバーで開いたときだけ見られます");
-      trips = ((await r.json()) as { trips: TravelTrip[] }).trips ?? [];
-      failed = null;
-    } catch (e) {
-      failed = (e as Error).message;
-    }
-    loadedAt = Date.now();
+  listeners.push(() => {
     (map.getSource(SOURCE) as maplibregl.GeoJSONSource).setData(toGeoJSON(trips));
     control.render();
-  };
+  });
+  const load = () => void loadTravelTrips(true);
 
   const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "260px" });
   map.on("click", "travel-line", (e) => {
@@ -211,7 +258,7 @@ export function addTravelLayer(map: maplibregl.Map) {
       this.button.addEventListener("click", () => {
         this.panel.hidden = !this.panel.hidden;
         // 開くたびに新しい記録を読む(続けて開いたときは読まない)
-        if (!this.panel.hidden && Date.now() - loadedAt > 30_000) void load();
+        if (!this.panel.hidden) void loadTravelTrips();
         this.render();
       });
       this.panel.className = "travel-panel";
@@ -265,5 +312,5 @@ export function addTravelLayer(map: maplibregl.Map) {
   }
   const control = new TravelControl();
   map.addControl(control, "bottom-right");
-  void load();
+  load();
 }

@@ -273,6 +273,11 @@ button.link { padding: 1px 8px; font-size: 12px; }
 #detail.log-detail h2.log-title { font-size: 16px; margin: 4px 0 8px; word-break: break-all; }
 #detail.log-detail h3 { font-size: 15px; margin: 16px 0 6px; }
 #detail.log-detail h4 { font-size: 14px; margin: 10px 0 4px; }
+/* ログタブの「期間を指定」 */
+.period-pick { display: flex; align-items: center; gap: 6px; margin: 8px 0 4px; font-size: 14px; }
+.period-pick input { flex: 1; min-width: 0; padding: 4px; font: inherit; }
+.period-list .period-day { padding: 8px 4px 2px; font-size: 12px; font-weight: 700; color: var(--muted, #666); border-bottom: 1px solid var(--line); }
+#period-fit { margin: 4px 0; }
 .log-list li.selected > a { background: var(--bar); box-shadow: inset 4px 0 0 #8e24aa; font-weight: 700; }
 
 /* ---- スマホ(iPhone)の狭い画面 ---- */

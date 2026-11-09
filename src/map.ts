@@ -541,6 +541,51 @@ export function showTrack(map: maplibregl.Map, track: TrackPoint[], padding: num
   }
 }
 
+/** ログタブで期間を指定したときに、その期間の車のログをまとめて出す線の色 */
+export const PERIOD_CAR_COLOR = "#c2185b";
+let periodOpen: (id: string) => void = () => {};
+
+/**
+ * 期間の車のログをまとめて地図に出す(空なら消す)。線を押すと onOpen にログ ID を渡す。
+ * 一本ずつ選んだログ(track)はこの上に出る
+ */
+export function showPeriodTracks(map: maplibregl.Map, tracks: { id: string; coords: [number, number][] }[], onOpen: (id: string) => void) {
+  periodOpen = onOpen;
+  const data = {
+    type: "FeatureCollection" as const,
+    features: tracks
+      .filter((t) => t.coords.length > 1)
+      .map((t) => ({ type: "Feature" as const, properties: { id: t.id }, geometry: { type: "LineString" as const, coordinates: t.coords } })),
+  };
+  const src = map.getSource("period-tracks") as GeoJSONSource | undefined;
+  if (src) return src.setData(data);
+  map.addSource("period-tracks", { type: "geojson", data });
+  // 選んだログの線(track)があれば、その下に入れる
+  const before = map.getLayer("track") ? "track" : undefined;
+  const width = ["interpolate", ["linear"], ["zoom"], 4, 2, 12, 4] as never;
+  map.addLayer(
+    { id: "period-tracks-casing", type: "line", source: "period-tracks", layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 4, 12, 7] as never, "line-opacity": 0.8 } },
+    before,
+  );
+  map.addLayer(
+    { id: "period-tracks", type: "line", source: "period-tracks", layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": PERIOD_CAR_COLOR, "line-width": width, "line-opacity": 0.85 } },
+    before,
+  );
+  map.on("click", "period-tracks", (e) => {
+    const id = e.features?.[0]?.properties?.id;
+    if (typeof id === "string") periodOpen(id);
+  });
+  map.on("mouseenter", "period-tracks", () => (map.getCanvas().style.cursor = "pointer"));
+  map.on("mouseleave", "period-tracks", () => (map.getCanvas().style.cursor = ""));
+}
+
+/** 範囲 [[西, 南], [東, 北]] に地図を合わせる */
+export function fitBox(map: maplibregl.Map, box: [[number, number], [number, number]], padding: number | maplibregl.PaddingOptions = 40) {
+  map.fitBounds(box, { padding, maxZoom: 13 });
+}
+
 /** 運転評価の出来事(急ブレーキ・急ハンドルなど)を地図に点で出す。空なら消す */
 export function showDriveEvents(map: maplibregl.Map, events: { lat: number; lon: number; label: string }[]) {
   const data = {
