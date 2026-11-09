@@ -3,6 +3,7 @@
 import { distance } from "./geo";
 import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
+import { periodList, periodSummary, type Period, type PeriodItem } from "./period";
 import { trackLength } from "./trips";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
@@ -227,22 +228,45 @@ export function shownLogs(logs: SavedLog[], year: string): SavedLog[] {
   return sortLogs(logs).filter((l) => year === "all" || yearOf(l) === year);
 }
 
+/** 「期間を指定」のときの一覧の中身(year が "range" のとき) */
+export interface PeriodView {
+  period: Period;
+  items: PeriodItem[];
+  /** 開始時刻が分かったログ */
+  known: Set<string>;
+  /** 地図に出している途中なら、その様子 */
+  note?: string;
+}
+
 /** ログタブの一覧。selectedId: 右に詳細を出しているログ */
-export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean, selectedId?: string): string {
+export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean, selectedId?: string, period?: PeriodView): string {
   if (logs === null) return `<p class="muted">読み込み中…</p>`;
   if (!shared) {
     return `<p class="muted">ログを残せるのは、MiniPC のサーバーで開いたときだけです(このブラウザだけで使っているときは、読み込んだログを保存しません)。</p>`;
   }
   if (logs.length === 0) return `<p class="muted">保存してあるログはまだありません。読み込んだログや、iPhone のロガーから送られたログがここに並びます。</p>`;
   const years = logYears(logs);
+  const select = `<label class="pref-select">年
+      <select id="log-year"><option value="all"${year === "all" ? " selected" : ""}>すべて</option>${years
+        .map((y) => `<option value="${y}"${y === year ? " selected" : ""}>${y === "" ? "日付なし" : `${y}年`}</option>`)
+        .join("")}<option value="range"${year === "range" ? " selected" : ""}>期間を指定(旅行など)</option></select></label>`;
+  if (year === "range" && period) {
+    const p = period.period;
+    return `${select}
+      <div class="period-pick">
+        <input id="log-from" type="date" value="${esc(p.from)}" aria-label="いつから" /> 〜
+        <input id="log-to" type="date" value="${esc(p.to)}" aria-label="いつまで" />
+      </div>
+      <p class="muted">${periodSummary(period.items)}</p>
+      <p class="muted">車のログと旅の記録(電車・飛行機など)をまとめて地図に出します。${period.note ? ` ${esc(period.note)}` : ""}</p>
+      ${period.items.length ? `<button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>` : ""}
+      ${periodList(period.items, period.known, selectedId)}`;
+  }
   const shown = shownLogs(logs, year);
   const total = shown.reduce((s, l) => s + (l.m ?? 0), 0);
   const scored = shown.filter((l) => l.score !== undefined);
   const avg = scored.length ? scored.reduce((s, l) => s + l.score!, 0) / scored.length : undefined;
-  return `<label class="pref-select">年
-      <select id="log-year"><option value="all"${year === "all" ? " selected" : ""}>すべて</option>${years
-        .map((y) => `<option value="${y}"${y === year ? " selected" : ""}>${y === "" ? "日付なし" : `${y}年`}</option>`)
-        .join("")}</select></label>
+  return `${select}
     <p class="muted">${shown.length} 本・${km(total, 0)} km${avg !== undefined ? `・運転の平均 ${num(avg, 0)} 点(${scored.length} 本)` : ""}</p>
     <ol class="log-list" data-scroll="logs">${shown
       .map(

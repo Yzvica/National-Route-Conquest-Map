@@ -9,9 +9,9 @@ describe("旅の記録", () => {
   it("実線と点線を、移動の番号と手段つきの線にする", () => {
     const fc = toGeoJSON([trip({ lines: [[[139, 35], [139.1, 35]]], gaps: [[[139.1, 35], [139.5, 35]]] }), trip({ mode: "plane", lines: [[[130, 33], [139, 35]]] })]);
     expect(fc.features.map((f: { properties: unknown }) => f.properties)).toEqual([
-      { i: 0, mode: "train", gap: 0 },
-      { i: 0, mode: "train", gap: 1 },
-      { i: 1, mode: "plane", gap: 0 },
+      { i: 0, id: "x", mode: "train", gap: 0 },
+      { i: 0, id: "x", mode: "train", gap: 1 },
+      { i: 1, id: "x", mode: "plane", gap: 0 },
     ]);
   });
 
