@@ -1,6 +1,7 @@
-﻿# 国道制覇マップのサーバーを動かし続ける。install-autostart.ps1 が登録するタスクから呼ばれる。
-# サーバーが落ちても10秒後(すぐ落ちるときは最大5分後)に立ち上げ直し、終了コードとエラーを data\server.log に残す。
-# 動いている間の出力は data\server.out.log / server.err.log で見られる。
+﻿# 国道制覇マップのサーバーを動かし続ける。install-autostart.ps1 が登録するタスク KokudoMap から呼ばれる。
+# 1回分の起動・終了・再起動の待ちは server-once.ps1 がする。それを毎回ファイルから読み直して呼ぶので、
+# update.ps1 で server-once.ps1 が新しくなっても、このループを止めずに次の起動から新しいものになる。
+# このファイル自体はなるべく変えない(変えたときは MiniPC の再起動か、管理者で install-autostart.ps1)。
 param([string]$Node = "node")
 Set-Location (Join-Path $PSScriptRoot "..")
 New-Item -ItemType Directory -Force data | Out-Null
@@ -16,18 +17,14 @@ if (-not $owned) {
     exit 0
 }
 
-# すぐ落ちる(ポートがふさがっているなど)ときは、待つ時間を延ばしていく(10秒 → 最大5分)
-$quickFails = 0
+# 起動をくり返しても覚えておくこと(すぐ落ちた回数)
+$state = @{ QuickFails = 0 }
 while ($true) {
-    # ログが大きくなりすぎたら1世代だけ残す
-    if ((Test-Path $log) -and (Get-Item $log).Length -gt 1MB) { Move-Item -Force $log "$log.old" }
-    Add-Content $log "$(Get-Date -Format s) 起動"
-    $started = Get-Date
-    $p = Start-Process -FilePath $Node -ArgumentList "server\server.mjs" -NoNewWindow -Wait -PassThru `
-        -RedirectStandardOutput "data\server.out.log" -RedirectStandardError "data\server.err.log"
-    $err = Get-Content "data\server.err.log" -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-    if (((Get-Date) - $started).TotalSeconds -lt 30) { $quickFails++ } else { $quickFails = 0 }
-    $wait = [Math]::Min(10 * [Math]::Pow(2, [Math]::Max(0, $quickFails - 1)), 300)
-    Add-Content $log "$(Get-Date -Format s) 終了(終了コード $($p.ExitCode))。$wait 秒後に再起動します`n$err"
-    Start-Sleep -Seconds $wait
+    try {
+        & (Join-Path $PSScriptRoot "server-once.ps1") -Node $Node -State $state
+    } catch {
+        # server-once.ps1 が壊れていても、ループは止めずに待ってからやり直す
+        Add-Content $log "$(Get-Date -Format s) server-once.ps1 でエラー: $_。60 秒後にやり直します"
+        Start-Sleep -Seconds 60
+    }
 }
