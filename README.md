@@ -138,13 +138,16 @@ powershell -ExecutionPolicy Bypass -File scripts\update.ps1      # 国道デー�
 npm run serve                                                    # http://<MiniPCのIPアドレス>:8080 で開ける
 ```
 
-起動時に自動で立ち上げるには、管理者の PowerShell で次を実行します(タスクスケジューラへの登録と、ファイアウォールで 8080 番ポートを家庭内ネットワークに開放します)。
+起動時に自動で立ち上げるには、管理者の PowerShell で次を一度だけ実行します(タスクスケジューラへの登録と、ファイアウォールで 8080 番ポートを家庭内ネットワークに開放します)。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 ```
 
-- 新しいコードや国道データを取り込むときは、フォルダ直下の `update.bat` をダブルクリックします(`scripts\update.ps1` を管理者で実行し、自動起動していればサーバーも再起動します)
+- サーバーはタスク `KokudoMap`(ログオンしていなくても動く S4U)の中の `scripts\run-server.ps1` のループが動かします。1回分の起動と見守りは `scripts\server-once.ps1` で、起動のたびに読み直すので、ループを止めずに新しくなります
+- **自動更新**: あわせてタスク `KokudoMapUpdate` も登録され、1時間ごとに GitHub の main と国道データ(リリース route-data)を調べ、新しいものがあれば `scripts\update.ps1` で取り込んでサーバーを再起動します。git / gh のログイン情報を使うので、MiniPC にログオンしている間だけ動きます。記録は `data\update.log`。管理者なしで `scripts\install-autoupdate.ps1` だけ登録し直すこともでき、`-Remove` でやめられます
+- 手で取り込むときは、フォルダ直下の `update.bat` をダブルクリックします(管理者は不要)。国道データは前回から変わっていなければ取り直しません
+- 再起動だけしたいときは `powershell -ExecutionPolicy Bypass -File scripts\restart-server.ps1`。`data\restart.request` を置いてタスクの中のループに頼むので、管理者でなくても(Remote Control からでも)再起動できます
   国道データなどはリリースから `scripts/download_release.mjs` で取ります。回線によって GitHub のファイル配信が極端に遅いことがあるので、256KBずつに分けて同時に取ります
 - サーバーが落ちても10秒後に自動で立ち上げ直します。落ちた記録とエラーは `data\server.log` に残ります
 - `data\record.json` をコピーしておけばバックアップになります。画面の「記録を書き出す」でも保存できます
@@ -174,3 +177,10 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
   ```
 
   止めるときは `tailscale serve reset`。iPhone では Safari の設定で位置情報を許可してください。
+
+## 旅の記録(電車・飛行機など)
+
+- iPhone の走行ロガーで「電車・飛行機・同乗・その他」を選んで記録した移動(生データの保存先の `trips\<走行ID>`)を、地図に別の線で出します。**国道などの制覇の判定には使いません**(見るだけ)。
+- 地図右下の「旅」ボタンで表示を切り替えます。手段ごと(電車=緑・飛行機=紺・同乗=茶・その他=灰)にオン/オフでき、はじめは電車と飛行機だけ出します。設定はブラウザに覚えます。
+- 線を押すと、日時(日本時間)・距離・かかった時間(飛行機は最高高度も)が出ます。GPS が3分より途切れた間は点線でつなぎます。精度が200mより悪い点(基地局での測位など)は使いません。
+- サーバーの `GET /api/trips` が `location.csv` と `meta.json` を読み、線を間引いて返します(ファイルが変わるまで結果を使い回します)。MiniPC のサーバーで開いたときだけ見られます。

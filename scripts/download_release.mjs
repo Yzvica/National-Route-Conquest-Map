@@ -3,9 +3,13 @@
 // MiniPC の回線では GitHub のファイル配信サーバーへの1本あたりの速度が数KB/秒まで落ちることがあり、
 // gh release download(1本で取る)だと 58MB の routes.json に2時間かかって途中で切れた(2026-11-01)。
 // 分けて同時に取れば合計の速度は上がる。認証には gh のログイン(gh auth token)を使う。
-// 終了コード: 0 = 取れた / 2 = リリースにそのファイルがない / 1 = 失敗
+//   node scripts/download_release.mjs <保存先フォルダ> <ファイル名> [取得済みとみなすパス]
+// 前回取ったものとリリースのファイルが同じ(id・更新日時・大きさ)なら取り直さない。取ったものは
+// <保存先フォルダ>/.release-state.json に覚える。展開して消すファイル(prefroads.tar.gz)は、
+// 3つ目の引数(展開先 public/data/prefroads など)があれば取得済みとみなす。
+// 終了コード: 0 = 取れた / 2 = リリースにそのファイルがない / 3 = 前回と同じなので取らなかった / 1 = 失敗
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 const REPO = process.env.ROUTE_DATA_REPO ?? "Yzvica/National-Route-Conquest-Map";
@@ -18,7 +22,7 @@ const CHUNK_TIMEOUT = 300_000;
 /** 配信先の署名付き URL は数分で切れるので、この時間がたったら取り直す */
 const URL_TTL = 4 * 60_000;
 
-const [dir, name] = process.argv.slice(2);
+const [dir, name, havePath] = process.argv.slice(2);
 if (!dir || !name) {
   console.error("使い方: node scripts/download_release.mjs <保存先フォルダ> <ファイル名>");
   process.exit(1);
@@ -80,10 +84,29 @@ async function main() {
   const asset = await findAsset();
   if (!asset) {
     console.log(`リリースに ${name} はありません`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   mkdirSync(dir, { recursive: true });
   const dest = join(dir, name);
+  const stateFile = join(dir, ".release-state.json");
+  let state = {};
+  try {
+    state = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {}
+  const mark = { id: asset.id, updated_at: asset.updated_at, size: asset.size };
+  const prev = state[name];
+  if (
+    prev &&
+    prev.id === mark.id &&
+    prev.updated_at === mark.updated_at &&
+    prev.size === mark.size &&
+    existsSync(havePath ?? dest)
+  ) {
+    console.log(`${name} は前回から変わっていないので、取り直しません`);
+    process.exitCode = 3;
+    return;
+  }
   const tmp = `${dest}.part`;
   const size = asset.size;
   const ranges = [];
@@ -117,10 +140,12 @@ async function main() {
   closeSync(fd);
   // 全部そろってから置き換える(途中で切れても、前のファイルが壊れないように)
   renameSync(tmp, dest);
+  writeFileSync(stateFile, JSON.stringify({ ...state, [name]: mark }, null, 1));
   console.log(`\n${name} を取得しました(${((Date.now() - started) / 1000).toFixed(0)} 秒)`);
 }
 
 main().catch((e) => {
   console.error(`\n${name} を取得できませんでした: ${e.message}`);
-  process.exit(1);
+  // process.exit() は fetch の後片付け中だと Windows の Node 24 で落ちる(check_update.mjs 参照)
+  process.exitCode = 1;
 });

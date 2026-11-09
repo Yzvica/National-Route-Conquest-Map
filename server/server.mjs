@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { listTrips } from "./trips.mjs";
 import { fetchWeather, parseLocationCsv } from "./weather.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -772,6 +773,17 @@ export function createApp() {
           weatherAfterUpload(dir);
         }
         return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
+      }
+      // 地図の「旅の記録」: trips フォルダの電車・飛行機などの移動を、間引いた線にして返す(制覇の判定には使わない)
+      if (url.pathname === "/api/trips") {
+        if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+        const body = Buffer.from(JSON.stringify({ trips: listTrips(RAW_LOG_DIR()) }));
+        if (/\bgzip\b/.test(req.headers["accept-encoding"] ?? "")) {
+          res.writeHead(200, { "Content-Type": "application/json", "Content-Encoding": "gzip", "Cache-Control": "no-cache", Vary: "Accept-Encoding" });
+          return res.end(gzipSync(body));
+        }
+        res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
+        return res.end(body);
       }
       // トンネルなどで途切れた区間を道路に沿って補った結果(?session=走行ID[&kind=trip])。
       // GET は tunnel_fill.json を返す。POST は今すぐ補い直す(電車などの自動で補わない走行も補う)

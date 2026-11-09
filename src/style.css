@@ -204,6 +204,22 @@ button.link { padding: 1px 8px; font-size: 12px; }
   display: block; height: 29px; padding: 0 6px; border: 0; border-radius: 4px;
   background: #fff; color: #333; font: inherit; font-size: 13px; cursor: pointer;
 }
+/* 旅の記録(電車・飛行機など)の表示を切り替えるボタン(地図右下) */
+.travel-ctrl { position: relative; }
+.travel-ctrl .travel-toggle { width: 29px; height: 29px; font-size: 13px; font-weight: 700; color: #999; }
+.travel-ctrl .travel-toggle.on { color: #00897b; }
+.travel-panel {
+  position: absolute; right: 36px; bottom: 0; width: 220px; padding: 8px 10px;
+  background: #fff; color: #333; border-radius: 4px; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1); font-size: 13px;
+}
+.travel-panel label { display: flex; align-items: center; gap: 4px; padding: 2px 0; cursor: pointer; }
+.travel-panel .travel-head { font-weight: 700; padding-bottom: 4px; }
+.travel-panel .muted { font-size: 12px; }
+.travel-panel p { margin: 6px 0 0; }
+.travel-swatch { display: inline-block; width: 14px; height: 4px; border-radius: 2px; }
+.travel-panel .travel-fit { margin-top: 6px; width: 100%; height: auto; padding: 4px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px; }
+.travel-popup { font-size: 13px; line-height: 1.5; }
+.travel-popup div:first-child { font-weight: 700; }
 /* HTTP で開いていて現在位置が使えないときのボタン */
 .geolocate-unavailable { opacity: 0.45; }
 
