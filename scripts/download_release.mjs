@@ -84,7 +84,8 @@ async function main() {
   const asset = await findAsset();
   if (!asset) {
     console.log(`リリースに ${name} はありません`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   mkdirSync(dir, { recursive: true });
   const dest = join(dir, name);
@@ -103,7 +104,8 @@ async function main() {
     existsSync(havePath ?? dest)
   ) {
     console.log(`${name} は前回から変わっていないので、取り直しません`);
-    process.exit(3);
+    process.exitCode = 3;
+    return;
   }
   const tmp = `${dest}.part`;
   const size = asset.size;
@@ -144,5 +146,6 @@ async function main() {
 
 main().catch((e) => {
   console.error(`\n${name} を取得できませんでした: ${e.message}`);
-  process.exit(1);
+  // process.exit() は fetch の後片付け中だと Windows の Node 24 で落ちる(check_update.mjs 参照)
+  process.exitCode = 1;
 });
