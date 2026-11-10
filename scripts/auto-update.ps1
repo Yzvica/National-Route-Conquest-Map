@@ -31,8 +31,14 @@ if ($code -ne 10) { Set-Content $failed $what -Encoding UTF8; exit 1 }
 Write-Log "$(Get-Date -Format s) 更新を始めます"
 $ok = $true
 try {
-    # 同じ PowerShell の中で動かす(別の powershell.exe を通すと、その出力の文字コードがずれる)
-    & (Join-Path $PSScriptRoot "update.ps1") *>&1 | ForEach-Object { "$_" } |
+    # 別の powershell.exe で動かす。同じ PowerShell の中で *>&1 を付けて呼ぶと、update.ps1 の
+    # $ErrorActionPreference = "Stop" のもとで git pull が標準エラーに出す普通の行(From https://...)まで
+    # エラー扱いになり、pull のあと止まってビルドされなかった(2026-11-10)。
+    # 出力は UTF-8 にそろえる(そろえないと、記録が文字化けする)
+    $update = Join-Path $PSScriptRoot "update.ps1"
+    & powershell -NoProfile -ExecutionPolicy Bypass -Command `
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; & '$update'; exit `$LASTEXITCODE" 2>&1 |
+        ForEach-Object { "$_" } |
         Where-Object { $_ -notmatch "^\s*$" } | ForEach-Object { Write-Log $_ }
     if ($LASTEXITCODE -ne 0) { $ok = $false; $why = "終了コード $LASTEXITCODE" }
 } catch {

@@ -49,6 +49,9 @@ if ($LASTEXITCODE -eq 3) {
     Write-Host "都道府県道のデータ(prefroads.tar.gz)を取れませんでした。今あるもの(なければ都道府県道なし)で続けます。"
 }
 Run npm @("run", "build")
+# 自動更新(check_update.mjs)が「取り込んだがビルドしていない」を見分けるため、ビルドできたコミットを残す
+New-Item -ItemType Directory -Force data | Out-Null
+Set-Content data\built.txt (git rev-parse HEAD) -Encoding ASCII
 
 if ($NoRestart) {
     Write-Host "更新しました(サーバーは再起動していません)。"

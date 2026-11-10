@@ -1,7 +1,7 @@
 // 新しいコード(GitHub の main)や国道データ(リリース route-data)が出ているかを調べる。
 // auto-update.ps1(タスク KokudoMapUpdate)が5分ごとに呼び、出ていれば update.ps1 で取り込んでサーバーを再起動する。
 //   node scripts/check_update.mjs
-// 終了コード: 0 = 最新 / 10 = 更新がある / 1 = 調べられなかった
+// 終了コード: 0 = 最新 / 10 = 更新がある(取り込んだコードがまだビルドされていないときも) / 1 = 調べられなかった
 // fetch のあとに process.exit() で終えると、Windows の Node 24 で libuv のアサーション
 // (src\win\async.c)で落ち、終了コードが 0xC0000409 になる。exitCode を入れて自然に終わらせる。
 // データは download_release.mjs が覚えた public/data/.release-state.json と比べる。
@@ -13,7 +13,9 @@ const REPO = process.env.ROUTE_DATA_REPO ?? "Yzvica/National-Route-Conquest-Map"
 const TAG = "route-data";
 /** update.ps1 が取るファイル。リリースにないものは比べない */
 const FILES = ["routes.json", "expressways.json", "prefectures.json", "prefroads.tar.gz"];
-const git = (...args) => execFileSync("git", args, { encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).trim();
+// stderr は記録に混ぜない(merge-base が「まだ手元にないコミット」で出すエラーなど)
+const git = (...args) =>
+  execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).trim();
 
 async function main() {
   const reasons = [];
@@ -31,6 +33,13 @@ async function main() {
     } catch {}
     if (behind) reasons.push(`コード ${head.slice(0, 7)} → ${remote.slice(0, 7)}`);
   }
+  // pull は済んだがビルドの前に失敗したときは、HEAD が最新でもビルドし直す。
+  // data/built.txt は update.ps1 がビルドに成功したときのコミット(ないときもビルドする)
+  let built = "";
+  try {
+    built = readFileSync(join("data", "built.txt"), "utf8").trim();
+  } catch {}
+  if (built !== head && !reasons.length) reasons.push(`ビルド ${built ? built.slice(0, 7) : "(記録なし)"} → ${head.slice(0, 7)}`);
 
   const token = execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
   const res = await fetch(`${process.env.GITHUB_API ?? "https://api.github.com"}/repos/${REPO}/releases/tags/${TAG}`, {
