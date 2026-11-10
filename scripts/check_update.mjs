@@ -12,7 +12,7 @@ import { join } from "node:path";
 const REPO = process.env.ROUTE_DATA_REPO ?? "Yzvica/National-Route-Conquest-Map";
 const TAG = "route-data";
 /** update.ps1 が取るファイル。リリースにないものは比べない */
-const FILES = ["routes.json", "expressways.json", "prefectures.json", "prefroads.tar.gz"];
+const FILES = ["routes.json", "expressways.json", "prefectures.json", "prefroads.tar.gz", "railways.json.gz"];
 // stderr は記録に混ぜない(merge-base が「まだ手元にないコミット」で出すエラーなど)
 const git = (...args) =>
   execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }).trim();
