@@ -42,3 +42,21 @@ describe("旅行の表示", () => {
     expect(shortPeriod({ from: "2026-03-01", to: "2026-03-01" }, "2026")).toBe("3/1");
   });
 });
+
+describe("旅行から外す", () => {
+  it("外したものは一覧の下にまとめ、合計からも除く", async () => {
+    const { includedItems, periodItems, periodList } = await import("./period");
+    const logs = [
+      { id: "1-a.gz", name: "a", size: 1, date: "2026-11-08", m: 30000 },
+      { id: "2-b.gz", name: "b", size: 1, date: "2026-11-09", m: 12000 },
+    ];
+    const items = periodItems(logs, [], { from: "2026-11-08", to: "2026-11-09" });
+    expect(includedItems(items, ["log:2-b.gz"]).map((i) => (i.kind === "log" ? i.log.id : ""))).toEqual(["1-a.gz"]);
+    const html = periodList(items, new Set(), undefined, new Set(["log:2-b.gz"]));
+    expect(html).toContain('data-exclude="log:1-a.gz"');
+    expect(html).toContain('data-include="log:2-b.gz"');
+    expect(html).toContain("この旅行から外したもの(1)");
+    expect(html).not.toContain("2026-11-09(月)");
+    expect(periodList(items, new Set())).not.toContain("data-exclude");
+  });
+});

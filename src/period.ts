@@ -43,6 +43,8 @@ export function makePeriod(a: string, b: string): Period | null {
 export interface Journey extends Period {
   id: string;
   name: string;
+  /** この旅行から外したもの(itemKey の値) */
+  exclude?: string[];
 }
 
 const API = `${import.meta.env.BASE_URL}api/journeys`;
@@ -61,6 +63,13 @@ export async function addJourney(name: string, p: Period): Promise<Journey[]> {
 export async function deleteJourney(id: string): Promise<Journey[]> {
   const r = await fetch(`${API}/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!r.ok) throw new Error(`消せませんでした(${r.status})`);
+  return r.json();
+}
+
+/** 旅行から外すものを変える */
+export async function setJourneyExclude(id: string, exclude: string[]): Promise<Journey[]> {
+  const r = await fetch(`${API}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ exclude }) });
+  if (!r.ok) throw new Error(`保存できませんでした(${r.status})`);
   return r.json();
 }
 
@@ -116,33 +125,61 @@ export function periodSummary(items: PeriodItem[]): string {
   return parts.length ? `${parts.join("・")}(合計 ${km(total, 0)} km)` : "この期間の記録はありません";
 }
 
+/** 旅行から外すときに覚えておく名前(車のログは "log:<ログ ID>"、旅の記録は "trip:<走行 ID>") */
+export const itemKey = (it: PeriodItem) => (it.kind === "log" ? `log:${it.log.id}` : `trip:${it.trip.id}`);
+
+/** 外したものを除いた一覧(地図・合計・前後の移動に使う) */
+export const includedItems = (items: PeriodItem[], exclude: Iterable<string> | undefined) => {
+  const out = new Set(exclude ?? []);
+  return out.size ? items.filter((it) => !out.has(itemKey(it))) : items;
+};
+
 /**
  * 期間の一覧。日ごとに見出しを付ける。
- * known: 開始時刻が分かったログ(時刻を出す)。selectedId: 右に詳細を出しているログ
+ * known: 開始時刻が分かったログ(時刻を出す)。selectedId: 右に詳細を出しているログ。
+ * exclude: 保存した旅行を開いているときの、外したもの。null なら外すボタンを出さない(名前を付けていない期間)
  */
-export function periodList(items: PeriodItem[], known: Set<string>, selectedId?: string): string {
+export function periodList(items: PeriodItem[], known: Set<string>, selectedId?: string, exclude: Set<string> | null = null): string {
+  const row = (it: PeriodItem, out: boolean) => {
+    const key = itemKey(it);
+    const btn =
+      exclude === null
+        ? ""
+        : out
+          ? `<button type="button" class="exclude" data-include="${esc(key)}" title="旅行に戻す" aria-label="旅行に戻す">↩</button>`
+          : `<button type="button" class="exclude" data-exclude="${esc(key)}" title="この旅行から外す" aria-label="この旅行から外す">×</button>`;
+    if (it.kind === "log") {
+      const l = it.log;
+      const cls = [l.id === selectedId ? "selected" : "", out ? "excluded" : ""].filter(Boolean).join(" ");
+      return `<li${cls ? ` class="${cls}"` : ""}${l.id === selectedId ? ` aria-current="true"` : ""}><a href="#" data-log-open="${esc(l.id)}">
+        <span class="muted">${out ? esc(it.day.slice(5)) + " " : ""}${known.has(l.id) ? hm(it.start) : ""}</span>
+        <span class="log-name">🚗 ${esc(l.name)}</span>
+        <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span></a>${btn}</li>`;
+    }
+    const t = it.trip;
+    const m = TRIP_MODES.find((x) => x.id === t.mode) ?? TRIP_MODES[3];
+    return `<li class="period-trip${out ? " excluded" : ""}"><a href="#" data-trip-open="${esc(t.id)}">
+        <span class="muted">${out ? esc(it.day.slice(5)) + " " : ""}${t.start ? hm(it.start) : ""}</span>
+        <span class="log-name"><span class="travel-swatch" style="background:${m.color}"></span> ${m.icon} ${m.label}</span>
+        <span class="muted">${km(t.m)} km</span></a>${btn}</li>`;
+  };
   let day = "";
   const rows: string[] = [];
+  const outs: PeriodItem[] = [];
   for (const it of items) {
+    if (exclude?.has(itemKey(it))) {
+      outs.push(it);
+      continue;
+    }
     if (it.day !== day) {
       day = it.day;
       const wd = "日月火水木金土"[new Date(`${day}T00:00:00Z`).getUTCDay()];
       rows.push(`<li class="period-day">${esc(day)}(${wd})</li>`);
     }
-    if (it.kind === "log") {
-      const l = it.log;
-      rows.push(`<li${l.id === selectedId ? ` class="selected" aria-current="true"` : ""}><a href="#" data-log-open="${esc(l.id)}">
-        <span class="muted">${known.has(l.id) ? hm(it.start) : ""}</span>
-        <span class="log-name">🚗 ${esc(l.name)}</span>
-        <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span></a></li>`);
-    } else {
-      const t = it.trip;
-      const m = TRIP_MODES.find((x) => x.id === t.mode) ?? TRIP_MODES[3];
-      rows.push(`<li class="period-trip"><a href="#" data-trip-open="${esc(t.id)}">
-        <span class="muted">${t.start ? hm(it.start) : ""}</span>
-        <span class="log-name"><span class="travel-swatch" style="background:${m.color}"></span> ${m.icon} ${m.label}</span>
-        <span class="muted">${km(t.m)} km</span></a></li>`);
-    }
+    rows.push(row(it, false));
   }
-  return `<ol class="log-list period-list" data-scroll="logs">${rows.join("")}</ol>`;
+  const list = `<ol class="log-list period-list" data-scroll="logs">${rows.join("")}</ol>`;
+  if (!outs.length) return list;
+  return `${list}<details class="period-excluded"><summary>この旅行から外したもの(${outs.length})</summary>
+    <ol class="log-list period-list">${outs.map((it) => row(it, true)).join("")}</ol></details>`;
 }

@@ -67,10 +67,25 @@ const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 export function loadJourneys() {
   try {
     const list = JSON.parse(readFileSync(JOURNEYS(), "utf8"));
-    return Array.isArray(list) ? list.filter((j) => j && typeof j.id === "string" && typeof j.name === "string" && DAY_RE.test(j.from) && DAY_RE.test(j.to)) : [];
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((j) => j && typeof j.id === "string" && typeof j.name === "string" && DAY_RE.test(j.from) && DAY_RE.test(j.to))
+      .map((j) => ({ ...j, exclude: cleanExclude(j.exclude) }));
   } catch {
     return [];
   }
+}
+
+/** 旅行から外したもの("log:<ログ ID>" か "trip:<走行 ID>")。おかしな値は捨てる */
+const cleanExclude = (v) => (Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === "string" && /^(log|trip):.{1,200}$/.test(x)))] : []);
+
+/** 旅行から外すものを置き換える。旅行がなければ null */
+export function setJourneyExclude(id, exclude) {
+  const list = loadJourneys();
+  const j = list.find((x) => x.id === id);
+  if (!j) return null;
+  j.exclude = cleanExclude(exclude);
+  return saveJourneys(list);
 }
 
 function saveJourneys(list) {
@@ -91,7 +106,7 @@ export function addJourney(body) {
   const list = loadJourneys();
   const same = list.find((j) => j.from === from && j.to === to);
   if (same) same.name = name;
-  else list.push({ id: `j${Date.now().toString(36)}`, name, from, to });
+  else list.push({ id: `j${Date.now().toString(36)}`, name, from, to, exclude: [] });
   return saveJourneys(list);
 }
 
@@ -825,6 +840,11 @@ export function createApp() {
       if (journeyMatch && req.method === "DELETE") {
         const id = decodeURIComponent(journeyMatch[1]);
         return json(res, 200, saveJourneys(loadJourneys().filter((j) => j.id !== id)));
+      }
+      // 旅行から外すログ・旅の記録を変える({ exclude: ["log:<ID>", "trip:<ID>", …] })
+      if (journeyMatch && req.method === "PATCH") {
+        const list = setJourneyExclude(decodeURIComponent(journeyMatch[1]), JSON.parse(await readBody(req)).exclude);
+        return list ? json(res, 200, list) : json(res, 404, { error: "not found" });
       }
       if (url.pathname === "/api/trips") {
         if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });

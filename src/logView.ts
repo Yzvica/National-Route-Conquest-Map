@@ -3,7 +3,7 @@
 import { distance } from "./geo";
 import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
-import { journeyOf, periodList, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
+import { includedItems, journeyOf, periodList, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { trackLength } from "./trips";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
@@ -275,10 +275,11 @@ export function logListPanel(logs: SavedLog[] | null, year: string, shared: bool
         <input id="log-to" type="date" value="${esc(p.to)}" aria-label="いつまで" />
       </div>
       ${save}
-      <p class="muted">${periodSummary(period.items)}</p>
+      <p class="muted">${periodSummary(includedItems(period.items, journey?.exclude))}</p>
       <p class="muted">車のログと旅の記録(電車・飛行機など)をまとめて地図に出します。${period.note ? ` ${esc(period.note)}` : ""}</p>
       ${period.items.length ? `<button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>` : ""}
-      ${periodList(period.items, period.known, selectedId)}`;
+      ${journey ? `<p class="muted">× で、この旅行から外せます(ログは消えません)。</p>` : ""}
+      ${periodList(period.items, period.known, selectedId, journey ? new Set(journey.exclude ?? []) : null)}`;
   }
   const shown = shownLogs(logs, year);
   const total = shown.reduce((s, l) => s + (l.m ?? 0), 0);

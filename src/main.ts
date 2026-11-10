@@ -36,7 +36,7 @@ import { isSplitIndex, openSplit } from "./splitData";
 import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
 import { addTravelLayer, loadTravelTrips, showOnlyTrips, tripBounds, tripDay, type TravelTrip } from "./travel";
-import { addJourney, deleteJourney, fetchJourneys, inPeriod, journeyOf, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period } from "./period";
+import { addJourney, deleteJourney, fetchJourneys, includedItems, inPeriod, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period } from "./period";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
@@ -1216,6 +1216,11 @@ function currentPeriodItems() {
   return periodItems(savedLogs ?? [], periodTrips, logPeriod, starts);
 }
 
+/** 期間の一覧から、開いている旅行で外したものを除いたもの */
+function shownPeriodItems() {
+  return includedItems(currentPeriodItems(), journeyOf(journeys, logPeriod)?.exclude);
+}
+
 function periodView() {
   const items = currentPeriodItems();
   const known = new Set([...periodTracks].filter(([, t]) => t.start !== undefined).map(([id]) => id));
@@ -1243,9 +1248,10 @@ async function showPeriod(fit: boolean) {
   const store = await storePromise;
   periodTrips = await loadTravelTrips().catch(() => []);
   if (seq !== periodSeq || logYear !== "range") return;
-  const trips = periodTrips.filter((t) => inPeriod(tripDay(t), logPeriod));
+  const out = new Set(journeyOf(journeys, logPeriod)?.exclude ?? []);
+  const trips = periodTrips.filter((t) => inPeriod(tripDay(t), logPeriod) && !out.has(`trip:${t.id}`));
   showOnlyTrips(trips.map((t) => t.id));
-  const logs = (savedLogs ?? []).filter((l) => inPeriod(l.date, logPeriod));
+  const logs = (savedLogs ?? []).filter((l) => inPeriod(l.date, logPeriod) && !out.has(`log:${l.id}`));
   const draw = () =>
     showPeriodTracks(
       map,
@@ -1288,7 +1294,7 @@ async function showPeriod(fit: boolean) {
 
 /** 期間の車のログと旅の記録が全部入るように地図を合わせる */
 function fitPeriod() {
-  const items = currentPeriodItems();
+  const items = shownPeriodItems();
   const trips = items.flatMap((i) => (i.kind === "trip" ? [i.trip] : []));
   const cars: TravelTrip[] = items.flatMap((i) =>
     i.kind === "log" && periodTracks.get(i.log.id)?.coords.length
@@ -1312,7 +1318,7 @@ function logNeighbors(id: string) {
   const list = !savedLogs
     ? []
     : logYear === "range"
-      ? currentPeriodItems().flatMap((i) => (i.kind === "log" ? [i.log] : []))
+      ? shownPeriodItems().flatMap((i) => (i.kind === "log" ? [i.log] : []))
       : shownLogs(savedLogs, logYear);
   const i = list.findIndex((l) => l.id === id);
   return {
@@ -1446,6 +1452,24 @@ function onLogClick(e: MouseEvent) {
     e.preventDefault();
     const box = tripBounds(periodTrips.filter((t) => t.id === tripOpen.dataset.tripOpen));
     if (box) fitBox(map, box, detailPadding());
+    return true;
+  }
+  const toggle = el.closest<HTMLElement>("[data-exclude], [data-include]");
+  if (toggle) {
+    e.preventDefault();
+    const j = journeyOf(journeys, logPeriod);
+    if (!j) return true;
+    const key = toggle.dataset.exclude ?? toggle.dataset.include!;
+    const next = new Set(j.exclude ?? []);
+    if (toggle.dataset.exclude) next.add(key);
+    else next.delete(key);
+    // すぐ画面に反映し、MiniPC に保存する
+    j.exclude = [...next];
+    void showPeriod(false);
+    void setJourneyExclude(j.id, j.exclude).then(
+      (list) => (journeys = list),
+      (err: Error) => toast([err.message]),
+    );
     return true;
   }
   const del = el.closest<HTMLElement>("#journey-delete");
