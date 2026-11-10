@@ -36,6 +36,9 @@ export interface FillOptions {
   maxSpeedMS: number;
   /** 一方通行の道を逆に通るときの道のりの倍率 */
   wrongWayCost: number;
+  /** 端の点の向きで道を絞り込むのは、この速さ(m/s)以上で、向きの精度がこれ(度)以内のときだけ */
+  minCourseSpeedMS: number;
+  maxCourseAccDeg: number;
 }
 
 export const DEFAULT_FILL_OPTIONS: FillOptions = {
@@ -47,6 +50,8 @@ export const DEFAULT_FILL_OPTIONS: FillOptions = {
   detourExtraM: 500,
   maxSpeedMS: 200 / 3.6,
   wrongWayCost: 4,
+  minCourseSpeedMS: 2,
+  maxCourseAccDeg: 45,
 };
 
 /** 補った区間のまとめ(tunnel_fill.json) */
@@ -371,7 +376,7 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
   const { head, rows } = parseCsv(text);
   const col = (name: string) => head.indexOf(name);
   const cT = col("unix_s"), cLat = col("lat"), cLon = col("lon"), cAlt = col("alt_m"), cAcc = col("h_acc_m");
-  const cSpeed = col("speed_ms"), cCourse = col("course_deg");
+  const cSpeed = col("speed_ms"), cCourse = col("course_deg"), cCourseAcc = col("course_acc_deg");
   if (cT < 0 || cLat < 0 || cLon < 0) throw new Error("location.csv に unix_s・lat・lon の列がありません");
   const outHead = [...head];
   if (!outHead.includes("speed_est_ms")) outHead.push("speed_est_ms");
@@ -384,6 +389,18 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
   const isAnchor = (r: string[]) => {
     const acc = num(r[cAcc]);
     return acc !== undefined && acc >= 0 && acc <= opt.anchorAccuracy && num(r[cSpeed]) !== undefined && Number.isFinite(t(r));
+  };
+  /**
+   * 進んでいた向き。止まりかけ(駅で停車中など)や向きの精度が悪い点の向きはでたらめなので、
+   * 道路・線路を向きで絞り込まない(undefined)
+   */
+  const courseOf = (r: string[]): number | undefined => {
+    const c = num(r[cCourse]);
+    if (c === undefined || c < 0) return undefined;
+    if ((num(r[cSpeed]) ?? 0) < opt.minCourseSpeedMS) return undefined;
+    const acc = cCourseAcc >= 0 ? num(r[cCourseAcc]) : undefined;
+    if (acc !== undefined && (acc < 0 || acc > opt.maxCourseAccDeg)) return undefined;
+    return c;
   };
   rows.sort((a, b) => t(a) - t(b));
   const pad = (r: string[], src: string) => {
@@ -445,7 +462,7 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
     ];
     const g = new Graph();
     for (const road of roads(bbox)) g.addRoad(road, opt.wrongWayCost);
-    const path = route(g, a, num(ra[cCourse]), b, num(rb[cCourse]), opt);
+    const path = route(g, a, courseOf(ra), b, courseOf(rb), opt);
     if (!path || path.coords.length < 2) {
       skipped.push({ ...base, reason: "no_road" });
       return null;

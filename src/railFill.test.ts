@@ -5,9 +5,9 @@ import { fillTunnels } from "./tunnelFill";
 import type { LonLat } from "./types";
 
 const HEAD = "unix_s,lat,lon,alt_m,h_acc_m,v_acc_m,speed_ms,speed_acc_ms,course_deg,course_acc_deg,floor";
-const row = (t: number, p: LonLat, o: { acc?: number; speed?: number | null; course?: number } = {}) =>
+const row = (t: number, p: LonLat, o: { acc?: number; speed?: number | null; course?: number; courseAcc?: number } = {}) =>
   [t.toFixed(3), p[1].toFixed(7), p[0].toFixed(7), "10.00", o.acc ?? 20, 3,
-    o.speed === null ? "" : (o.speed ?? 15).toFixed(2), "", o.course ?? 90, "", ""].join(",");
+    o.speed === null ? "" : (o.speed ?? 15).toFixed(2), "", o.course ?? 90, o.courseAcc ?? "", ""].join(",");
 
 /** 北緯35度で、東へ x m・北へ y m の点 */
 const at = (x: number, y = 0): LonLat => [139 + x / 91_290, 35 + y / 110_950];
@@ -72,5 +72,17 @@ describe("railsFromData", () => {
     expect(Math.abs(r.sections[0].roadM - 4000)).toBeLessThan(20);
     const mid = parse(r.csv).find((x) => x.unix_s === "100.000")!;
     expect(distance([Number(mid.lon), Number(mid.lat)], at(2200))).toBeLessThan(30);
+  });
+
+  it("止まりかけの点(駅で停車中など)のでたらめな向きでは線路を絞り込まない", () => {
+    // 東西の線路の上で、終わりの点は止まりかけで向きが北西(実際の記録: 速さ 0.3m/s・向きの精度 95度)
+    const stop = { speed: 0.3, course: 317, courseAcc: 95 };
+    const lines = [HEAD, row(0, at(200)), row(200, at(4200), stop)];
+    const r = fillTunnels(lines.join("\n"), railsFromData(DATA), RAIL_FILL_OPTIONS);
+    expect(r.skipped).toEqual([]);
+    expect(r.sections).toHaveLength(1);
+    // 速く走っていても、向きの精度が悪ければ同じ
+    const bad = [HEAD, row(0, at(200)), row(200, at(4200), { speed: 10, course: 317, courseAcc: 95 })];
+    expect(fillTunnels(bad.join("\n"), railsFromData(DATA), RAIL_FILL_OPTIONS).sections).toHaveLength(1);
   });
 });

@@ -23,6 +23,11 @@ export interface JudgeRequest {
 export interface FillSummary {
   version: 1;
   generatedAt: string;
+  /**
+   * 補い方の版。補い方を直したら上げる(server.mjs の FILL_REV も合わせる)。サーバーは起動時に、版の古い電車の記録を補い直す。
+   * 2: 止まりかけ・向きの精度が悪い端の点の向きで道を絞り込まない
+   */
+  rev?: number;
   /** 何に沿って補ったか(電車は線路、それ以外は道路)。古い結果にはない */
   source?: "road" | "rail";
   sections: FilledSection[];
@@ -41,6 +46,9 @@ export interface JudgeResponse {
     dates: { [id: string]: [string, string] };
   };
 }
+
+/** 補い方の版(FillSummary.rev) */
+const FILL_REV = 2;
 
 const { dataDir, logsDir } = workerData as { dataDir: string; logsDir: string };
 
@@ -120,7 +128,7 @@ async function fillDir(dir: string): Promise<FillSummary> {
     r = fillTunnels(text, roadsFromData([data.kokudo, data.expressway, ...prefs]));
     source = "road";
   }
-  const summary: FillSummary = { version: 1, generatedAt: new Date().toISOString(), source, sections: r.sections, skipped: r.skipped };
+  const summary: FillSummary = { version: 1, rev: FILL_REV, generatedAt: new Date().toISOString(), source, sections: r.sections, skipped: r.skipped };
   writeAtomic(join(dir, "location_filled.csv"), r.csv);
   writeAtomic(join(dir, "tunnel_fill.json"), JSON.stringify(summary, null, 1));
   return summary;
