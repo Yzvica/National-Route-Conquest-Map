@@ -345,3 +345,23 @@ describe("旅行(/api/journeys)", () => {
     }
   });
 });
+
+describe("旅行から外す(PATCH /api/journeys/<id>)", () => {
+  it("外すものを置き換え、名前を付け直しても残る", async () => {
+    const app = createApp().listen(0);
+    await new Promise((ok) => app.once("listening", ok));
+    const base = `http://localhost:${app.address().port}/api/journeys`;
+    try {
+      const list = await (await fetch(base, { method: "POST", body: JSON.stringify({ name: "四国", from: "2027-01-01", to: "2027-01-03" }) })).json();
+      const j = list.find((x) => x.name === "四国");
+      expect(j.exclude).toEqual([]);
+      const r = await fetch(`${base}/${j.id}`, { method: "PATCH", body: JSON.stringify({ exclude: ["log:1-a.gz", "trip:t1", "log:1-a.gz", "bad", 3] }) });
+      expect((await r.json()).find((x) => x.id === j.id).exclude).toEqual(["log:1-a.gz", "trip:t1"]);
+      const renamed = await (await fetch(base, { method: "POST", body: JSON.stringify({ name: "四国旅行", from: "2027-01-01", to: "2027-01-03" }) })).json();
+      expect(renamed.find((x) => x.id === j.id)).toMatchObject({ name: "四国旅行", exclude: ["log:1-a.gz", "trip:t1"] });
+      expect((await fetch(`${base}/none`, { method: "PATCH", body: "{}" })).status).toBe(404);
+    } finally {
+      app.close();
+    }
+  });
+});

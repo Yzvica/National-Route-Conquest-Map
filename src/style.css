@@ -282,6 +282,13 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .journey-row input { flex: 1; min-width: 0; padding: 6px; font-size: 16px; }
 .journey-row .journey-name { flex: 1; font-weight: 700; }
 .journey-row button { white-space: nowrap; }
+.period-list li:not(.period-day) { display: flex; align-items: stretch; }
+.period-list li > a { flex: 1; min-width: 0; }
+.period-list .exclude { flex: none; width: 32px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+.period-list .exclude:hover { color: #c62828; }
+.period-list li.excluded a { opacity: 0.55; }
+.period-excluded { margin: 8px 0; font-size: 13px; }
+.period-excluded summary { cursor: pointer; color: var(--muted); }
 .log-list li.selected > a { background: var(--bar); box-shadow: inset 4px 0 0 #8e24aa; font-weight: 700; }
 
 /* ---- スマホ(iPhone)の狭い画面 ---- */
