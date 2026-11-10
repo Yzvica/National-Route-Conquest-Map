@@ -3,8 +3,9 @@
 import { distance } from "./geo";
 import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
-import { includedItems, journeyOf, periodList, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
+import { includedItems, journeyOf, periodList, showBox, tripRow, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { trackLength } from "./trips";
+import { tripDay, type TravelTrip } from "./travel";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
 /** 速度はこの秒数ぶん離れた点どうしで求める(GPS の細かい揺れで速く見えないように) */
@@ -238,11 +239,27 @@ export interface PeriodView {
   note?: string;
 }
 
+/** 一覧のチェック(地図に出すもの)と、期間を指定していない一覧に並べる旅の記録 */
+export interface ShowView {
+  /** 地図に出すもの(itemKey の値) */
+  shown: Set<string>;
+  /** 旅の記録(年で絞り込む前のすべて) */
+  trips: TravelTrip[];
+}
+
 /** 年の欄で、保存した旅行を選んだときの値 */
 export const journeyValue = (id: string) => `journey:${id}`;
 
 /** ログタブの一覧。selectedId: 右に詳細を出しているログ */
-export function logListPanel(logs: SavedLog[] | null, year: string, shared: boolean, selectedId?: string, period?: PeriodView, journeys: Journey[] = []): string {
+export function logListPanel(
+  logs: SavedLog[] | null,
+  year: string,
+  shared: boolean,
+  selectedId?: string,
+  period?: PeriodView,
+  journeys: Journey[] = [],
+  show: ShowView = { shown: new Set(), trips: [] },
+): string {
   if (logs === null) return `<p class="muted">読み込み中…</p>`;
   if (!shared) {
     return `<p class="muted">ログを残せるのは、MiniPC のサーバーで開いたときだけです(このブラウザだけで使っているときは、読み込んだログを保存しません)。</p>`;
@@ -276,27 +293,37 @@ export function logListPanel(logs: SavedLog[] | null, year: string, shared: bool
       </div>
       ${save}
       <p class="muted">${periodSummary(includedItems(period.items, journey?.exclude))}</p>
-      <p class="muted">車のログと旅の記録(電車・飛行機など)をまとめて地図に出します。${period.note ? ` ${esc(period.note)}` : ""}</p>
+      <p class="muted">左のチェックを入れたものを地図に出します。地図右下の「旅」で、運転・電車などの手段ごとにまとめて切り替えられます(はじめは運転だけ)。${period.note ? ` ${esc(period.note)}` : ""}</p>
       ${period.items.length ? `<button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>` : ""}
       ${journey ? `<p class="muted">× で、この旅行から外せます(ログは消えません)。</p>` : ""}
-      ${periodList(period.items, period.known, selectedId, journey ? new Set(journey.exclude ?? []) : null)}`;
+      ${periodList(period.items, period.known, selectedId, journey ? new Set(journey.exclude ?? []) : null, show.shown)}`;
   }
   const shown = shownLogs(logs, year);
   const total = shown.reduce((s, l) => s + (l.m ?? 0), 0);
   const scored = shown.filter((l) => l.score !== undefined);
   const avg = scored.length ? scored.reduce((s, l) => s + l.score!, 0) / scored.length : undefined;
-  return `${select}
-    <p class="muted">${shown.length} 本・${km(total, 0)} km${avg !== undefined ? `・運転の平均 ${num(avg, 0)} 点(${scored.length} 本)` : ""}</p>
-    <ol class="log-list" data-scroll="logs">${shown
-      .map(
-        (l) => `<li${l.id === selectedId ? ` class="selected" aria-current="true"` : ""}><a href="#" data-log-open="${esc(l.id)}">
+  // 車のログと旅の記録を、日付・時刻の新しい順に混ぜて並べる(車のログどうしは sortLogs の順のまま)
+  const rows: { day: string; start: number; html: string }[] = shown.map((l) => ({
+    day: l.date ?? "",
+    start: l.start ?? -1,
+    html: `<li${l.id === selectedId ? ` class="selected" aria-current="true"` : ""}>${showBox(`log:${l.id}`, show.shown.has(`log:${l.id}`))}<a href="#" data-log-open="${esc(l.id)}">
           <span class="muted">${l.date ?? "日付なし"}${l.start !== undefined ? ` ${hm(l.start)}` : ""}</span>
-          <span class="log-name">${esc(l.name)}</span>
+          <span class="log-name">🚗 ${esc(l.name)}</span>
           <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span>
           ${weatherBadge(l.weather)}
           ${l.score !== undefined ? `<span class="eval-badge ${grade(l.score)}">${Math.round(l.score)} 点</span>` : ""}</a></li>`,
-      )
-      .join("")}</ol>`;
+  }));
+  for (const t of show.trips) {
+    const day = tripDay(t);
+    if (year !== "all" && day.slice(0, 4) !== year) continue;
+    rows.push({ day, start: t.start ? Date.parse(t.start) : -1, html: tripRow(t, show.shown.has(`trip:${t.id}`)) });
+  }
+  rows.sort((a, b) => (a.day === b.day ? b.start - a.start : a.day === "" ? 1 : b.day === "" ? -1 : b.day.localeCompare(a.day)));
+  const checked = show.shown.size;
+  return `${select}
+    <p class="muted">${shown.length} 本・${km(total, 0)} km${avg !== undefined ? `・運転の平均 ${num(avg, 0)} 点(${scored.length} 本)` : ""}</p>
+    <p class="muted">左のチェックを入れたログだけを地図に出します。${checked ? `(${checked} 本を表示中 <button id="show-clear" type="button" class="link">すべて外す</button>)` : ""}</p>
+    <ol class="log-list" data-scroll="logs">${rows.map((r) => r.html).join("")}</ol>`;
 }
 
 const grade = (score: number) => (score >= 80 ? "good" : score >= 50 ? "fair" : "poor");

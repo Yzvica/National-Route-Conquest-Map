@@ -283,6 +283,11 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .journey-row .journey-name { flex: 1; font-weight: 700; }
 .journey-row button { white-space: nowrap; }
 .period-list li:not(.period-day) { display: flex; align-items: stretch; }
+/* 地図に出すかどうかのチェック(一覧の行の左) */
+.log-list li:has(> input.show) { display: flex; align-items: center; }
+.log-list li > input.show { flex: none; width: 18px; height: 18px; margin: 0 6px 0 2px; cursor: pointer; }
+.log-list li:has(> input.show) > a { flex: 1; min-width: 0; }
+button.link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .period-list li > a { flex: 1; min-width: 0; }
 .period-list .exclude { flex: none; width: 32px; border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--muted); font-size: 16px; cursor: pointer; }
 .period-list .exclude:hover { color: #c62828; }

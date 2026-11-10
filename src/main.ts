@@ -35,8 +35,8 @@ import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTr
 import { isSplitIndex, openSplit } from "./splitData";
 import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
-import { addTravelLayer, loadTravelTrips, showOnlyTrips, tripBounds, tripDay, type TravelTrip } from "./travel";
-import { addJourney, deleteJourney, fetchJourneys, includedItems, inPeriod, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period } from "./period";
+import { addTravelLayer, loadTravelTrips, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
+import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
@@ -714,7 +714,7 @@ $("pref-picker").addEventListener("change", (e) => {
 /** 国道・高速道路・都道府県道を切り替える */
 function showDataset(kind: DatasetKind) {
   active = kind;
-  if (logMode && logYear === "range") clearPeriod();
+  if (logMode) clearPeriod();
   logMode = false;
   for (const b of $("tabs").querySelectorAll<HTMLButtonElement>("button")) {
     b.setAttribute("aria-selected", String(b.dataset.kind === kind));
@@ -1197,14 +1197,14 @@ function showLogs() {
   select(null, false);
   renderLogs();
   void refreshLogs().then(() => {
-    if (logMode && logYear === "range") void showPeriod(true);
+    if (logMode) void drawSelection(logYear === "range");
   });
 }
 
 function renderLogs() {
   if (!logMode) return;
   keepScroll(() => {
-    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id, logYear === "range" ? periodView() : undefined, journeys);
+    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id, logYear === "range" ? periodView() : undefined, journeys, { shown: shownKeys(), trips: periodTrips });
     renderLogDetail();
   });
 }
@@ -1242,16 +1242,99 @@ function thinTrack(track: TrackPoint[]): [number, number][] {
   return out;
 }
 
-/** 期間に入る車のログと旅の記録を地図にまとめて出す。fit なら読み終えてから全体に合わせる */
-async function showPeriod(fit: boolean) {
+// ---- 地図に出すログ(一覧の左のチェック) ----
+// 期間を指定しているときは、「旅」パネルで選んだ手段のものを出し、一覧のチェックで1本ずつ変えられる(期間ごとに覚える)。
+// 期間を指定していないときは、何も出さず、一覧でチェックしたものだけを出す。どちらもこの端末だけに覚える
+
+const SHOWN_KEY = "kokudo-log-shown";
+const PERIOD_SHOWN_KEY = "kokudo-period-shown";
+const readJson = <T,>(key: string, fallback: T): T => {
+  try {
+    return (JSON.parse(localStorage.getItem(key) ?? "null") as T) ?? fallback;
+  } catch {
+    return fallback;
+  }
+};
+const writeJson = (key: string, v: unknown) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(v));
+  } catch {
+    // 保存できなくても今の画面では切り替えられる
+  }
+};
+/** 期間を指定していないときにチェックしたもの */
+let shownAll = new Set<string>(readJson<string[]>(SHOWN_KEY, []));
+/** 期間ごとに、手段の設定から変えたもの(期間 → itemKey → 出すか) */
+let periodShown = readJson<{ [period: string]: { [key: string]: boolean } }>(PERIOD_SHOWN_KEY, {});
+const periodKey = () => `${logPeriod.from}_${logPeriod.to}`;
+const modeOfItem = (it: PeriodItem): ShowMode => (it.kind === "log" ? "car" : it.trip.mode);
+
+/** 期間を指定していない一覧のすべて(車のログと旅の記録) */
+function allItems(): PeriodItem[] {
+  const items = periodItems(savedLogs ?? [], periodTrips, { from: "0000-01-01", to: "9999-12-31" });
+  for (const log of savedLogs ?? []) if (!log.date) items.push({ kind: "log", log, day: "", start: 0 });
+  return items;
+}
+
+/** いま地図に出すもの */
+function visibleItems(): PeriodItem[] {
+  if (!logMode) return [];
+  if (logYear === "range") {
+    const modes = new Set(travelModes());
+    const over = periodShown[periodKey()] ?? {};
+    return shownPeriodItems().filter((it) => over[itemKey(it)] ?? modes.has(modeOfItem(it)));
+  }
+  return allItems().filter((it) => shownAll.has(itemKey(it)));
+}
+
+/** 一覧のチェックを入れるもの */
+const shownKeys = () => new Set(visibleItems().map(itemKey));
+
+/** 一覧のチェックを変えた */
+function setShown(key: string, on: boolean) {
+  if (logYear === "range") {
+    const over = { ...(periodShown[periodKey()] ?? {}), [key]: on };
+    periodShown = { ...periodShown, [periodKey()]: over };
+    writeJson(PERIOD_SHOWN_KEY, periodShown);
+  } else {
+    if (on) shownAll.add(key);
+    else shownAll.delete(key);
+    writeJson(SHOWN_KEY, [...shownAll]);
+  }
+  void drawSelection(false);
+}
+
+setTravelHooks({
+  counts() {
+    if (!logMode || logYear !== "range") return null;
+    const c = new Map<ShowMode, { n: number; m: number }>();
+    for (const it of shownPeriodItems()) {
+      const k = modeOfItem(it);
+      const cur = c.get(k) ?? { n: 0, m: 0 };
+      c.set(k, { n: cur.n + 1, m: cur.m + (it.kind === "log" ? (it.log.m ?? 0) : it.trip.m) });
+    }
+    return c;
+  },
+  // 手段のチェックを変えたら、その手段で1本ずつ変えていたものは手段の設定に戻す
+  onModes(changed) {
+    const over = { ...(periodShown[periodKey()] ?? {}) };
+    for (const it of currentPeriodItems()) if (modeOfItem(it) === changed) delete over[itemKey(it)];
+    periodShown = { ...periodShown, [periodKey()]: over };
+    writeJson(PERIOD_SHOWN_KEY, periodShown);
+    void drawSelection(false);
+  },
+  fit: () => fitPeriod(),
+});
+
+/** 地図に出すもの(一覧でチェックしたもの)を出す。車のログは読んでから出す。fit なら読み終えてから全体に合わせる */
+async function drawSelection(fit: boolean) {
   const seq = ++periodSeq;
   const store = await storePromise;
   periodTrips = await loadTravelTrips().catch(() => []);
-  if (seq !== periodSeq || logYear !== "range") return;
-  const out = new Set(journeyOf(journeys, logPeriod)?.exclude ?? []);
-  const trips = periodTrips.filter((t) => inPeriod(tripDay(t), logPeriod) && !out.has(`trip:${t.id}`));
-  showOnlyTrips(trips.map((t) => t.id));
-  const logs = (savedLogs ?? []).filter((l) => inPeriod(l.date, logPeriod) && !out.has(`log:${l.id}`));
+  if (seq !== periodSeq) return;
+  const items = visibleItems();
+  showOnlyTrips(items.flatMap((i) => (i.kind === "trip" ? [i.trip.id] : [])));
+  const logs = items.flatMap((i) => (i.kind === "log" ? [i.log] : []));
   const draw = () =>
     showPeriodTracks(
       map,
@@ -1260,6 +1343,7 @@ async function showPeriod(fit: boolean) {
     );
   draw();
   renderLogs();
+  refreshTravelPanel();
   const todo = logs.filter((l) => !periodTracks.has(l.id));
   let done = 0;
   const next = async (): Promise<void> => {
@@ -1292,9 +1376,9 @@ async function showPeriod(fit: boolean) {
   if (fit) fitPeriod();
 }
 
-/** 期間の車のログと旅の記録が全部入るように地図を合わせる */
+/** 地図に出している車のログと旅の記録が全部入るように地図を合わせる */
 function fitPeriod() {
-  const items = shownPeriodItems();
+  const items = visibleItems();
   const trips = items.flatMap((i) => (i.kind === "trip" ? [i.trip] : []));
   const cars: TravelTrip[] = items.flatMap((i) =>
     i.kind === "log" && periodTracks.get(i.log.id)?.coords.length
@@ -1305,12 +1389,13 @@ function fitPeriod() {
   if (box) fitBox(map, box, detailPadding());
 }
 
-/** 期間の表示をやめる(地図の線を消し、旅の記録を元の設定に戻す) */
+/** ログタブを離れたとき: 地図に出しているログの線を消す */
 function clearPeriod() {
   periodSeq++;
   periodNote = undefined;
   showPeriodTracks(map, [], () => {});
-  showOnlyTrips(null);
+  showOnlyTrips([]);
+  refreshTravelPanel();
 }
 
 /** 一覧での前後のログ(一覧に出ている順) */
@@ -1465,7 +1550,7 @@ function onLogClick(e: MouseEvent) {
     else next.delete(key);
     // すぐ画面に反映し、MiniPC に保存する
     j.exclude = [...next];
-    void showPeriod(false);
+    void drawSelection(false);
     void setJourneyExclude(j.id, j.exclude).then(
       (list) => (journeys = list),
       (err: Error) => toast([err.message]),
@@ -1487,6 +1572,12 @@ function onLogClick(e: MouseEvent) {
     const j = journeyOf(journeys, logPeriod);
     const name = j && prompt("旅行の名前", j.name)?.trim();
     if (j && name) void saveJourney(name);
+    return true;
+  }
+  if (el.closest("#show-clear")) {
+    shownAll = new Set();
+    writeJson(SHOWN_KEY, []);
+    void drawSelection(false);
     return true;
   }
   if (el.closest("#period-fit")) {
@@ -1554,29 +1645,31 @@ $("log-view").addEventListener("submit", (e) => {
 });
 $("log-view").addEventListener("change", (e) => {
   const el = e.target as HTMLInputElement | HTMLSelectElement;
+  if (el instanceof HTMLInputElement && el.dataset.show) {
+    setShown(el.dataset.show, el.checked);
+    return;
+  }
   if (el.id === "log-from" || el.id === "log-to") {
     const p = makePeriod($<HTMLInputElement>("log-from").value, $<HTMLInputElement>("log-to").value);
     if (!p) return;
     logPeriod = p;
     savePeriod(p);
-    void showPeriod(true);
+    void drawSelection(true);
     return;
   }
   if (el.id !== "log-year") return;
-  const wasRange = logYear === "range";
   // 保存した旅行を選んだら、その期間を出す
   const j = el.value.startsWith("journey:") ? journeys.find((x) => `journey:${x.id}` === el.value) : undefined;
   if (j) {
     logPeriod = { from: j.from, to: j.to };
     savePeriod(logPeriod);
     logYear = "range";
-    void showPeriod(true);
+    void drawSelection(true);
     renderLogs();
     return;
   }
   logYear = el.value;
-  if (logYear === "range") void showPeriod(true);
-  else if (wasRange) clearPeriod();
+  void drawSelection(logYear === "range");
   renderLogs();
 });
 
