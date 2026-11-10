@@ -7,6 +7,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { gunzipSync } from "node:zlib";
 import { judgeLog, type JudgeData } from "./judge";
 import { prefFileName, prefsOfTrack } from "./prefroads";
+import { RAIL_FILL_OPTIONS, railsFromData, type RailData } from "./railFill";
 import { fillTunnels, roadsFromData, type FilledSection, type SkippedSection } from "./tunnelFill";
 import type { PrefRoadIndex, RouteData, TrackPoint } from "./types";
 
@@ -14,7 +15,7 @@ export interface JudgeRequest {
   seq: number;
   /** data/logs にある保存済みのログ(「保存時刻-名前.gz」) */
   logId?: string;
-  /** iPhone の走行ロガーの走行フォルダ。location.csv のトンネルなどで途切れた区間を道路に沿って補う */
+  /** iPhone の走行ロガーの走行フォルダ。location.csv のトンネルなどで途切れた区間を道路(電車は線路)に沿って補う */
   fillDir?: string;
 }
 
@@ -22,6 +23,8 @@ export interface JudgeRequest {
 export interface FillSummary {
   version: 1;
   generatedAt: string;
+  /** 何に沿って補ったか(電車は線路、それ以外は道路)。古い結果にはない */
+  source?: "road" | "rail";
   sections: FilledSection[];
   skipped: SkippedSection[];
 }
@@ -79,20 +82,45 @@ function writeAtomic(path: string, text: string) {
   renameSync(`${path}.part`, path);
 }
 
-/** 走行フォルダの location.csv を補って、location_filled.csv と tunnel_fill.json を書く */
+/** 線路のデータ(電車の記録を補うときだけ読む。読めなければ undefined) */
+let rails: RailData | undefined | null = null;
+function loadRails(): RailData | undefined {
+  if (rails === null) {
+    try {
+      rails = JSON.parse(gunzipSync(readFileSync(join(dataDir, "railways.json.gz"))).toString("utf8")) as RailData;
+    } catch {
+      rails = undefined;
+    }
+  }
+  return rails;
+}
+
+/** 走行フォルダの location.csv を補って、location_filled.csv と tunnel_fill.json を書く。電車は線路に沿って補う */
 async function fillDir(dir: string): Promise<FillSummary> {
   const text = readFileSync(join(dir, "location.csv"), "utf8");
-  // 都道府県道は、ログが通った都道府県のものを使う
-  const pts: TrackPoint[] = [];
-  for (const line of text.split(/\r?\n/).slice(1)) {
-    const f = line.split(",");
-    const lat = Number(f[1]), lon = Number(f[2]);
-    if (f.length > 2 && Number.isFinite(lat) && Number.isFinite(lon)) pts.push({ lat, lon });
+  const meta = readJson<{ mode?: string }>(join(dir, "meta.json"));
+  let r;
+  let source: "road" | "rail";
+  if (meta?.mode === "train") {
+    const rd = loadRails();
+    if (!rd) throw new Error("線路のデータ(dist/data/railways.json.gz)がありません");
+    r = fillTunnels(text, railsFromData(rd), RAIL_FILL_OPTIONS);
+    source = "rail";
+  } else {
+    if (!data.kokudo) throw new Error("国道のデータ(dist/data/routes.json)がありません");
+    // 都道府県道は、ログが通った都道府県のものを使う
+    const pts: TrackPoint[] = [];
+    for (const line of text.split(/\r?\n/).slice(1)) {
+      const f = line.split(",");
+      const lat = Number(f[1]), lon = Number(f[2]);
+      if (f.length > 2 && Number.isFinite(lat) && Number.isFinite(lon)) pts.push({ lat, lon });
+    }
+    const prefs: (RouteData | undefined)[] = [];
+    if (data.prefIndex) for (const code of prefsOfTrack(data.prefIndex, pts)) prefs.push(await data.loadPref(code));
+    r = fillTunnels(text, roadsFromData([data.kokudo, data.expressway, ...prefs]));
+    source = "road";
   }
-  const prefs: (RouteData | undefined)[] = [];
-  if (data.prefIndex) for (const code of prefsOfTrack(data.prefIndex, pts)) prefs.push(await data.loadPref(code));
-  const r = fillTunnels(text, roadsFromData([data.kokudo, data.expressway, ...prefs]));
-  const summary: FillSummary = { version: 1, generatedAt: new Date().toISOString(), sections: r.sections, skipped: r.skipped };
+  const summary: FillSummary = { version: 1, generatedAt: new Date().toISOString(), source, sections: r.sections, skipped: r.skipped };
   writeAtomic(join(dir, "location_filled.csv"), r.csv);
   writeAtomic(join(dir, "tunnel_fill.json"), JSON.stringify(summary, null, 1));
   return summary;
@@ -102,7 +130,6 @@ parentPort!.on("message", async ({ seq, logId, fillDir: dir }: JudgeRequest) => 
   const reply = (r: Omit<JudgeResponse, "seq">) => parentPort!.postMessage({ seq, ...r } satisfies JudgeResponse);
   if (dir !== undefined) {
     try {
-      if (!data.kokudo) throw new Error("国道のデータ(dist/data/routes.json)がありません");
       parentPort!.postMessage({ seq, fill: await fillDir(dir) });
     } catch (e) {
       reply({ error: (e as Error).message });

@@ -48,6 +48,9 @@ if ($LASTEXITCODE -eq 3) {
 } else {
     Write-Host "都道府県道のデータ(prefroads.tar.gz)を取れませんでした。今あるもの(なければ都道府県道なし)で続けます。"
 }
+# 線路のデータ(電車の記録の途切れを線路に沿って補うのに使う)。なくても電車を補わないだけで動く
+& node scripts/download_release.mjs public/data railways.json.gz
+if ($LASTEXITCODE -notin 0, 3) { Write-Host "線路のデータ(railways.json.gz)を取れませんでした。今あるもの(なければ電車の補完なし)で続けます。" }
 Run npm @("run", "build")
 # 自動更新(check_update.mjs)が「取り込んだがビルドしていない」を見分けるため、ビルドできたコミットを残す
 New-Item -ItemType Directory -Force data | Out-Null

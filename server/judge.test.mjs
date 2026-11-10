@@ -97,10 +97,11 @@ describe("トンネルの補間", () => {
   const put = (q, body) => fetch(`${root}/rawlog?${q}`, { method: "PUT", body });
   const raw = (...p) => join(process.env.RAW_LOG_DIR, ...p);
 
-  it("車と同乗だけ自動で補う(mode のない古い記録は、車のフォルダなら車)", () => {
+  it("車・同乗と、線路のデータがあれば電車を自動で補う(mode のない古い記録は、車のフォルダなら車)", () => {
     expect(shouldFill("drive", { mode: "car" })).toBe(true);
     expect(shouldFill("trip", { mode: "ride" })).toBe(true);
-    expect(shouldFill("trip", { mode: "train" })).toBe(false);
+    expect(shouldFill("trip", { mode: "train" }, false)).toBe(false);
+    expect(shouldFill("trip", { mode: "train" }, true)).toBe(true);
     expect(shouldFill("trip", { mode: "plane" })).toBe(false);
     expect(shouldFill("drive", null)).toBe(true);
     expect(shouldFill("trip", {})).toBe(false);

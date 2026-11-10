@@ -7,4 +7,5 @@ data/
 public/data/prefroads/
 public/data/split/
 public/data/*.tar.gz
+public/data/*.json.gz
 server/build/

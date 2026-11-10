@@ -13,6 +13,8 @@ export interface FillRoad {
   tunnel: boolean;
   /** 路線名(まとめに出す) */
   name?: string;
+  /** 通るときに道のりへ足す分(m)。電車の乗り換えのつなぎで、むやみに乗り換えないようにする */
+  penaltyM?: number;
 }
 
 /** 範囲 [西, 南, 東, 北] にかかる道路を返す */
@@ -162,9 +164,10 @@ class Graph {
       if (a === b) continue;
       const len = distance(road.coords[i - 1], road.coords[i]);
       const e = this.edges.length;
+      const pen = road.penaltyM ?? 0;
       this.edges.push({ a, b, len, road });
-      this.link(a, b, len, len, e);
-      this.link(b, a, len, road.oneway ? len * wrongWay : len, e);
+      this.link(a, b, len, len + pen, e);
+      this.link(b, a, len, (road.oneway ? len * wrongWay : len) + pen, e);
     }
   }
 }
@@ -219,6 +222,8 @@ function snaps(g: Graph, p: LonLat, course: number | undefined, maxD: number): S
   const out: Snap[] = [];
   for (let e = 0; e < g.edges.length; e++) {
     const ed = g.edges[e];
+    // 乗り換えのつなぎ(線路ではない)には下ろさない
+    if (ed.road.penaltyM) continue;
     const pr = project(p, g.coords[ed.a], g.coords[ed.b]);
     if (pr.d > maxD) continue;
     if (course !== undefined) {

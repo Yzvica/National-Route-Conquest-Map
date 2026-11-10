@@ -1,5 +1,6 @@
 # OSM から国道・高速道路・都道府県道のデータを作り直し、リリース "route-data" に
 # routes.json / expressways.json / prefroads.tar.gz(都道府県ごとのファイルをまとめたもの)として置く。
+# 電車の記録の途切れを線路に沿って補うための線路データ railways.json.gz(サーバーだけで使う)も作る。
 # 各区間には都道府県を付け、地図の色分け用の都道府県の形 prefectures.json も置く。
 # データは大きいのでリポジトリには入れない。Actions タブから手動で実行する。
 name: 国道・高速道路・都道府県道のデータを更新
@@ -13,9 +14,9 @@ on:
         options: [geofabrik, overpass]
         default: geofabrik
       target:
-        description: "作り直すデータ(both: 全部 / kokudo: 国道だけ / expressway: 高速道路だけ / prefroad: 都道府県道だけ / old: 今の国道データに旧道を付け直すだけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
+        description: "作り直すデータ(both: 全部 / kokudo: 国道だけ / expressway: 高速道路だけ / prefroad: 都道府県道だけ / railway: 線路だけ / old: 今の国道データに旧道を付け直すだけ / pref: 今のデータに都道府県を付けるだけ。geofabrik のとき)"
         type: choice
-        options: [both, kokudo, expressway, prefroad, old, pref]
+        options: [both, kokudo, expressway, prefroad, railway, old, pref]
         default: both
       detail:
         description: "確認用: 旧道を一覧でログに出す国道番号(例: 1 2)/ 都道府県道で扱いをログに出す名前(例: 津久井道)。空欄なら出さない"
@@ -100,6 +101,13 @@ jobs:
           PREFROAD_DETAIL: ${{ inputs.detail }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 線路は道路のデータと関係ないので、先に作って終わりにできる
+          if [ "$TARGET" = both ] || [ "$TARGET" = railway ]; then
+            osmium tags-filter japan.osm.pbf w/railway=rail,subway,light_rail,monorail,narrow_gauge n/railway=station,halt -o rail.osm.pbf
+            python3 scripts/build_railways.py rail.osm.pbf --out railways.json.gz
+            rm rail.osm.pbf
+          fi
+          [ "$TARGET" = railway ] && exit 0
           osmium tags-filter japan.osm.pbf r/network=JP:national -o kokudo.osm.pbf
           osmium tags-filter japan.osm.pbf w/highway=motorway,motorway_link,trunk_link w/motorroad=yes w/toll=yes -o expressway.osm.pbf
           osmium tags-filter japan.osm.pbf r/admin_level=4 -o pref.osm.pbf
@@ -144,6 +152,15 @@ jobs:
           fi
           python3 scripts/add_prefectures.py pref.osm.pbf "${files[@]}" --out prefectures.json --fallback prefectures-prev.json
 
+      - name: 線路のデータを確認用に置く
+        if: inputs.source != 'overpass' && (inputs.target == 'both' || inputs.target == 'railway')
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: railways
+          path: railways.json.gz
+          retention-days: 7
+
       - name: Overpass API から取得して変換
         if: inputs.source == 'overpass'
         env:
@@ -158,10 +175,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -lh routes.json expressways.json prefectures.json prefroads.tar.gz || true
+          ls -lh routes.json expressways.json prefectures.json prefroads.tar.gz railways.json.gz || true
           gh release view route-data >/dev/null 2>&1 || \
             gh release create route-data --title "国道データ" --notes "build_routes.py で生成した国道データ"
           # 作ったものだけ置く(高速道路・都道府県道・都道府県は Geofabrik から作ったときだけできる)
-          for f in routes.json expressways.json prefectures.json prefroads.tar.gz; do
+          for f in routes.json expressways.json prefectures.json prefroads.tar.gz railways.json.gz; do
             if [ -f "$f" ]; then gh release upload route-data "$f" --clobber; fi
           done

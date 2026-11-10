@@ -117,12 +117,16 @@ export function tripLines(csv) {
 
 const cache = new Map();
 
-/** 1回の移動を読む。location.csv と meta.json が変わっていなければ前に作ったものを使う */
+/**
+ * 1回の移動を読む。location.csv と meta.json が変わっていなければ前に作ったものを使う。
+ * サーバーが途切れた区間を線路・道路に沿って補った location_filled.csv があれば、そちらを使う
+ */
 function loadTrip(dir, id) {
-  const csvPath = join(dir, "location.csv");
+  const filled = join(dir, "location_filled.csv");
+  const csvPath = existsSync(filled) ? filled : join(dir, "location.csv");
   const metaPath = join(dir, "meta.json");
   if (!existsSync(csvPath)) return null;
-  const stamp = `${statSync(csvPath).mtimeMs}:${existsSync(metaPath) ? statSync(metaPath).mtimeMs : 0}`;
+  const stamp = `${csvPath}:${statSync(csvPath).mtimeMs}:${existsSync(metaPath) ? statSync(metaPath).mtimeMs : 0}`;
   const hit = cache.get(dir);
   if (hit?.stamp === stamp) return hit.trip;
   let meta = {};
