@@ -76,7 +76,13 @@ describe("ログタブの画面", () => {
   });
 
   it("一覧で選んだログに印を付け、詳細に前後のログへのボタンを出す", () => {
-    expect(logListPanel(logs, "all", true, logs[1].id)).toMatch(/<li class="selected"[^>]*><a href="#" data-log-open="2-b\.csv\.gz"/);
+    expect(logListPanel(logs, "all", true, logs[1].id)).toMatch(/<li class="selected"[^>]*><input [^>]*data-show="log:2-b\.csv\.gz"[^>]*\/><a href="#" data-log-open="2-b\.csv\.gz"/);
+    // チェックしたものだけにチェックが付き、旅の記録も日付順に混ざる
+    const trip = { id: "t1", mode: "train" as const, start: "2026-11-08T23:00:00Z", end: null, m: 5000, maxAltM: null, lines: [], gaps: [] };
+    const mixed = logListPanel(logs, "all", true, undefined, undefined, [], { shown: new Set(["trip:t1"]), trips: [trip] });
+    expect(mixed).toMatch(/data-show="trip:t1" checked/);
+    expect(mixed).not.toMatch(/data-show="log:[^"]*" checked/);
+    expect(mixed).toContain("1 本を表示中");
     expect(shownLogs(logs, "all").map((l) => l.id)).toEqual([logs[0].id, logs[1].id]);
     const html = logDetailPanel({ log: logs[0] }, { next: logs[1].id, index: 1, count: 2, folded: false });
     expect(html).toMatch(/id="log-prev"[^>]*disabled/);

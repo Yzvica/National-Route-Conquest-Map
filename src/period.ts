@@ -128,6 +128,20 @@ export function periodSummary(items: PeriodItem[]): string {
 /** 旅行から外すときに覚えておく名前(車のログは "log:<ログ ID>"、旅の記録は "trip:<走行 ID>") */
 export const itemKey = (it: PeriodItem) => (it.kind === "log" ? `log:${it.log.id}` : `trip:${it.trip.id}`);
 
+/** 地図に出すかどうかのチェック(一覧の行の左) */
+export const showBox = (key: string, on: boolean) =>
+  `<input type="checkbox" class="show" data-show="${esc(key)}"${on ? " checked" : ""} aria-label="地図に出す" title="地図に出す" />`;
+
+/** 期間を指定していない一覧に並べる、旅の記録の行(日付と時刻も出す) */
+export function tripRow(t: TravelTrip, shown: boolean): string {
+  const m = TRIP_MODES.find((x) => x.id === t.mode) ?? TRIP_MODES[3];
+  const key = `trip:${t.id}`;
+  return `<li class="period-trip">${showBox(key, shown)}<a href="#" data-trip-open="${esc(t.id)}">
+      <span class="muted">${esc(tripDay(t) || "日付なし")}${t.start ? ` ${hm(Date.parse(t.start))}` : ""}</span>
+      <span class="log-name"><span class="travel-swatch" style="background:${m.color}"></span> ${m.icon} ${m.label}</span>
+      <span class="muted">${km(t.m)} km</span></a></li>`;
+}
+
 /** 外したものを除いた一覧(地図・合計・前後の移動に使う) */
 export const includedItems = (items: PeriodItem[], exclude: Iterable<string> | undefined) => {
   const out = new Set(exclude ?? []);
@@ -139,9 +153,16 @@ export const includedItems = (items: PeriodItem[], exclude: Iterable<string> | u
  * known: 開始時刻が分かったログ(時刻を出す)。selectedId: 右に詳細を出しているログ。
  * exclude: 保存した旅行を開いているときの、外したもの。null なら外すボタンを出さない(名前を付けていない期間)
  */
-export function periodList(items: PeriodItem[], known: Set<string>, selectedId?: string, exclude: Set<string> | null = null): string {
+export function periodList(
+  items: PeriodItem[],
+  known: Set<string>,
+  selectedId?: string,
+  exclude: Set<string> | null = null,
+  shown: Set<string> = new Set(),
+): string {
   const row = (it: PeriodItem, out: boolean) => {
     const key = itemKey(it);
+    const check = out ? "" : showBox(key, shown.has(key));
     const btn =
       exclude === null
         ? ""
@@ -151,14 +172,14 @@ export function periodList(items: PeriodItem[], known: Set<string>, selectedId?:
     if (it.kind === "log") {
       const l = it.log;
       const cls = [l.id === selectedId ? "selected" : "", out ? "excluded" : ""].filter(Boolean).join(" ");
-      return `<li${cls ? ` class="${cls}"` : ""}${l.id === selectedId ? ` aria-current="true"` : ""}><a href="#" data-log-open="${esc(l.id)}">
+      return `<li${cls ? ` class="${cls}"` : ""}${l.id === selectedId ? ` aria-current="true"` : ""}>${check}<a href="#" data-log-open="${esc(l.id)}">
         <span class="muted">${out ? esc(it.day.slice(5)) + " " : ""}${known.has(l.id) ? hm(it.start) : ""}</span>
         <span class="log-name">🚗 ${esc(l.name)}</span>
         <span class="muted">${l.m !== undefined ? `${km(l.m)} km` : ""}</span></a>${btn}</li>`;
     }
     const t = it.trip;
     const m = TRIP_MODES.find((x) => x.id === t.mode) ?? TRIP_MODES[3];
-    return `<li class="period-trip${out ? " excluded" : ""}"><a href="#" data-trip-open="${esc(t.id)}">
+    return `<li class="period-trip${out ? " excluded" : ""}">${check}<a href="#" data-trip-open="${esc(t.id)}">
         <span class="muted">${out ? esc(it.day.slice(5)) + " " : ""}${t.start ? hm(it.start) : ""}</span>
         <span class="log-name"><span class="travel-swatch" style="background:${m.color}"></span> ${m.icon} ${m.label}</span>
         <span class="muted">${km(t.m)} km</span></a>${btn}</li>`;

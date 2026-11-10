@@ -32,31 +32,54 @@ const LAYERS = ["travel-casing", "travel-gap", "travel-line"];
 /** 旅の記録より上に置く層(選んだ国道・読み込んだログなど、いま見ているもの) */
 const OVERLAY = /^(selected|selected-casing|focus|track|drive-events|period-tracks.*)$/;
 
-interface Settings {
-  on: boolean;
-  modes: TripMode[];
-}
-const KEY = "kokudo-travel";
-const DEFAULTS: Settings = { on: true, modes: ["train", "plane"] };
+/** 「旅」パネルで選ぶ手段。car は自分の運転(保存してある車のログ) */
+export type ShowMode = "car" | TripMode;
+export const PANEL_MODES: { id: ShowMode; label: string; icon: string; color: string }[] = [
+  { id: "car", label: "運転", icon: "🚗", color: "#c2185b" },
+  ...TRIP_MODES,
+];
 
-export function loadSettings(): Settings {
+const KEY = "kokudo-travel-modes";
+/** はじめは自分の運転だけ */
+const DEFAULT_MODES: ShowMode[] = ["car"];
+
+/** 期間を指定したときに、はじめから地図に出す手段 */
+export function travelModes(): ShowMode[] {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) ?? "null");
-    if (v && typeof v.on === "boolean" && Array.isArray(v.modes)) {
-      return { on: v.on, modes: v.modes.filter((m: string) => TRIP_MODES.some((x) => x.id === m)) };
-    }
+    if (Array.isArray(v)) return PANEL_MODES.map((m) => m.id).filter((id) => v.includes(id));
   } catch {
     // 保存できないブラウザでは毎回はじめの設定にする
   }
-  return { ...DEFAULTS, modes: [...DEFAULTS.modes] };
+  return [...DEFAULT_MODES];
 }
 
-function saveSettings(s: Settings) {
+function saveModes(modes: ShowMode[]) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(s));
+    localStorage.setItem(KEY, JSON.stringify(modes));
   } catch {
     // 保存できなくても切り替えはできる
   }
+}
+
+/** 「旅」パネルが main.ts に聞くこと・知らせること */
+export interface TravelHooks {
+  /** 期間を指定しているときの手段ごとの本数と距離(m)。期間を指定していなければ null */
+  counts(): Map<ShowMode, { n: number; m: number }> | null;
+  /** 手段のチェックを変えた */
+  onModes(changed: ShowMode, on: boolean): void;
+  /** 地図に出ているものが全部入るように合わせる */
+  fit(): void;
+}
+let hooks: TravelHooks = { counts: () => null, onModes: () => {}, fit: () => {} };
+let rerender: () => void = () => {};
+export function setTravelHooks(h: TravelHooks) {
+  hooks = h;
+  rerender();
+}
+/** 期間や一覧が変わったので、開いているパネルを描き直す */
+export function refreshTravelPanel() {
+  rerender();
 }
 
 interface TravelFeature {
@@ -102,13 +125,9 @@ export function describeTrip(t: TravelTrip): string[] {
   return lines;
 }
 
-/** only: ログタブで期間を指定しているときに出す移動(手段の設定にかかわらず、これだけを出す) */
-const layerFilter = (id: string, modes: TripMode[], only: string[] | null = null) =>
-  [
-    "all",
-    ["==", ["get", "gap"], id === "travel-gap" ? 1 : 0],
-    only ? ["in", ["get", "id"], ["literal", only]] : ["in", ["get", "mode"], ["literal", modes]],
-  ] as never;
+/** only: 地図に出す移動(ログタブの一覧でチェックしたもの)。空なら何も出さない */
+const layerFilter = (id: string, only: string[]) =>
+  ["all", ["==", ["get", "gap"], id === "travel-gap" ? 1 : 0], ["in", ["get", "id"], ["literal", only]]] as never;
 
 /** 移動の日付(日本時間の YYYY-MM-DD)。時刻がなければ "" */
 export function tripDay(t: TravelTrip): string {
@@ -152,9 +171,9 @@ export function loadTravelTrips(force = false): Promise<TravelTrip[]> {
   return loading;
 }
 
-let highlight: (only: string[] | null) => void = () => {};
-/** ログタブで期間を指定したとき、その期間の移動だけを(旅の記録の設定にかかわらず)出す。null で元に戻す */
-export function showOnlyTrips(only: string[] | null) {
+let highlight: (only: string[]) => void = () => {};
+/** 地図に出す移動を決める(ログタブの一覧でチェックしたもの)。空なら何も出さない */
+export function showOnlyTrips(only: string[]) {
   highlight(only);
 }
 
@@ -169,20 +188,20 @@ function keepOrder(map: maplibregl.Map) {
   for (const id of LAYERS) map.moveLayer(id, before);
 }
 
-/** 旅の記録の線と、表示を切り替えるボタン(地図の右下)を置く */
+/** 旅の記録の線と、地図に出すものを選ぶボタン(地図の右下)を置く */
 export function addTravelLayer(map: maplibregl.Map) {
-  let settings = loadSettings();
-  let only: string[] | null = null;
+  let modes = travelModes();
+  let only: string[] = [];
 
   map.addSource(SOURCE, { type: "geojson", data: toGeoJSON([]) });
   const color = ["match", ["get", "mode"], ...TRIP_MODES.flatMap((m) => [m.id, m.color]), "#546e7a"] as never;
   const width = ["interpolate", ["linear"], ["zoom"], 4, 2, 12, 4] as never;
-  const layout = { visibility: settings.on ? ("visible" as const) : ("none" as const), "line-cap": "round" as const, "line-join": "round" as const };
+  const layout = { "line-cap": "round" as const, "line-join": "round" as const };
   map.addLayer({
     id: "travel-casing",
     type: "line",
     source: SOURCE,
-    filter: layerFilter("travel-casing", settings.modes),
+    filter: layerFilter("travel-casing", only),
     layout,
     paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 4, 4, 12, 7] as never, "line-opacity": 0.8 },
   });
@@ -190,7 +209,7 @@ export function addTravelLayer(map: maplibregl.Map) {
     id: "travel-gap",
     type: "line",
     source: SOURCE,
-    filter: layerFilter("travel-gap", settings.modes),
+    filter: layerFilter("travel-gap", only),
     layout: { ...layout, "line-cap": "butt" },
     paint: { "line-color": color, "line-width": width, "line-opacity": 0.7, "line-dasharray": [2, 2] },
   });
@@ -198,31 +217,22 @@ export function addTravelLayer(map: maplibregl.Map) {
     id: "travel-line",
     type: "line",
     source: SOURCE,
-    filter: layerFilter("travel-line", settings.modes),
+    filter: layerFilter("travel-line", only),
     layout,
     paint: { "line-color": color, "line-width": width, "line-opacity": 0.9 },
   });
   keepOrder(map);
   map.on("styledata", () => keepOrder(map));
 
-  const apply = () => {
-    for (const id of LAYERS) {
-      map.setLayoutProperty(id, "visibility", settings.on || only ? "visible" : "none");
-      map.setFilter(id, layerFilter(id, settings.modes, only));
-    }
-    saveSettings(settings);
-    control.render();
-  };
   highlight = (o) => {
     only = o;
-    apply();
+    for (const id of LAYERS) map.setFilter(id, layerFilter(id, only));
   };
 
   listeners.push(() => {
     (map.getSource(SOURCE) as maplibregl.GeoJSONSource).setData(toGeoJSON(trips));
     control.render();
   });
-  const load = () => void loadTravelTrips(true);
 
   const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "260px" });
   map.on("click", "travel-line", (e) => {
@@ -237,12 +247,7 @@ export function addTravelLayer(map: maplibregl.Map) {
   map.on("mouseenter", "travel-line", () => (map.getCanvas().style.cursor = "pointer"));
   map.on("mouseleave", "travel-line", () => (map.getCanvas().style.cursor = ""));
 
-  const fit = () => {
-    const shown = trips.filter((t) => settings.modes.includes(t.mode));
-    const b = new maplibregl.LngLatBounds();
-    for (const t of shown) for (const l of [...t.lines, ...t.gaps]) for (const p of l) b.extend(p);
-    if (!b.isEmpty()) map.fitBounds(b, { padding: 40, maxZoom: 13 });
-  };
+  const text = (tag: string, className: string, textContent: string) => Object.assign(document.createElement(tag), { className, textContent });
 
   class TravelControl implements maplibregl.IControl {
     private el = document.createElement("div");
@@ -253,7 +258,7 @@ export function addTravelLayer(map: maplibregl.Map) {
       this.button.type = "button";
       this.button.className = "travel-toggle";
       this.button.textContent = "旅";
-      this.button.title = "旅の記録(電車・飛行機など)";
+      this.button.title = "地図に出すログ(運転・電車・飛行機など)";
       this.button.setAttribute("aria-label", this.button.title);
       this.button.addEventListener("click", () => {
         this.panel.hidden = !this.panel.hidden;
@@ -271,46 +276,43 @@ export function addTravelLayer(map: maplibregl.Map) {
       this.el.remove();
     }
     render() {
-      this.button.classList.toggle("on", settings.on);
+      const counts = hooks.counts();
+      this.button.classList.toggle("on", counts !== null);
       this.button.setAttribute("aria-expanded", String(!this.panel.hidden));
       if (this.panel.hidden) return;
       this.panel.replaceChildren();
-      const head = document.createElement("label");
-      head.className = "travel-head";
-      const all = Object.assign(document.createElement("input"), { type: "checkbox", checked: settings.on });
-      all.addEventListener("change", () => {
-        settings = { ...settings, on: all.checked };
-        apply();
-      });
-      head.append(all, " 旅の記録を表示");
-      this.panel.append(head);
-      for (const m of TRIP_MODES) {
-        const list = trips.filter((t) => t.mode === m.id);
-        const row = document.createElement("label");
-        row.className = "travel-row";
-        const box = Object.assign(document.createElement("input"), { type: "checkbox", checked: settings.modes.includes(m.id), disabled: !settings.on });
-        box.addEventListener("change", () => {
-          const modes = TRIP_MODES.map((x) => x.id).filter((id) => (id === m.id ? box.checked : settings.modes.includes(id)));
-          settings = { ...settings, modes };
-          apply();
-        });
-        const swatch = Object.assign(document.createElement("span"), { className: "travel-swatch" });
-        swatch.style.background = m.color;
-        const km = list.reduce((s, t) => s + t.m, 0);
-        row.append(box, swatch, ` ${m.icon} ${m.label}`, Object.assign(document.createElement("span"), { className: "muted", textContent: ` ${list.length}回 ${formatKm(km)}` }));
-        this.panel.append(row);
+      this.panel.append(text("div", "travel-head", "地図に出すもの"));
+      if (!counts) {
+        this.panel.append(
+          text("p", "muted", "ログタブの一覧でチェックしたログだけを地図に出します。期間を指定すると、ここで手段ごとにまとめて切り替えられます。"),
+        );
+      } else {
+        for (const m of PANEL_MODES) {
+          const c = counts.get(m.id) ?? { n: 0, m: 0 };
+          const row = document.createElement("label");
+          row.className = "travel-row";
+          const box = Object.assign(document.createElement("input"), { type: "checkbox", checked: modes.includes(m.id) });
+          box.addEventListener("change", () => {
+            modes = PANEL_MODES.map((x) => x.id).filter((id) => (id === m.id ? box.checked : modes.includes(id)));
+            saveModes(modes);
+            hooks.onModes(m.id, box.checked);
+            this.render();
+          });
+          const swatch = Object.assign(document.createElement("span"), { className: "travel-swatch" });
+          swatch.style.background = m.color;
+          row.append(box, swatch, ` ${m.icon} ${m.label}`, text("span", "muted", ` ${c.n}${m.id === "car" ? "本" : "回"} ${formatKm(c.m)}`));
+          this.panel.append(row);
+        }
+        this.panel.append(text("p", "muted", "一覧の左のチェックで、1本ずつ出したり消したりできます。"));
       }
-      if (failed) this.panel.append(Object.assign(document.createElement("p"), { className: "muted", textContent: failed }));
-      else if (!loadedAt) this.panel.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "読み込み中…" }));
-      else if (!trips.length) this.panel.append(Object.assign(document.createElement("p"), { className: "muted", textContent: "まだ記録がありません(iPhone の走行ロガーで電車・飛行機などを選んで記録すると出ます)" }));
-      else {
-        const b = Object.assign(document.createElement("button"), { type: "button", className: "travel-fit", textContent: "全体を表示" });
-        b.addEventListener("click", fit);
-        this.panel.append(b);
-      }
+      if (failed) this.panel.append(text("p", "muted", failed));
+      const b = Object.assign(document.createElement("button"), { type: "button", className: "travel-fit", textContent: "地図に出ているものを全体表示" });
+      b.addEventListener("click", () => hooks.fit());
+      this.panel.append(b);
     }
   }
   const control = new TravelControl();
+  rerender = () => control.render();
   map.addControl(control, "bottom-right");
-  load();
+  void loadTravelTrips(true);
 }
