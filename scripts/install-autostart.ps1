@@ -2,7 +2,7 @@
 # LAN の他の端末から 8080 番ポートに入れるようにする。管理者の PowerShell で実行する。
 #   powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -NoAutoUpdate   # 自動更新は登録しない
-# あわせて、1時間ごとに新しいコード・国道データを取り込む自動更新(install-autoupdate.ps1)も登録する。
+# あわせて、5分ごとに新しいコード・国道データを取り込む自動更新(install-autoupdate.ps1)も登録する。
 param([switch]$NoAutoUpdate)
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
