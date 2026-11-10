@@ -4,7 +4,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\update.ps1 -NoRestart   # 再起動はしない
 # 管理者でなくてよい。サーバーの再起動は scripts\restart-server.ps1 がタスクの中のループに頼む。
 # 国道データは前回から変わっていなければ取り直さない(scripts/download_release.mjs)。
-param([switch]$NoRestart)
+param([switch]$NoRestart, [switch]$SkipPull)
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -24,7 +24,20 @@ function Run($exe, [string[]]$argList) {
 # git の後片付け(gc)で「Deletion of directory ... failed. Should I try again? (y/n)」と何度も聞かれて
 # 止まることがあるので、自動で「いいえ」と答える。後片付けはこの更新では行わない(gc.auto=0)
 $env:GIT_ASK_YESNO = "false"
-Run git @("-c", "gc.auto=0", "pull", "--ff-only")
+if (-not $SkipPull) {
+    $self = (Get-FileHash $PSCommandPath).Hash
+    Run git @("-c", "gc.auto=0", "pull", "--ff-only")
+    # PowerShell は読み込んだ時点の update.ps1 で動き続けるので、pull でこのファイル自体が変わったら、
+    # 新しいもので続きをやり直す(#66 で足した線路データの取得が、取り込んだ回に動かなかった)
+    if ((Get-FileHash $PSCommandPath).Hash -ne $self) {
+        Write-Host "update.ps1 が新しくなったので、新しいもので続けます"
+        $mutex.ReleaseMutex()
+        $rest = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $PSCommandPath, "-SkipPull")
+        if ($NoRestart) { $rest += "-NoRestart" }
+        & powershell @rest
+        exit $LASTEXITCODE
+    }
+}
 Run npm @("ci")
 # 国道データ。回線によっては1本で取ると極端に遅いので、分けて同時に取る(scripts/download_release.mjs)
 # 終了コード 3 は「前回と同じなので取らなかった」
