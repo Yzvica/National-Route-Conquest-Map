@@ -63,3 +63,25 @@ describe("listTrips", () => {
     expect(listTrips(join(root, "none"))).toEqual([]);
   });
 });
+
+describe("listTrips(補った位置)", () => {
+  it("サーバーが線路に沿って補った location_filled.csv があればそちらで線を作る", () => {
+    const root = mkdtempSync(join(tmpdir(), "kokudo-trips-"));
+    const dir = join(root, "trips", "t");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ mode: "train" }));
+    writeFileSync(join(dir, "location.csv"), [HEAD, row(0, 35, 139), row(600, 35, 139.1)].join("\n"));
+    expect(listTrips(root)[0].gaps).toHaveLength(1);
+    // 補った点は精度・速度が空(src=road)
+    const filled = [`${HEAD},src`, `${row(0, 35, 139)},gps`];
+    for (let t = 10; t < 600; t += 10) {
+      const f = t / 600;
+      filled.push(`${t},${35 + 0.05 * (1 - Math.abs(1 - 2 * f))},${139 + 0.1 * f},,,,,,,,,15,road`);
+    }
+    filled.push(`${row(600, 35, 139.1)},gps`);
+    writeFileSync(join(dir, "location_filled.csv"), filled.join("\n"));
+    const t = listTrips(root)[0];
+    expect(t.gaps).toEqual([]);
+    expect(t.lines).toEqual([[[139, 35], [139.05, 35.05], [139.1, 35]]]);
+  });
+});

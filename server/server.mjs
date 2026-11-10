@@ -393,16 +393,19 @@ const RAW_READABLE = new Set(["location_filled.csv", "tunnel_fill.json", "weathe
 /** 走行ごとのフォルダ(車は RAW_LOG_DIR/<走行ID>、車以外は trips/<走行ID>) */
 const rawDir = (session, kind) => (kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session));
 
+/** 線路のデータ(電車の記録を補うのに使う。scripts/build_railways.py で作り、リリース route-data に置く) */
+const hasRails = () => existsSync(join(JUDGE_DATA, "railways.json.gz"));
+
 /**
- * 自動で補う走行か。車(運転)と同乗(バス・タクシー)だけ。電車・飛行機は道路に沿わないので補わない。
- * meta.json の mode がない古い記録は、車のフォルダなら車とみなす
+ * 自動で補う走行か。車(運転)と同乗(バス・タクシー)は道路に沿って、電車は線路に沿って補う(線路のデータがあるとき)。
+ * 飛行機は補わない。meta.json の mode がない古い記録は、車のフォルダなら車とみなす
  */
-export function shouldFill(kind, meta) {
+export function shouldFill(kind, meta, rails = hasRails()) {
   const mode = meta?.mode ?? (kind === "trip" ? "other" : "car");
-  return mode === "car" || mode === "ride";
+  return mode === "car" || mode === "ride" || (mode === "train" && rails);
 }
 
-/** 生データを受け取り終えたら(meta.json は最後に送られる)、トンネルの区間を補う */
+/** 生データを受け取り終えたら(meta.json は最後に送られる)、トンネルなどで途切れた区間を補う */
 function fillAfterUpload(dir, kind) {
   if (!serverJudge() || !existsSync(join(dir, "location.csv"))) return;
   let meta = null;
@@ -410,7 +413,28 @@ function fillAfterUpload(dir, kind) {
     meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
   } catch {}
   if (!shouldFill(kind, meta)) return;
-  void enqueue(() => fillOne(dir).catch((e) => console.error(`トンネルの補間に失敗: ${dir}: ${e.message}`)));
+  void enqueue(() => fillOne(dir).catch((e) => console.error(`途切れた区間の補間に失敗: ${dir}: ${e.message}`)));
+}
+
+/**
+ * 電車の記録で、まだ線路に沿って補っていないもの(線路のデータが入る前に届いたものなど)の走行フォルダ。
+ * 補ったことがあっても、道路で補った結果(手動の POST で道路に沿わせたもの)なら補い直す
+ */
+export function trainsToFill(root = RAW_LOG_DIR()) {
+  const base = join(root, "trips");
+  if (!existsSync(base)) return [];
+  const out = [];
+  for (const e of readdirSync(base, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue;
+    const dir = join(base, e.name);
+    try {
+      if (!existsSync(join(dir, "location.csv"))) continue;
+      if (JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).mode !== "train") continue;
+      const done = existsSync(join(dir, "tunnel_fill.json")) && JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8")).source === "rail";
+      if (!done) out.push(dir);
+    } catch {}
+  }
+  return out;
 }
 
 // --- 天気 ---
@@ -856,8 +880,8 @@ export function createApp() {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" });
         return res.end(body);
       }
-      // トンネルなどで途切れた区間を道路に沿って補った結果(?session=走行ID[&kind=trip])。
-      // GET は tunnel_fill.json を返す。POST は今すぐ補い直す(電車などの自動で補わない走行も補う)
+      // トンネルなどで途切れた区間を道路(電車は線路)に沿って補った結果(?session=走行ID[&kind=trip])。
+      // GET は tunnel_fill.json を返す。POST は今すぐ補い直す(自動で補わない走行も補う)
       if (url.pathname === "/api/rawlog/fill") {
         const session = url.searchParams.get("session") ?? "";
         const kind = url.searchParams.get("kind") ?? "drive";
@@ -992,6 +1016,11 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
       console.log("走行ログはこのサーバーで判定します");
       // 止まっている間に残っていた、まだ判定していないログ
       void enqueue(judgePending);
+      if (hasRails()) {
+        const trains = trainsToFill();
+        if (trains.length) console.log(`線路に沿って補っていない電車の記録 ${trains.length} 本を補います`);
+        for (const dir of trains) void enqueue(() => fillOne(dir).catch((e) => console.error(`途切れた区間の補間に失敗: ${dir}: ${e.message}`)));
+      }
     } else console.log("サーバーで判定する準備ができていないので、走行ログはブラウザで判定します(npm run build で準備できます)");
   });
 }
