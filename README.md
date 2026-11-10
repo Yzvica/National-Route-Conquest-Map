@@ -151,7 +151,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 ```
 
 - サーバーはタスク `KokudoMap`(ログオンしていなくても動く S4U)の中の `scripts\run-server.ps1` のループが動かします。1回分の起動と見守りは `scripts\server-once.ps1` で、起動のたびに読み直すので、ループを止めずに新しくなります
-- **自動更新**: あわせてタスク `KokudoMapUpdate` も登録され、1時間ごとに GitHub の main と国道データ(リリース route-data)を調べ、新しいものがあれば `scripts\update.ps1` で取り込んでサーバーを再起動します。git / gh のログイン情報を使うので、MiniPC にログオンしている間だけ動きます。記録は `data\update.log`。管理者なしで `scripts\install-autoupdate.ps1` だけ登録し直すこともでき、`-Remove` でやめられます
+- **自動更新**: あわせてタスク `KokudoMapUpdate` も登録され、5分ごとに GitHub の main と国道データ(リリース route-data)を調べ、新しいものがあれば `scripts\update.ps1` で取り込んでサーバーを再起動します。PR をマージすれば、遅くとも5分ほどで取り込みが始まり、ビルドと再起動まで数分で反映されます。調べるだけなら GitHub に2回問い合わせるだけで、国道データも変わっていなければ取り直しません。git / gh のログイン情報を使うので、MiniPC にログオンしている間だけ動きます。記録は `data\update.log`。管理者なしで `scripts\install-autoupdate.ps1` だけ登録し直すこともでき、`-Remove` でやめられます
 - 手で取り込むときは、フォルダ直下の `update.bat` をダブルクリックします(管理者は不要)。国道データは前回から変わっていなければ取り直しません
 - 再起動だけしたいときは `powershell -ExecutionPolicy Bypass -File scripts\restart-server.ps1`。`data\restart.request` を置いてタスクの中のループに頼むので、管理者でなくても(Remote Control からでも)再起動できます
   国道データなどはリリースから `scripts/download_release.mjs` で取ります。回線によって GitHub のファイル配信が極端に遅いことがあるので、256KBずつに分けて同時に取ります

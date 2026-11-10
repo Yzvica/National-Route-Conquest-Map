@@ -1,5 +1,5 @@
 // 新しいコード(GitHub の main)や国道データ(リリース route-data)が出ているかを調べる。
-// auto-update.ps1(タスク KokudoMapUpdate)が定期的に呼び、出ていれば update.ps1 で取り込んでサーバーを再起動する。
+// auto-update.ps1(タスク KokudoMapUpdate)が5分ごとに呼び、出ていれば update.ps1 で取り込んでサーバーを再起動する。
 //   node scripts/check_update.mjs
 // 終了コード: 0 = 最新 / 10 = 更新がある / 1 = 調べられなかった
 // fetch のあとに process.exit() で終えると、Windows の Node 24 で libuv のアサーション
