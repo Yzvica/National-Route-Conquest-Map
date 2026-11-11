@@ -35,12 +35,13 @@ const RAW_LOG_DIR = () => {
 const TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript",
+  ".mjs": "text/javascript",
   ".css": "text/css",
   ".json": "application/json",
   ".svg": "image/svg+xml",
   ".png": "image/png",
 };
-const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg"]);
+const COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".css", ".json", ".svg"]);
 
 // --- 走行記録 ---
 

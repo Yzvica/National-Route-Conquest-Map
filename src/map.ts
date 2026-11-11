@@ -1,8 +1,13 @@
-import maplibregl, { type GeoJSONSource } from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
+import type { GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+// MapLibre 6 は描画用の worker を別ファイルで読む。Vite の出力に含めて、その場所を教える
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import { splitLoaderOf } from "./splitData";
 import type { PassDates } from "./store";
 import type { Coverage, LonLat, RouteData, Segment, TrackPoint } from "./types";
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 const GSI_ATTRIBUTION =
   '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a> / 道路: © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>';
@@ -144,7 +149,7 @@ export function addMapControls(map: maplibregl.Map, notify: (lines: string[]) =>
   geolocate.on("trackuserlocationend", () => {
     gotPosition = false;
   });
-  geolocate.on("error", (e: GeolocationPositionError) => {
+  geolocate.on("error", (e) => {
     if (e.code === 3 && gotPosition) return;
     const detail = `(コード ${e.code}${e.message ? `: ${e.message}` : ""})`;
     if (e.code === 1) {
@@ -460,7 +465,7 @@ function addDetail(
             added[i] = 1;
             add.push(detailFeature(data.segments[i]));
           }
-          if (add.length) await src.updateData({ add }, true);
+          if (add.length) await src.updateData({ add });
         }
       } finally {
         flushing = false;
