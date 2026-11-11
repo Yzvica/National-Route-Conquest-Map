@@ -393,6 +393,9 @@ const RAW_READABLE = new Set(["location_filled.csv", "tunnel_fill.json", "weathe
 /** 走行ごとのフォルダ(車は RAW_LOG_DIR/<走行ID>、車以外は trips/<走行ID>) */
 const rawDir = (session, kind) => (kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session));
 
+/** 補い方の版(src/judgeWorker.ts の FILL_REV と合わせる) */
+const FILL_REV = 2;
+
 /** 線路のデータ(電車の記録を補うのに使う。scripts/build_railways.py で作り、リリース route-data に置く) */
 const hasRails = () => existsSync(join(JUDGE_DATA, "railways.json.gz"));
 
@@ -418,7 +421,7 @@ function fillAfterUpload(dir, kind) {
 
 /**
  * 電車の記録で、まだ線路に沿って補っていないもの(線路のデータが入る前に届いたものなど)の走行フォルダ。
- * 補ったことがあっても、道路で補った結果(手動の POST で道路に沿わせたもの)なら補い直す
+ * 補ったことがあっても、道路で補った結果(手動の POST で道路に沿わせたもの)や、補い方の版が古いものは補い直す
  */
 export function trainsToFill(root = RAW_LOG_DIR()) {
   const base = join(root, "trips");
@@ -430,7 +433,8 @@ export function trainsToFill(root = RAW_LOG_DIR()) {
     try {
       if (!existsSync(join(dir, "location.csv"))) continue;
       if (JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).mode !== "train") continue;
-      const done = existsSync(join(dir, "tunnel_fill.json")) && JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8")).source === "rail";
+      const prev = existsSync(join(dir, "tunnel_fill.json")) ? JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8")) : null;
+      const done = prev?.source === "rail" && (prev.rev ?? 1) >= FILL_REV;
       if (!done) out.push(dir);
     } catch {}
   }

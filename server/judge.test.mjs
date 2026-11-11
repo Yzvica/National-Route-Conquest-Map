@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ process.env.JUDGE_DATA_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-data-"));
 process.env.JUDGE_IDLE_MS = "10";
 process.env.RAW_LOG_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-raw-"));
 writeFileSync(join(process.env.JUDGE_DATA_DIR, "routes.json"), "{}");
-const { createApp, judgeIdle, shouldFill } = await import("./server.mjs");
+const { createApp, judgeIdle, shouldFill, trainsToFill } = await import("./server.mjs");
 
 describe("サーバーでの判定", () => {
   let server;
@@ -143,5 +143,24 @@ describe("トンネルの補間", () => {
     expect((await fetch(`${root}/rawlog/fill?session=..`, { method: "POST" })).status).toBe(400);
     expect((await fetch(`${root}/rawlog/fill?session=a&kind=x`)).status).toBe(400);
     expect((await fetch(`${root}/rawlog/fill?session=20200101-000000`, { method: "POST" })).status).toBe(404);
+  });
+});
+
+describe("trainsToFill", () => {
+  it("まだ線路で補っていない・補い方の版が古い電車の記録だけ返す", () => {
+    const root = mkdtempSync(join(tmpdir(), "kokudo-trains-"));
+    const put = (id, mode, fill) => {
+      const dir = join(root, "trips", id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "location.csv"), "unix_s,lat,lon\n");
+      writeFileSync(join(dir, "meta.json"), JSON.stringify({ mode }));
+      if (fill) writeFileSync(join(dir, "tunnel_fill.json"), JSON.stringify(fill));
+    };
+    put("new", "train");
+    put("road", "train", { source: "road", rev: 2 });
+    put("old", "train", { source: "rail" });
+    put("done", "train", { source: "rail", rev: 2 });
+    put("bus", "ride");
+    expect(trainsToFill(root).map((d) => d.split(/[\\/]/).pop()).sort()).toEqual(["new", "old", "road"]);
   });
 });
