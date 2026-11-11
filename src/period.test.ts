@@ -25,7 +25,7 @@ describe("期間を指定", () => {
     const starts = new Map([["2-b.gz", Date.parse("2026-11-09T12:00:00+09:00")]]);
     const items = periodItems(logs, trips, { from: "2026-11-08", to: "2026-11-09" }, starts);
     expect(items.map((i) => (i.kind === "log" ? i.log.id : i.trip.id))).toEqual(["1-a.gz", "p", "2-b.gz"]);
-    expect(periodSummary(items)).toBe("🚗 車 2本 42 km・✈️ 飛行機 1回 900 km(合計 942 km)");
+    expect(periodSummary(items)).toBe("🚗 運転 2本 42 km・✈️ 飛行機 1回 900 km(合計 942 km)");
     const html = periodList(items, new Set(["2-b.gz"]), "2-b.gz");
     expect(html).toContain("2026-11-09(月)");
     expect(html).toContain('data-trip-open="p"');
