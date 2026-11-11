@@ -10,7 +10,7 @@ import {
   type GameContext,
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, tripStats, weatherPoints, type LogDetail, type PassedRoute } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, tripStats, weatherPoints, type LogDetail, type LogKind, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -1204,7 +1204,7 @@ function showLogs() {
 function renderLogs() {
   if (!logMode) return;
   keepScroll(() => {
-    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id, logYear === "range" ? periodView() : undefined, journeys, { shown: shownKeys(), trips: periodTrips });
+    $("log-view").innerHTML = logListPanel(savedLogs, logYear, storeShared, logDetail?.log.id, logYear === "range" ? periodView() : undefined, journeys, { shown: shownKeys(), trips: periodTrips, kind: logKind });
     renderLogDetail();
   });
 }
@@ -1264,6 +1264,9 @@ const writeJson = (key: string, v: unknown) => {
 };
 /** 期間を指定していないときにチェックしたもの */
 let shownAll = new Set<string>(readJson<string[]>(SHOWN_KEY, []));
+/** ログタブで選んでいる乗り物のタブ */
+const LOG_KIND_KEY = "kokudo-log-kind";
+let logKind: LogKind = readJson<LogKind>(LOG_KIND_KEY, "all");
 /** 期間ごとに、手段の設定から変えたもの(期間 → itemKey → 出すか) */
 let periodShown = readJson<{ [period: string]: { [key: string]: boolean } }>(PERIOD_SHOWN_KEY, {});
 const periodKey = () => `${logPeriod.from}_${logPeriod.to}`;
@@ -1400,7 +1403,7 @@ function clearPeriod() {
 
 /** 一覧での前後のログ(一覧に出ている順) */
 function logNeighbors(id: string) {
-  const list = !savedLogs
+  const list = !savedLogs || (logKind !== "all" && logKind !== "car")
     ? []
     : logYear === "range"
       ? shownPeriodItems().flatMap((i) => (i.kind === "log" ? [i.log] : []))
@@ -1572,6 +1575,13 @@ function onLogClick(e: MouseEvent) {
     const j = journeyOf(journeys, logPeriod);
     const name = j && prompt("旅行の名前", j.name)?.trim();
     if (j && name) void saveJourney(name);
+    return true;
+  }
+  const kindTab = el.closest<HTMLElement>("[data-log-kind]");
+  if (kindTab) {
+    logKind = kindTab.dataset.logKind as LogKind;
+    writeJson(LOG_KIND_KEY, logKind);
+    renderLogs();
     return true;
   }
   if (el.closest("#show-clear")) {

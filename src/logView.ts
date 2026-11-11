@@ -5,7 +5,7 @@ import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
 import { includedItems, journeyOf, periodList, showBox, tripRow, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { trackLength } from "./trips";
-import { tripDay, type TravelTrip } from "./travel";
+import { PANEL_MODES, tripDay, type ShowMode, type TravelTrip } from "./travel";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
 /** 速度はこの秒数ぶん離れた点どうしで求める(GPS の細かい揺れで速く見えないように) */
@@ -245,6 +245,29 @@ export interface ShowView {
   shown: Set<string>;
   /** 旅の記録(年で絞り込む前のすべて) */
   trips: TravelTrip[];
+  /** 乗り物のタブ("all" ならすべて) */
+  kind?: LogKind;
+}
+
+/** ログタブで選ぶ乗り物("all" ならすべて、"car" は自分の運転) */
+export type LogKind = "all" | ShowMode;
+
+/** 一覧の行(車のログ・旅の記録)の乗り物 */
+const kindOfItem = (it: PeriodItem): ShowMode => (it.kind === "log" ? "car" : it.trip.mode);
+
+/** 選んだ乗り物のものだけにする */
+export const itemsOfKind = (items: PeriodItem[], kind: LogKind) => (kind === "all" ? items : items.filter((it) => kindOfItem(it) === kind));
+
+/** 年の欄の下に出す乗り物のタブ。記録のない乗り物は出さない(選んでいるものは出す) */
+export function kindTabs(items: PeriodItem[], kind: LogKind): string {
+  const count = (k: ShowMode) => items.filter((it) => kindOfItem(it) === k).length;
+  const tabs = [
+    { id: "all" as LogKind, label: "すべて", n: items.length },
+    ...PANEL_MODES.map((m) => ({ id: m.id as LogKind, label: `${m.icon} ${m.label}`, n: count(m.id) })),
+  ].filter((t) => t.id === "all" || t.n > 0 || t.id === kind);
+  return `<div class="kind-tabs" role="tablist" aria-label="乗り物">${tabs
+    .map((t) => `<button type="button" role="tab" data-log-kind="${t.id}" aria-selected="${t.id === kind}">${t.label}<span class="n">${t.n}</span></button>`)
+    .join("")}</div>`;
 }
 
 /** 年の欄で、保存した旅行を選んだときの値 */
@@ -277,8 +300,10 @@ export function logListPanel(
               .join("")}</optgroup>`
           : ""
       }</select></label>`;
+  const kind = show.kind ?? "all";
   if (year === "range" && period) {
     const p = period.period;
+    const items = itemsOfKind(period.items, kind);
     const save = journey
       ? `<div class="journey-row"><span class="journey-name">🧳 ${esc(journey.name)}</span>
           <button id="journey-rename" type="button" class="secondary">名前を変える</button>
@@ -292,16 +317,34 @@ export function logListPanel(
         <input id="log-to" type="date" value="${esc(p.to)}" aria-label="いつまで" />
       </div>
       ${save}
-      <p class="muted">${periodSummary(includedItems(period.items, journey?.exclude))}</p>
+      ${kindTabs(includedItems(period.items, journey?.exclude), kind)}
+      <p class="muted">${periodSummary(includedItems(items, journey?.exclude))}</p>
       <p class="muted">左のチェックを入れたものを地図に出します。地図右下の「旅」で、運転・電車などの手段ごとにまとめて切り替えられます(はじめは運転だけ)。${period.note ? ` ${esc(period.note)}` : ""}</p>
       ${period.items.length ? `<button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>` : ""}
       ${journey ? `<p class="muted">× で、この旅行から外せます(ログは消えません)。</p>` : ""}
-      ${periodList(period.items, period.known, selectedId, journey ? new Set(journey.exclude ?? []) : null, show.shown)}`;
+      ${periodList(items, period.known, selectedId, journey ? new Set(journey.exclude ?? []) : null, show.shown)}`;
   }
-  const shown = shownLogs(logs, year);
+  // 年で絞り込んだ車のログと旅の記録
+  const yearLogs = shownLogs(logs, year);
+  const yearTrips = show.trips.filter((t) => year === "all" || tripDay(t).slice(0, 4) === year);
+  const all: PeriodItem[] = [
+    ...yearLogs.map((log): PeriodItem => ({ kind: "log", log, day: log.date ?? "", start: log.start ?? -1 })),
+    ...yearTrips.map((trip): PeriodItem => ({ kind: "trip", trip, day: tripDay(trip), start: trip.start ? Date.parse(trip.start) : -1 })),
+  ];
+  const items = itemsOfKind(all, kind);
+  const shown = items.flatMap((it) => (it.kind === "log" ? [it.log] : []));
+  const trips = items.flatMap((it) => (it.kind === "trip" ? [it.trip] : []));
   const total = shown.reduce((s, l) => s + (l.m ?? 0), 0);
   const scored = shown.filter((l) => l.score !== undefined);
   const avg = scored.length ? scored.reduce((s, l) => s + l.score!, 0) / scored.length : undefined;
+  const avgText = avg !== undefined ? `・運転の平均 ${num(avg, 0)} 点(${scored.length} 本)` : "";
+  // すべて: 乗り物ごとの本数と距離。運転: 本数・距離・点数。ほかの乗り物: 回数と距離
+  const summary =
+    kind === "all"
+      ? `${periodSummary(items).replace("この期間の記録はありません", "記録はありません")}${avgText}`
+      : kind === "car"
+        ? `${shown.length} 本・${km(total, 0)} km${avgText}`
+        : `${trips.length} 回・${km(trips.reduce((s, t) => s + t.m, 0), 0)} km`;
   // 車のログと旅の記録を、日付・時刻の新しい順に混ぜて並べる(車のログどうしは sortLogs の順のまま)
   const rows: { day: string; start: number; html: string }[] = shown.map((l) => ({
     day: l.date ?? "",
@@ -313,15 +356,14 @@ export function logListPanel(
           ${weatherBadge(l.weather)}
           ${l.score !== undefined ? `<span class="eval-badge ${grade(l.score)}">${Math.round(l.score)} 点</span>` : ""}</a></li>`,
   }));
-  for (const t of show.trips) {
-    const day = tripDay(t);
-    if (year !== "all" && day.slice(0, 4) !== year) continue;
-    rows.push({ day, start: t.start ? Date.parse(t.start) : -1, html: tripRow(t, show.shown.has(`trip:${t.id}`)) });
+  for (const t of trips) {
+    rows.push({ day: tripDay(t), start: t.start ? Date.parse(t.start) : -1, html: tripRow(t, show.shown.has(`trip:${t.id}`)) });
   }
   rows.sort((a, b) => (a.day === b.day ? b.start - a.start : a.day === "" ? 1 : b.day === "" ? -1 : b.day.localeCompare(a.day)));
   const checked = show.shown.size;
   return `${select}
-    <p class="muted">${shown.length} 本・${km(total, 0)} km${avg !== undefined ? `・運転の平均 ${num(avg, 0)} 点(${scored.length} 本)` : ""}</p>
+    ${kindTabs(all, kind)}
+    <p class="muted">${summary}</p>
     <p class="muted">左のチェックを入れたログだけを地図に出します。${checked ? `(${checked} 本を表示中 <button id="show-clear" type="button" class="link">すべて外す</button>)` : ""}</p>
     <ol class="log-list" data-scroll="logs">${rows.map((r) => r.html).join("")}</ol>`;
 }

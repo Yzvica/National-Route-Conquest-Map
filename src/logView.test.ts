@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripStats, weatherPoints } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripStats, weatherPoints, type LogKind } from "./logView";
 import type { RouteData, TrackPoint } from "./types";
 
 // 北へ 1 秒に約 11.1m(時速 40km)で進むログ。途中 60 秒止まる
@@ -88,6 +88,23 @@ describe("ログタブの画面", () => {
     expect(html).toMatch(/id="log-prev"[^>]*disabled/);
     expect(html).toContain(`id="log-next" class="nav" aria-label="古いログへ" data-log-open="${logs[1].id}"`);
     expect(html).toContain("1 / 2");
+  });
+
+  it("乗り物のタブで、選んだ種類だけを一覧と集計に出す", () => {
+    const trip = { id: "t1", mode: "train" as const, start: "2026-11-08T23:00:00Z", end: null, m: 5000, maxAltM: null, lines: [], gaps: [] };
+    const panel = (kind: LogKind) => logListPanel(logs, "all", true, undefined, undefined, [], { shown: new Set(), trips: [trip], kind });
+    const all = panel("all");
+    expect(all).toContain('data-log-kind="all" aria-selected="true"');
+    expect(all).toContain('data-log-kind="train"');
+    expect(all).not.toContain('data-log-kind="plane"');
+    expect(all).toContain("🚗 運転 2本 17 km・🚆 電車 1回 5 km(合計 22 km)・運転の平均 59 点");
+    const train = panel("train");
+    expect(train).toContain("1 回・5 km");
+    expect(train).toContain('data-trip-open="t1"');
+    expect(train).not.toContain("data-log-open");
+    const car = panel("car");
+    expect(car).toContain("2 本・17 km・運転の平均 59 点");
+    expect(car).not.toContain('data-trip-open="t1"');
   });
 
   it("速度のグラフに出来事の印を付ける", () => {

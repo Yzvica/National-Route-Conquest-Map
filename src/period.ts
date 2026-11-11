@@ -116,7 +116,7 @@ const hm = (ms: number) => {
 export function periodSummary(items: PeriodItem[]): string {
   const parts: string[] = [];
   const cars = items.filter((i) => i.kind === "log");
-  if (cars.length) parts.push(`🚗 車 ${cars.length}本 ${km(cars.reduce((s, i) => s + (i.kind === "log" ? (i.log.m ?? 0) : 0), 0), 0)} km`);
+  if (cars.length) parts.push(`🚗 運転 ${cars.length}本 ${km(cars.reduce((s, i) => s + (i.kind === "log" ? (i.log.m ?? 0) : 0), 0), 0)} km`);
   for (const m of TRIP_MODES) {
     const list = items.filter((i) => i.kind === "trip" && i.trip.mode === m.id);
     if (list.length) parts.push(`${m.icon} ${m.label} ${list.length}回 ${km(list.reduce((s, i) => s + (i.kind === "trip" ? i.trip.m : 0), 0), 0)} km`);

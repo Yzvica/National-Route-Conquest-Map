@@ -198,6 +198,11 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .pref-picker { margin: 0 0 12px; }
 .pref-select { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .pref-select select { flex: 1; padding: 6px; font-size: 14px; }
+/* ログタブの乗り物のタブ(年の欄の下) */
+.kind-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.kind-tabs button { flex: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 13px; color: var(--muted); background: transparent; white-space: nowrap; }
+.kind-tabs button[aria-selected="true"] { border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 700; }
+.kind-tabs .n { margin-left: 4px; font-size: 11px; opacity: 0.8; }
 .pref-picker p { margin: 6px 0 0; font-size: 12px; }
 /* 背景の地図の選択欄(地図右下) */
 .basemap-ctrl select {
