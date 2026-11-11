@@ -1,6 +1,6 @@
 // 地図の「旅の記録」レイヤー。iPhone の走行ロガーで記録した電車・飛行機などの移動の線を出す。
 // 国道の制覇には使わない(見るだけ)。データは MiniPC のサーバーの GET /api/trips から読む
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 
 export type TripMode = "train" | "plane" | "ride" | "other";
 
