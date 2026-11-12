@@ -2,7 +2,7 @@
 // 走行記録を data/record.json に保存して、LAN 内のどの端末からも同じ記録を見られるようにする。
 // Node.js の標準機能だけで動く。
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -442,6 +442,200 @@ export function trainsToFill(root = RAW_LOG_DIR()) {
   return out;
 }
 
+// --- 移動手段を直す ---
+// iPhone のロガーで移動手段を間違えて記録したとき(電車を車で記録したなど)に、あとから直す。
+// 走行フォルダの meta.json の mode を書き換え、車と車以外でフォルダ(RAW_LOG_DIR/<ID> と trips/<ID>)を移す。
+// 車にしたら国道の判定に足し(GPX がなければ location.csv から作る)、車でなくしたら判定から外して判定し直す。
+// 外したログは消さずにログフォルダの removed に移す(車に戻したら使う)
+
+export const TRAVEL_MODES = ["car", "ride", "train", "plane", "other"];
+const SESSION_ID_RE = /^\d{8}-\d{6}$/;
+
+/** 走行フォルダを探す(車・old・trips の順)。なければ null */
+export function findSession(session, root = RAW_LOG_DIR()) {
+  for (const [dir, kind] of [
+    [join(root, session), "drive"],
+    [join(root, "old", session), "drive"],
+    [join(root, "trips", session), "trip"],
+  ]) {
+    if (existsSync(dir) && statSync(dir).isDirectory()) return { dir, kind };
+  }
+  return null;
+}
+
+/** 走行フォルダの meta.json(なければ null) */
+function readSessionMeta(dir) {
+  try {
+    return JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** 走行の移動手段。meta.json の mode がない古い記録は、車のフォルダなら車、trips ならその他 */
+const modeOfSession = (s) => readSessionMeta(s.dir)?.mode ?? (s.kind === "trip" ? "other" : "car");
+
+/** フォルダを移す。移す先がすでにあれば(途中まで両方に送られたときなど)、ファイルを1つずつ移して上書きする */
+function moveDir(from, to) {
+  mkdirSync(dirname(to), { recursive: true });
+  if (!existsSync(to)) return renameSync(from, to);
+  for (const f of readdirSync(from)) {
+    const dest = join(to, f);
+    if (existsSync(dest) && statSync(dest).isDirectory()) continue;
+    renameSync(join(from, f), dest);
+  }
+  try {
+    rmdirSync(from);
+  } catch {}
+}
+
+/** location.csv(iPhone のロガー)から、アプリが地図に送るのと同じ GPX を作る(精度 50m 以内の点だけ) */
+export function gpxFromLocationCsv(text, name) {
+  const lines = text.split(/\r?\n/);
+  const head = lines[0].split(",");
+  const col = (n) => head.indexOf(n);
+  const [ti, la, lo, al, acc, sp] = ["unix_s", "lat", "lon", "alt_m", "h_acc_m", "speed_ms"].map(col);
+  const pts = [];
+  for (const line of lines.slice(1)) {
+    const c = line.split(",");
+    const t = Number(c[ti]);
+    const lat = Number(c[la]);
+    const lon = Number(c[lo]);
+    if (!line || !Number.isFinite(t) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    if (acc >= 0 && c[acc] !== "" && Number(c[acc]) > 50) continue;
+    let s = `<trkpt lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}">`;
+    if (al >= 0 && c[al] !== "" && Number.isFinite(Number(c[al]))) s += `<ele>${Number(c[al]).toFixed(1)}</ele>`;
+    s += `<time>${new Date(Math.round(t * 1000)).toISOString()}</time>`;
+    if (sp >= 0 && c[sp] !== "" && Number(c[sp]) >= 0) s += `<extensions><speed>${Number(c[sp]).toFixed(2)}</speed></extensions>`;
+    pts.push(`${s}</trkpt>`);
+  }
+  return {
+    points: pts.length,
+    gpx: `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="DriveLogger" xmlns="http://www.topografix.com/GPX/1/1">\n<trk><name>${name}</name><trkseg>\n${pts.join("\n")}\n</trkseg></trk>\n</gpx>\n`,
+  };
+}
+
+/** 走行 ID のログ(地図に保存した「<走行ID>.gpx」)。dir を渡すとそのフォルダから探す */
+const sessionLogs = (session, dir = LOGS) => {
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".gz") && logName(f) === `${session}.gpx`).sort();
+  } catch {
+    return [];
+  }
+};
+
+/** ログの最初の点の時刻から、記録の trips(ログごとの走行距離)の名前を出す(src/trips.ts の tripKey と同じ) */
+function tripKeyOfLog(path) {
+  try {
+    const t = /<time>([^<]+)<\/time>/.exec(gunzipSync(readFileSync(path)).toString("utf8"))?.[1];
+    const ms = t ? Date.parse(t) : NaN;
+    return Number.isFinite(ms) ? `t${ms}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 旅行から外したもの("log:<ID>" / "trip:<走行ID>")を、移動手段を変えたあとの名前に付け替える */
+function renameJourneyKeys(from, to) {
+  const list = loadJourneys();
+  let changed = false;
+  for (const j of list) {
+    if (!j.exclude?.includes(from)) continue;
+    j.exclude = [...new Set(j.exclude.map((x) => (x === from ? to : x)))];
+    changed = true;
+  }
+  if (changed) saveJourneys(list);
+}
+
+/**
+ * 走行の移動手段を変える。走行フォルダも地図のログもなければ null。
+ * 返す値: { session, mode, from, kind, moved, gpx(地図に車のログがあるか), removed(判定から外したログの数), rejudge }
+ * rejudge は判定し直しが要るとき "server"(MiniPC で始めた)か "browser"(画面で判定し直してもらう)
+ */
+export function changeMode(session, mode) {
+  if (!SESSION_ID_RE.test(session) || !TRAVEL_MODES.includes(mode)) throw new Error("bad session or mode");
+  const root = RAW_LOG_DIR();
+  let cur = findSession(session, root);
+  const logs = sessionLogs(session);
+  if (!cur && !logs.length) return null;
+  const from = cur ? modeOfSession(cur) : "car";
+  const kind = mode === "car" ? "drive" : "trip";
+  const out = { session, mode, from, kind, moved: false, gpx: logs.length > 0, removed: 0, rejudge: null };
+
+  if (cur) {
+    const meta = readSessionMeta(cur.dir);
+    if (meta && meta.mode !== mode) {
+      meta.mode = mode;
+      writeFileSync(join(cur.dir, "meta.json.part"), JSON.stringify(meta, null, 2));
+      renameSync(join(cur.dir, "meta.json.part"), join(cur.dir, "meta.json"));
+    }
+    if (cur.kind !== kind) {
+      const to = kind === "trip" ? join(root, "trips", session) : join(root, session);
+      moveDir(cur.dir, to);
+      cur = { dir: to, kind };
+      out.moved = true;
+    }
+    // トンネルなどを補った位置は、新しい手段で補い直す(道路と線路で補い方が違う。飛行機などは補わない)
+    if (meta && from !== mode) {
+      for (const f of ["location_filled.csv", "tunnel_fill.json"]) rmSync(join(cur.dir, f), { force: true });
+      fillAfterUpload(cur.dir, cur.kind);
+      if (!existsSync(join(cur.dir, "weather.json"))) weatherAfterUpload(cur.dir);
+    }
+  }
+
+  if (mode !== "car" && logs.length) {
+    // 国道の判定から外す。走行距離(trips)は判定し直しでも消えないので、ここで消す
+    const removedDir = join(LOGS, "removed");
+    mkdirSync(removedDir, { recursive: true });
+    const keys = logs.map((id) => tripKeyOfLog(join(LOGS, id))).filter(Boolean);
+    for (const id of logs) {
+      renameSync(join(LOGS, id), join(removedDir, id));
+      renameJourneyKeys(`log:${id}`, `trip:${session}`);
+    }
+    savePending(loadPending().filter((id) => !logs.includes(id)));
+    const rec = loadRecord();
+    if (keys.some((k) => rec.trips[k])) {
+      backupRecord();
+      for (const k of keys) delete rec.trips[k];
+      saveRecord(rec);
+    }
+    judge.rev++;
+    out.removed = logs.length;
+    out.gpx = false;
+    out.rejudge = startRejudge() ? "server" : "browser";
+  } else if (mode === "car" && !logs.length) {
+    // 前に外したログがあれば戻す。なければ location.csv から GPX を作って保存する
+    const back = sessionLogs(session, join(LOGS, "removed")).at(-1);
+    let id = null;
+    if (back) {
+      mkdirSync(LOGS, { recursive: true });
+      renameSync(join(LOGS, "removed", back), join(LOGS, back));
+      id = back;
+    } else if (cur && existsSync(join(cur.dir, "location.csv"))) {
+      const { gpx, points } = gpxFromLocationCsv(readFileSync(join(cur.dir, "location.csv"), "utf8"), session);
+      if (points > 0) id = saveLog(`${session}.gpx`, Buffer.from(gpx), null).id;
+    }
+    if (id) {
+      renameJourneyKeys(`trip:${session}`, `log:${id}`);
+      savePending([...loadPending().filter((x) => x !== id), id]);
+      if (serverJudge()) void enqueue(judgePending);
+      judge.rev++;
+      out.gpx = true;
+    }
+  }
+  return out;
+}
+
+/** 保存したログの判定し直しを MiniPC で始める。始められなければ false */
+function startRejudge() {
+  if (!serverJudge()) return false;
+  if (!judge.rejudgeQueued && judge.running?.kind !== "rejudge") {
+    judge.rejudgeQueued = true;
+    void enqueue(rejudgeAll);
+  }
+  return true;
+}
+
 // --- 天気 ---
 // 走り終えて生データ(meta.json は最後)が届いたら、走った時刻・場所の天気を Open-Meteo から取って
 // 走行フォルダの weather.json に書く。つながらなかった走行は data/weather_pending.json に残し、あとで取り直す。
@@ -805,10 +999,7 @@ export function createApp() {
       if (url.pathname === "/api/rejudge") {
         if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
         if (!serverJudge()) return json(res, 503, { error: "サーバーで判定する準備ができていません(npm run build を実行してください)" });
-        if (!judge.rejudgeQueued && judge.running?.kind !== "rejudge") {
-          judge.rejudgeQueued = true;
-          void enqueue(rejudgeAll);
-        }
+        startRejudge();
         return json(res, 202, judgeStatus());
       }
 
@@ -818,7 +1009,16 @@ export function createApp() {
         if (req.method === "POST") {
           const body = Buffer.concat(await readChunks(req));
           if (body.length === 0) return json(res, 400, { error: "empty log" });
-          const { id, added } = saveLog(url.searchParams.get("name") ?? "log", body, null);
+          const name = url.searchParams.get("name") ?? "log";
+          // iPhone のロガーの走行は、同じ走行のログがもうあれば(移動手段を車に直したときにサーバーで作ったものなど)保存しない。
+          // 車以外に直した走行(trips にあるもの)も地図には入れない
+          const sm = SESSION_RE.exec(name);
+          if (sm) {
+            const have = sessionLogs(sm[1]);
+            if (have.length) return json(res, 200, { id: have[0], duplicate: true });
+            if (findSession(sm[1])?.kind === "trip") return json(res, 200, { id: null, duplicate: false, ignored: "trip" });
+          }
+          const { id, added } = saveLog(name, body, null);
           if (added) {
             savePending([...loadPending(), id]);
             if (serverJudge()) void enqueue(judgePending);
@@ -855,6 +1055,24 @@ export function createApp() {
           weatherAfterUpload(dir);
         }
         return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
+      }
+      // 走行の移動手段(?session=走行ID)。GET は { mode, kind }、POST は ?mode= に変える(changeMode)
+      if (url.pathname === "/api/rawlog/mode") {
+        const session = url.searchParams.get("session") ?? "";
+        if (!SESSION_ID_RE.test(session)) return json(res, 400, { error: "bad session" });
+        if (req.method === "GET") {
+          const s = findSession(session);
+          if (s) return json(res, 200, { session, mode: modeOfSession(s), kind: s.kind, sent: existsSync(join(s.dir, "meta.json")) });
+          return sessionLogs(session).length ? json(res, 200, { session, mode: "car", kind: "drive", sent: false }) : json(res, 404, { error: "no session" });
+        }
+        if (req.method === "POST") {
+          const mode = url.searchParams.get("mode") ?? "";
+          if (!TRAVEL_MODES.includes(mode)) return json(res, 400, { error: "bad mode" });
+          const r = changeMode(session, mode);
+          // アプリは "no session" を見て、サーバーに何もない(送り直す)のか、古いサーバーで直せないのかを見分ける
+          return r ? json(res, 200, r) : json(res, 404, { error: "no session" });
+        }
+        return json(res, 405, { error: "method not allowed" });
       }
       // 地図の「旅の記録」: trips フォルダの電車・飛行機などの移動を、間引いた線にして返す(制覇の判定には使わない)
       if (url.pathname === "/api/journeys") {

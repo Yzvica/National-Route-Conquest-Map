@@ -316,3 +316,28 @@ export function addTravelLayer(map: maplibregl.Map) {
   map.addControl(control, "bottom-right");
   void loadTravelTrips(true);
 }
+
+/** 移動手段を直した結果(server.mjs の changeMode) */
+export interface ModeChange {
+  session: string;
+  mode: ShowMode;
+  from: ShowMode;
+  kind: "drive" | "trip";
+  moved: boolean;
+  /** 地図(国道の判定)に車のログがあるか */
+  gpx: boolean;
+  /** 判定から外したログの数 */
+  removed: number;
+  /** 判定し直しが要るとき: "server" は MiniPC で始めた、"browser" はこの画面で判定し直す */
+  rejudge: "server" | "browser" | null;
+}
+
+/** iPhone のロガーの走行の移動手段を MiniPC で直す */
+export async function changeSessionMode(session: string, mode: ShowMode): Promise<ModeChange> {
+  const r = await fetch(`${import.meta.env.BASE_URL}api/rawlog/mode?session=${encodeURIComponent(session)}&mode=${mode}`, { method: "POST" });
+  if (!r.ok || !r.headers.get("content-type")?.includes("json")) {
+    throw new Error(r.status === 404 ? "MiniPC にこの走行が見つかりません" : `移動手段を直せませんでした(${r.status})`);
+  }
+  loadedAt = 0; // 旅の記録を読み直す
+  return r.json();
+}
