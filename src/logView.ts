@@ -414,16 +414,28 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
     d.log.score === undefined
       ? ""
       : `<h3>運転評価</h3>${driveEvalView({ id: d.log.id, ev: d.ev })}`;
-  const routes =
-    d.routes === undefined
+  const routes = routesView(d.routes);
+  return `${head}
+    <dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${session ? modePicker(session, "car", d.modeBusy) : ""}
+    ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
+    ${s.start !== undefined ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
+    ${evalPart}
+    <h3>通った道路</h3>${routes}`;
+}
+
+/** 通った道路の一覧。調べている間は undefined、道路データがなければ null */
+function routesView(routes: PassedRoute[] | null | undefined): string {
+  return (
+    routes === undefined
       ? `<p class="muted">通った道路を調べています…</p>`
-      : d.routes === null
+      : routes === null
         ? `<p class="muted">道路データを読み込んでから調べます。</p>`
-        : d.routes.length === 0
+        : routes.length === 0
           ? `<p class="muted">国道・高速道路・都道府県道は通っていません。</p>`
           : (["kokudo", "expressway", "prefroad"] as DatasetKind[])
               .map((kind) => {
-                const list = d.routes!.filter((r) => r.kind === kind);
+                const list = routes.filter((r) => r.kind === kind);
                 if (!list.length) return "";
                 return `<h4>${DATASET_LABELS[kind]} <span class="muted">${list.length} 路線</span></h4>
                   <ul class="passed">${list
@@ -436,14 +448,8 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
                     )
                     .join("")}</ul>`;
               })
-              .join("");
-  return `${head}
-    <dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
-    ${session ? modePicker(session, "car", d.modeBusy) : ""}
-    ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
-    ${s.start !== undefined ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
-    ${evalPart}
-    <h3>通った道路</h3>${routes}`;
+              .join("")
+  );
 }
 
 /** iPhone のロガーのログ(名前が「<走行ID>.gpx」)なら走行 ID。それ以外(GBowl・GoPro など)は undefined */
@@ -463,15 +469,64 @@ export function modePicker(session: string, mode: ShowMode, busy = false): strin
       <p class="muted">間違えていたら選び直してください。運転にすると国道の制覇に入り、ほかにすると制覇から外します。</p></div>`;
 }
 
-/** 旅の記録(電車・飛行機など)を選んだときの詳細 */
-export function tripDetailPanel(t: TravelTrip, busy = false): string {
+/** 旅の記録の詳細のうち、MiniPC から読むもの。読み込み中の部分は undefined */
+export interface TripDetailData {
+  stats?: TripStats;
+  error?: string;
+  /** 同乗の運転評価(なければ null) */
+  ev?: (DriveEval & { mount?: string; usable_ratio?: number; axes_quality?: number }) | null;
+  weather?: DriveWeather | null;
+  /** 通った道路(同乗だけ調べる) */
+  routes?: PassedRoute[] | null;
+}
+
+/** 同乗の評価の端末の置き方の説明(アプリの表示と同じ) */
+function mountNote(ev: { mount?: string; usable_ratio?: number; axes_quality?: number }): string {
+  if (ev.mount === "hand") {
+    const r = ev.usable_ratio ?? 0;
+    return `<p class="mount-note${r < 0.5 ? " warn" : ""}">✋ 手持ちで記録(参考値)・採点に使えた時間 ${Math.round(r * 100)}%${
+      r < 0.5 ? "<br><span class=\"muted\">端末を動かした時間が長く、躍度・急な操作・止まり際・カーブの確かさが下がります</span>" : ""
+    }</p>`;
+  }
+  const fixed = ev.mount === "fixed" ? `<p class="mount-note">📱 端末を固定して記録(同乗)</p>` : "";
+  const loose =
+    typeof ev.axes_quality === "number" && ev.axes_quality < 0.5
+      ? `<p class="mount-note warn">⚠ 端末の固定が甘かったかもしれません(点数の確かさが下がります)</p>`
+      : "";
+  return fixed + loose;
+}
+
+/** 旅の記録(電車・飛行機・同乗など)を選んだときの詳細。同乗は運転と同じように評価・通った道路も出す */
+export function tripDetailPanel(t: TravelTrip, busy = false, d: TripDetailData = {}): string {
   const [title, ...lines] = describeTrip(t);
-  return `<div class="detail-head">
+  const head = `<div class="detail-head">
       <span class="spacer"></span>
       <button id="detail-fold" type="button" aria-label="地図を広く表示">▴</button>
       <button id="detail-close" type="button" aria-label="閉じる">×</button></div>
-    <h2 class="log-title">${esc(title)}</h2>
+    <h2 class="log-title">${esc(title)}</h2>`;
+  const s = d.stats;
+  const facts: [string, string][] = [];
+  if (s) {
+    if (s.movingMs !== undefined) facts.push(["動いていた時間", duration(s.movingMs)]);
+    if (s.avgKmh !== undefined) facts.push(["平均速度", `${num(s.avgKmh, 0)} km/h`]);
+    if (s.maxKmh !== undefined) facts.push(["最高速度", `${num(s.maxKmh, 0)} km/h`]);
+  }
+  const ride = t.mode === "ride";
+  const events = d.ev?.events.map((e) => ({ t: e.t_unix * 1000, label: e.kind })) ?? [];
+  const chart = s ? speedChart(s.speeds, events) : "";
+  const evalPart =
+    ride && (t.score !== undefined || d.ev)
+      ? `<h3>運転評価 <span class="muted">(同乗)</span></h3>${driveEvalView({ id: `trip:${t.id}`, ev: d.ev })}${d.ev ? mountNote(d.ev) : ""}`
+      : "";
+  const loading = !s && !d.error ? `<p class="muted">読み込み中…</p>` : "";
+  return `${head}
     ${lines.map((l) => `<p>${esc(l)}</p>`).join("")}
+    ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>` : ""}
     <p class="muted">走行 ID: ${esc(t.id)}</p>
-    ${modePicker(t.id, t.mode, busy)}`;
+    ${modePicker(t.id, t.mode, busy)}
+    ${d.error ? `<p class="muted">詳しい記録を読み込めませんでした: ${esc(d.error)}</p>` : loading}
+    ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
+    ${s?.start !== undefined && t.mode !== "plane" ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
+    ${evalPart}
+    ${ride && s ? `<h3>通った道路</h3>${routesView(d.routes)}` : ""}`;
 }

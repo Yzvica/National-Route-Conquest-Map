@@ -10,7 +10,7 @@ import {
   type GameContext,
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
-import { logDetailPanel, logListPanel, passedRoutes, sessionOfLog, shownLogs, tripDetailPanel, tripStats, weatherPoints, type LogDetail, type LogKind, type PassedRoute } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, sessionOfLog, shownLogs, tripDetailPanel, tripStats, weatherPoints, type LogDetail, type TripDetailData, type LogKind, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -35,7 +35,7 @@ import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTr
 import { isSplitIndex, openSplit } from "./splitData";
 import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
-import { addTravelLayer, changeSessionMode, loadTravelTrips, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
+import { addTravelLayer, changeSessionMode, loadTravelTrips, loadTripDetail, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
 import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
@@ -207,7 +207,7 @@ let periodSeq = 0;
 /** ログタブで選んでいるログの詳細 */
 let logDetail: LogDetail | null = null;
 /** ログタブで選んでいる旅の記録(電車・飛行機など)。busy は移動手段を直している途中 */
-let tripDetail: { id: string; busy?: boolean } | null = null;
+let tripDetail: { id: string; busy?: boolean; data?: TripDetailData } | null = null;
 /** MiniPC にログを保存しているか(ブラウザだけで使っているときは false) */
 let storeShared = false;
 /** 読み込んだログの軌跡(いちばん最後に開いたものだけ)と、通った路線 */
@@ -1425,7 +1425,7 @@ function renderLogDetail() {
   box.classList.add("log-detail");
   const trip = tripDetail && periodTrips.find((t) => t.id === tripDetail!.id);
   if (!logDetail && trip) {
-    box.innerHTML = tripDetailPanel(trip, tripDetail!.busy);
+    box.innerHTML = tripDetailPanel(trip, tripDetail!.busy, tripDetail!.data);
     box.hidden = false;
     return;
   }
@@ -1532,6 +1532,38 @@ async function openLog(id: string) {
   }
 }
 
+/** 開いている旅の記録の詳細を更新する(ほかのものに切り替わっていたら何もしない) */
+function updateTripDetail(id: string, part: Partial<TripDetailData>) {
+  if (tripDetail?.id !== id || logDetail) return false;
+  tripDetail = { ...tripDetail, data: { ...tripDetail.data, ...part } };
+  renderLogs();
+  return true;
+}
+
+/**
+ * 旅の記録を右に開く(移動手段を直す欄・速度・天気)。同乗は運転と同じように、
+ * アプリが作った運転評価と出来事の場所、通った道路も出す
+ */
+async function openTrip(id: string) {
+  tripDetail = { id, data: {} };
+  showDriveEvents(map, []);
+  renderLogs();
+  $("detail").scrollTop = 0;
+  const box = tripBounds(periodTrips.filter((t) => t.id === id));
+  if (box) fitBox(map, box, detailPadding());
+  try {
+    const d = await loadTripDetail(id);
+    const track: TrackPoint[] = d.track.map(([t, lat, lon]) => ({ lat, lon, time: t * 1000 }));
+    if (d.eval) evals.set(`trip:${id}`, d.eval);
+    if (!updateTripDetail(id, { stats: tripStats(track), ev: d.eval, weather: d.weather })) return;
+    const trip = periodTrips.find((t) => t.id === id);
+    if (d.eval) showDriveEvents(map, d.eval.events.map((e) => ({ lat: e.lat, lon: e.lon, label: eventLabel(e) })));
+    if (trip?.mode === "ride" && track.length) updateTripDetail(id, { routes: await logRoutes(`trip:${id}`, track).catch(() => null) });
+  } catch (e) {
+    updateTripDetail(id, { error: (e as Error).message });
+  }
+}
+
 /** ログの詳細を閉じて一覧に戻る(地図の軌跡も消す) */
 function closeLog() {
   logDetail = null;
@@ -1554,10 +1586,7 @@ function onLogClick(e: MouseEvent) {
       showTrack(map, []);
       showDriveEvents(map, []);
     }
-    tripDetail = { id: tripOpen.dataset.tripOpen! };
-    renderLogs();
-    const box = tripBounds(periodTrips.filter((t) => t.id === tripOpen.dataset.tripOpen));
-    if (box) fitBox(map, box, detailPadding());
+    void openTrip(tripOpen.dataset.tripOpen!);
     return true;
   }
   const toggle = el.closest<HTMLElement>("[data-exclude], [data-include]");
@@ -1708,7 +1737,8 @@ async function fixSessionMode(sel: HTMLSelectElement) {
       logDetail = null;
       showTrack(map, []);
       showDriveEvents(map, []);
-      tripDetail = periodTrips.some((t) => t.id === session) ? { id: session } : null;
+      tripDetail = null;
+      if (periodTrips.some((t) => t.id === session)) void openTrip(session);
     }
     void drawSelection(false);
     const lines = [`移動手段を「${modeLabel(r.from)}」から「${modeLabel(r.mode)}」に直しました`];

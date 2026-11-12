@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { listTrips } from "./trips.mjs";
+import { listTrips, loadTripEval } from "./trips.mjs";
 import { fetchWeather, parseLocationCsv } from "./weather.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -762,6 +762,27 @@ function weatherPaths(id) {
   return [own];
 }
 
+/** 旅の記録の詳細で返す位置の数の上限(多ければ間引く) */
+const TRIP_TRACK_MAX = 20000;
+
+/**
+ * 旅の記録(trips/<走行ID>)の詳細。track は [UNIX 秒, 緯度, 経度] の並び(補った位置があればそちら)。
+ * 運転評価(同乗のとき)と天気は、なければ null。走行がなければ null
+ */
+export function tripDetail(session) {
+  const dir = join(RAW_LOG_DIR(), "trips", session);
+  if (!existsSync(dir)) return null;
+  const pts = readTrackPoints(dir);
+  const step = Math.max(1, Math.ceil(pts.length / TRIP_TRACK_MAX));
+  const track = pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map((p) => [p.t, p.lat, p.lon]);
+  let weather = null;
+  try {
+    const w = JSON.parse(readFileSync(join(dir, "weather.json"), "utf8"));
+    if (w && w.summary && Array.isArray(w.samples)) weather = w;
+  } catch {}
+  return { track, eval: loadTripEval(dir), weather };
+}
+
 /** ログの天気(weather.json の中身)。なければ null */
 export function loadWeather(id) {
   for (const path of weatherPaths(id)) {
@@ -1092,6 +1113,13 @@ export function createApp() {
       if (journeyMatch && req.method === "PATCH") {
         const list = setJourneyExclude(decodeURIComponent(journeyMatch[1]), JSON.parse(await readBody(req)).exclude);
         return list ? json(res, 200, list) : json(res, 404, { error: "not found" });
+      }
+      // 旅の記録(同乗・電車など)の詳細: 時刻つきの位置(速度のグラフ用)・運転評価・天気
+      const tripDetailMatch = /^\/api\/trips\/(\d{8}-\d{6})\/detail$/.exec(url.pathname);
+      if (tripDetailMatch) {
+        if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+        const d = tripDetail(tripDetailMatch[1]);
+        return d ? json(res, 200, d) : json(res, 404, { error: "not found" });
       }
       if (url.pathname === "/api/trips") {
         if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });

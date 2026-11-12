@@ -240,6 +240,8 @@ button.link { padding: 1px 8px; font-size: 12px; }
 .drive-eval .bar.fair > span { background: #fb8c00; }
 .drive-eval .bar.poor > span { background: #e53935; }
 .timeline.events { max-height: 200px; }
+.mount-note { margin: 0 0 8px; font-size: 13px; color: var(--muted, #666); }
+.mount-note.warn { color: #ef6c00; }
 @media (prefers-color-scheme: dark) {
   .eval-badge.good, .drive-score.good { color: #81c784; }
   .eval-badge.fair, .drive-score.fair { color: #ffb74d; }

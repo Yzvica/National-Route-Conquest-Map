@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listTrips, simplify, tripLines } from "./trips.mjs";
+import { listTrips, loadTripEval, simplify, tripLines } from "./trips.mjs";
 
 const HEAD = "unix_s,lat,lon,alt_m,h_acc_m,v_acc_m,speed_ms,speed_acc_ms,course_deg,course_acc_deg,floor,speed_est_ms";
 const row = (t, lat, lon, acc = 10, alt = 30) => `${t},${lat},${lon},${alt},${acc},5,10,1,90,5,,`;
@@ -83,5 +83,23 @@ describe("listTrips(補った位置)", () => {
     const t = listTrips(root)[0];
     expect(t.gaps).toEqual([]);
     expect(t.lines).toEqual([[[139, 35], [139.05, 35.05], [139.1, 35]]]);
+  });
+});
+
+describe("listTrips(同乗の運転評価)", () => {
+  it("evaluation.json があれば点数と端末の置き方を付け、書き換えたら読み直す", () => {
+    const root = mkdtempSync(join(tmpdir(), "kokudo-trips-"));
+    const dir = join(root, "trips", "r");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ mode: "ride" }));
+    writeFileSync(join(dir, "location.csv"), [HEAD, row(0, 35, 139), row(60, 35.01, 139.01)].join("\n"));
+    expect(listTrips(root)[0].score).toBeUndefined();
+    const ev = (score, mount) => JSON.stringify({ score, items: [], moving_s: 60, stops: 0, events: [], mount });
+    writeFileSync(join(dir, "evaluation.json"), ev(64.2, "hand"));
+    expect(listTrips(root)[0]).toMatchObject({ score: 64.2, mount: "hand" });
+    expect(loadTripEval(dir).score).toBe(64.2);
+    writeFileSync(join(dir, "evaluation.json"), "{壊れた");
+    expect(listTrips(root)[0].score).toBeUndefined();
+    expect(loadTripEval(dir)).toBeNull();
   });
 });

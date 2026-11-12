@@ -115,6 +115,25 @@ export function tripLines(csv) {
   };
 }
 
+/**
+ * 走行フォルダの運転評価(同乗でアプリが作る evaluation.json)。なければ null。
+ * mount は端末の置き方("fixed" 固定・"hand" 手持ち)、usable_ratio は手持ちで採点に使えた時間の割合
+ */
+export function loadTripEval(dir) {
+  try {
+    const ev = JSON.parse(readFileSync(join(dir, "evaluation.json"), "utf8"));
+    if (ev && typeof ev.score === "number" && Array.isArray(ev.items)) return ev;
+  } catch {}
+  return null;
+}
+
+/** 一覧に出す点数と置き方 */
+function tripEvalSummary(dir) {
+  const ev = loadTripEval(dir);
+  if (!ev) return {};
+  return { score: ev.score, ...(typeof ev.mount === "string" ? { mount: ev.mount } : {}) };
+}
+
 const cache = new Map();
 
 /**
@@ -125,8 +144,10 @@ function loadTrip(dir, id) {
   const filled = join(dir, "location_filled.csv");
   const csvPath = existsSync(filled) ? filled : join(dir, "location.csv");
   const metaPath = join(dir, "meta.json");
+  const evalPath = join(dir, "evaluation.json");
   if (!existsSync(csvPath)) return null;
-  const stamp = `${csvPath}:${statSync(csvPath).mtimeMs}:${existsSync(metaPath) ? statSync(metaPath).mtimeMs : 0}`;
+  const mtime = (p) => (existsSync(p) ? statSync(p).mtimeMs : 0);
+  const stamp = `${csvPath}:${statSync(csvPath).mtimeMs}:${mtime(metaPath)}:${mtime(evalPath)}`;
   const hit = cache.get(dir);
   if (hit?.stamp === stamp) return hit.trip;
   let meta = {};
@@ -148,6 +169,7 @@ function loadTrip(dir, id) {
         maxAltM: typeof meta.maxAltitudeM === "number" ? Math.round(meta.maxAltitudeM) : l.maxAlt === null ? null : Math.round(l.maxAlt),
         lines: l.lines,
         gaps: l.gaps,
+        ...tripEvalSummary(dir),
       };
     }
   }
