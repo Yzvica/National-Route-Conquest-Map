@@ -456,3 +456,29 @@ describe("移動手段を直す(/api/rawlog/mode)", () => {
     expect((await mode("../x", "car")).status).toBe(400);
   });
 });
+
+describe("走行を忘れる(DELETE /api/rawlog/session)", () => {
+  let server;
+  let root;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    root = `http://127.0.0.1:${server.address().port}/api`;
+  });
+  afterAll(() => server.close());
+
+  it("走行フォルダを replaced に移し、地図のログを判定から外す。そのあと同じ走行を送り直せる", async () => {
+    const s = "20261109-222555";
+    const dir = join(process.env.RAW_LOG_DIR, s);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ id: s, mode: "car" }));
+    const { id } = await (await fetch(`${root}/inbox?name=${s}.gpx`, { method: "POST", body: "<trkpt lat=\"35\" lon=\"139\"><time>2026-11-09T13:26:00Z</time></trkpt>" })).json();
+    const r = await (await fetch(`${root}/rawlog/session?session=${s}`, { method: "DELETE" })).json();
+    expect(r).toMatchObject({ session: s, moved: true, removed: 1, rejudge: "browser" });
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(join(process.env.LOGS_DIR, "replaced", id))).toBe(true);
+    const again = await (await fetch(`${root}/inbox?name=${s}.gpx`, { method: "POST", body: "<trkpt lat=\"35\" lon=\"139\"><time>2026-11-09T13:26:00Z</time></trkpt><x/>" })).json();
+    expect(again.duplicate).toBe(false);
+    expect((await fetch(`${root}/rawlog/session?session=20000101-000000`, { method: "DELETE" })).status).toBe(404);
+  });
+});

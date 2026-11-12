@@ -585,22 +585,7 @@ export function changeMode(session, mode) {
 
   if (mode !== "car" && logs.length) {
     // 国道の判定から外す。走行距離(trips)は判定し直しでも消えないので、ここで消す
-    const removedDir = join(LOGS, "removed");
-    mkdirSync(removedDir, { recursive: true });
-    const keys = logs.map((id) => tripKeyOfLog(join(LOGS, id))).filter(Boolean);
-    for (const id of logs) {
-      renameSync(join(LOGS, id), join(removedDir, id));
-      renameJourneyKeys(`log:${id}`, `trip:${session}`);
-    }
-    savePending(loadPending().filter((id) => !logs.includes(id)));
-    const rec = loadRecord();
-    if (keys.some((k) => rec.trips[k])) {
-      backupRecord();
-      for (const k of keys) delete rec.trips[k];
-      saveRecord(rec);
-    }
-    judge.rev++;
-    out.removed = logs.length;
+    out.removed = removeSessionLogs(session, `trip:${session}`);
     out.gpx = false;
     out.rejudge = startRejudge() ? "server" : "browser";
   } else if (mode === "car" && !logs.length) {
@@ -624,6 +609,52 @@ export function changeMode(session, mode) {
     }
   }
   return out;
+}
+
+/**
+ * 地図のログ(<走行ID>.gpx)を国道の判定から外す(ログフォルダの into に移し、走行距離も消す)。外した数を返す。
+ * removed に移したものは車に戻したときに使う。replaced(ログを分けたときの元のログ)は使わない
+ */
+function removeSessionLogs(session, journeyKey, into = "removed") {
+  const logs = sessionLogs(session);
+  if (!logs.length) return 0;
+  const removedDir = join(LOGS, into);
+  mkdirSync(removedDir, { recursive: true });
+  const keys = logs.map((id) => tripKeyOfLog(join(LOGS, id))).filter(Boolean);
+  for (const id of logs) {
+    renameSync(join(LOGS, id), join(removedDir, id));
+    if (journeyKey) renameJourneyKeys(`log:${id}`, journeyKey);
+  }
+  savePending(loadPending().filter((id) => !logs.includes(id)));
+  const rec = loadRecord();
+  if (keys.some((k) => rec.trips[k])) {
+    backupRecord();
+    for (const k of keys) delete rec.trips[k];
+    saveRecord(rec);
+  }
+  judge.rev++;
+  return logs.length;
+}
+
+/**
+ * 走行をいったん忘れる(アプリでログを分けたときに、前半を送り直す前に呼ぶ)。
+ * 走行フォルダは消さずに RAW_LOG_DIR/replaced/<走行ID>_<時刻> に移し、地図のログは判定から外して判定し直す。
+ * 走行フォルダも地図のログもなければ null
+ */
+export function forgetSession(session) {
+  if (!SESSION_ID_RE.test(session)) throw new Error("bad session");
+  const root = RAW_LOG_DIR();
+  const cur = findSession(session, root);
+  if (!cur && !sessionLogs(session).length) return null;
+  let moved = null;
+  if (cur) {
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
+    moved = join(root, "replaced", `${session}_${stamp}`);
+    moveDir(cur.dir, moved);
+    saveWeatherPending(loadWeatherPending().filter((p) => p.dir !== cur.dir));
+  }
+  const removed = removeSessionLogs(session, null, "replaced");
+  return { session, moved: !!moved, removed, rejudge: removed ? (startRejudge() ? "server" : "browser") : null };
 }
 
 /** 保存したログの判定し直しを MiniPC で始める。始められなければ false */
@@ -1055,6 +1086,14 @@ export function createApp() {
           weatherAfterUpload(dir);
         }
         return json(res, 200, { saved: `${kind === "trip" ? "trips/" : ""}${session}/${file}`, bytes: body.length });
+      }
+      // 走行を忘れる(?session=走行ID)。アプリでログを分けたとき、前半を送り直す前に呼ぶ(forgetSession)
+      if (url.pathname === "/api/rawlog/session") {
+        const session = url.searchParams.get("session") ?? "";
+        if (!SESSION_ID_RE.test(session)) return json(res, 400, { error: "bad session" });
+        if (req.method !== "DELETE") return json(res, 405, { error: "method not allowed" });
+        const r = forgetSession(session);
+        return r ? json(res, 200, r) : json(res, 404, { error: "no session" });
       }
       // 走行の移動手段(?session=走行ID)。GET は { mode, kind }、POST は ?mode= に変える(changeMode)
       if (url.pathname === "/api/rawlog/mode") {
