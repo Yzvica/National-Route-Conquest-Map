@@ -5,7 +5,7 @@ import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
 import { includedItems, journeyOf, periodList, showBox, tripRow, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { trackLength } from "./trips";
-import { PANEL_MODES, tripDay, type ShowMode, type TravelTrip } from "./travel";
+import { describeTrip, PANEL_MODES, tripDay, type ShowMode, type TravelTrip } from "./travel";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
 
 /** 速度はこの秒数ぶん離れた点どうしで求める(GPS の細かい揺れで速く見えないように) */
@@ -215,6 +215,8 @@ export interface LogDetail {
   weather?: DriveWeather | null;
   /** 通った路線。調べている間は undefined、道路データがなければ null */
   routes?: PassedRoute[] | null;
+  /** 移動手段を直している途中 */
+  modeBusy?: boolean;
 }
 
 /** ログが何年のものか(日付のないものは "") */
@@ -397,6 +399,7 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
     <h2 class="log-title">${esc(d.log.name)}</h2>`;
   if (d.error) return `${head}<p class="muted">読み込めませんでした: ${esc(d.error)}</p>`;
   if (!s) return `${head}<p class="muted">読み込み中…</p>`;
+  const session = sessionOfLog(d.log.name);
   const facts: [string, string][] = [];
   facts.push(["日付", d.log.date ?? "日付なし"]);
   if (s.start !== undefined && s.end !== undefined) facts.push(["時刻", `${hm(s.start)}〜${hm(s.end)}`]);
@@ -436,8 +439,39 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
               .join("");
   return `${head}
     <dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${session ? modePicker(session, "car", d.modeBusy) : ""}
     ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
     ${s.start !== undefined ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
     ${evalPart}
     <h3>通った道路</h3>${routes}`;
+}
+
+/** iPhone のロガーのログ(名前が「<走行ID>.gpx」)なら走行 ID。それ以外(GBowl・GoPro など)は undefined */
+export const sessionOfLog = (name: string) => /^(\d{8}-\d{6})\.gpx$/i.exec(name)?.[1];
+
+/**
+ * 移動手段を直す欄(iPhone のロガーの記録だけ)。変えると MiniPC が走行フォルダを移し、
+ * 車にしたら国道の判定に足し、車でなくしたら判定から外す
+ */
+export function modePicker(session: string, mode: ShowMode, busy = false): string {
+  return `<div class="mode-fix">
+      <label>移動手段
+        <select id="session-mode" data-session="${esc(session)}" data-mode="${mode}"${busy ? " disabled" : ""}>${PANEL_MODES.map(
+          (m) => `<option value="${m.id}"${m.id === mode ? " selected" : ""}>${m.icon} ${m.label}</option>`,
+        ).join("")}</select></label>
+      ${busy ? `<span class="muted">直しています…</span>` : ""}
+      <p class="muted">間違えていたら選び直してください。運転にすると国道の制覇に入り、ほかにすると制覇から外します。</p></div>`;
+}
+
+/** 旅の記録(電車・飛行機など)を選んだときの詳細 */
+export function tripDetailPanel(t: TravelTrip, busy = false): string {
+  const [title, ...lines] = describeTrip(t);
+  return `<div class="detail-head">
+      <span class="spacer"></span>
+      <button id="detail-fold" type="button" aria-label="地図を広く表示">▴</button>
+      <button id="detail-close" type="button" aria-label="閉じる">×</button></div>
+    <h2 class="log-title">${esc(title)}</h2>
+    ${lines.map((l) => `<p>${esc(l)}</p>`).join("")}
+    <p class="muted">走行 ID: ${esc(t.id)}</p>
+    ${modePicker(t.id, t.mode, busy)}`;
 }

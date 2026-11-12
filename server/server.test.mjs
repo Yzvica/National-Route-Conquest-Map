@@ -365,3 +365,94 @@ describe("旅行から外す(PATCH /api/journeys/<id>)", () => {
     }
   });
 });
+
+describe("移動手段を直す(/api/rawlog/mode)", () => {
+  let server;
+  let root;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    root = `http://127.0.0.1:${server.address().port}/api`;
+  });
+  afterAll(() => server.close());
+
+  const RAW = () => process.env.RAW_LOG_DIR;
+  const csv =
+    "unix_s,lat,lon,alt_m,h_acc_m,v_acc_m,speed_ms,speed_acc_ms,course_deg,course_acc_deg,floor,speed_est_ms\n" +
+    "1762900000.000,35.6000000,139.7000000,10.00,5.0,3.0,10.00,0.5,90.0,5.0,,\n" +
+    "1762900001.000,35.6001000,139.7001000,10.00,80.0,3.0,10.00,0.5,90.0,5.0,,\n" +
+    "1762900002.000,35.6002000,139.7002000,,5.0,,,,,,,\n";
+  const mode = (session, m) => fetch(`${root}/rawlog/mode?session=${session}&mode=${m}`, { method: "POST" });
+  const logsOf = async (session) => (await (await fetch(`${root}/logs`)).json()).filter((l) => l.name === `${session}.gpx`);
+
+  it("location.csv から精度のよい点だけで GPX を作る", async () => {
+    const { gpxFromLocationCsv } = await import("./server.mjs");
+    const { gpx, points } = gpxFromLocationCsv(csv, "x");
+    expect(points).toBe(2);
+    expect(gpx).toContain('<trkpt lat="35.6000000" lon="139.7000000"><ele>10.0</ele><time>2025-11-11T22:26:40.000Z</time><extensions><speed>10.00</speed></extensions></trkpt>');
+    expect(gpx).toContain('<trkpt lat="35.6002000" lon="139.7002000"><time>2025-11-11T22:26:42.000Z</time></trkpt>');
+  });
+
+  it("電車で記録したものを車に直すと、車のフォルダに移して地図のログを作り、判定待ちにする", async () => {
+    const s = "20261111-090000";
+    const dir = join(RAW(), "trips", s);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "location.csv"), csv);
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ id: s, mode: "train" }));
+    writeFileSync(join(dir, "location_filled.csv"), "x");
+    expect(await (await fetch(`${root}/rawlog/mode?session=${s}`)).json()).toEqual({ session: s, mode: "train", kind: "trip", sent: true });
+
+    const r = await (await mode(s, "car")).json();
+    expect(r).toMatchObject({ session: s, mode: "car", from: "train", kind: "drive", moved: true, gpx: true, removed: 0, rejudge: null });
+    expect(existsSync(dir)).toBe(false);
+    expect(JSON.parse(readFileSync(join(RAW(), s, "meta.json"), "utf8")).mode).toBe("car");
+    expect(existsSync(join(RAW(), s, "location_filled.csv"))).toBe(false); // 線路で補ったものは捨てる
+    const logs = await logsOf(s);
+    expect(logs).toHaveLength(1);
+    expect((await (await fetch(`${root}/inbox`)).json()).map((l) => l.id)).toContain(logs[0].id);
+
+    // アプリがあとから同じ走行の GPX を送っても、二重に保存しない
+    const again = await (await fetch(`${root}/inbox?name=${s}.gpx`, { method: "POST", body: "<gpx/>" })).json();
+    expect(again).toEqual({ id: logs[0].id, duplicate: true });
+  });
+
+  it("車で記録したものを電車に直すと、trips に移して地図のログを判定から外す(消さずに removed へ)", async () => {
+    const s = "20261111-100000";
+    const dir = join(RAW(), s);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "location.csv"), csv);
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ id: s, mode: "car" }));
+    const { id } = await (await fetch(`${root}/inbox?name=${s}.gpx`, { method: "POST", body: "<trkpt lat=\"35\" lon=\"139\"><time>2026-11-11T01:00:00Z</time></trkpt>" })).json();
+    await fetch(`${root}/record`, { method: "POST", body: JSON.stringify({ trips: { t1794358800000: { date: "2026-11-11", m: 100 } } }) });
+
+    const r = await (await mode(s, "train")).json();
+    expect(r).toMatchObject({ mode: "train", from: "car", kind: "trip", moved: true, gpx: false, removed: 1, rejudge: "browser" });
+    expect(JSON.parse(readFileSync(join(RAW(), "trips", s, "meta.json"), "utf8")).mode).toBe("train");
+    expect(await logsOf(s)).toEqual([]);
+    expect(existsSync(join(process.env.LOGS_DIR, "removed", id))).toBe(true);
+    expect((await (await fetch(`${root}/inbox`)).json()).map((l) => l.id)).not.toContain(id);
+    expect((await (await fetch(`${root}/record`)).json()).trips.t1794358800000).toBeUndefined();
+    // 車以外にした走行の GPX が届いても、地図には入れない
+    expect(await (await fetch(`${root}/inbox?name=${s}.gpx`, { method: "POST", body: "<gpx/>" })).json()).toMatchObject({ id: null, ignored: "trip" });
+
+    // 車に戻すと、外したログを戻して判定し直す
+    const back = await (await mode(s, "car")).json();
+    expect(back).toMatchObject({ mode: "car", from: "train", moved: true, gpx: true });
+    expect((await logsOf(s)).map((l) => l.id)).toEqual([id]);
+  });
+
+  it("同乗⇔その他など車以外どうしは、フォルダを移さず meta.json だけ直す", async () => {
+    const s = "20261111-110000";
+    const dir = join(RAW(), "trips", s);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ id: s, mode: "ride" }));
+    expect(await (await mode(s, "other")).json()).toMatchObject({ moved: false, from: "ride", kind: "trip" });
+    expect(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).mode).toBe("other");
+  });
+
+  it("ない走行は 404、おかしな値は 400", async () => {
+    expect((await mode("20000101-000000", "car")).status).toBe(404);
+    expect((await mode("20261111-110000", "bike")).status).toBe(400);
+    expect((await mode("../x", "car")).status).toBe(400);
+  });
+});

@@ -10,7 +10,7 @@ import {
   type GameContext,
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, tripStats, weatherPoints, type LogDetail, type LogKind, type PassedRoute } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, sessionOfLog, shownLogs, tripDetailPanel, tripStats, weatherPoints, type LogDetail, type LogKind, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -35,7 +35,7 @@ import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTr
 import { isSplitIndex, openSplit } from "./splitData";
 import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
-import { addTravelLayer, loadTravelTrips, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
+import { addTravelLayer, changeSessionMode, loadTravelTrips, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
 import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
@@ -206,6 +206,8 @@ let periodNote: string | undefined;
 let periodSeq = 0;
 /** ログタブで選んでいるログの詳細 */
 let logDetail: LogDetail | null = null;
+/** ログタブで選んでいる旅の記録(電車・飛行機など)。busy は移動手段を直している途中 */
+let tripDetail: { id: string; busy?: boolean } | null = null;
 /** MiniPC にログを保存しているか(ブラウザだけで使っているときは false) */
 let storeShared = false;
 /** 読み込んだログの軌跡(いちばん最後に開いたものだけ)と、通った路線 */
@@ -1421,6 +1423,12 @@ function logNeighbors(id: string) {
 function renderLogDetail() {
   const box = $("detail");
   box.classList.add("log-detail");
+  const trip = tripDetail && periodTrips.find((t) => t.id === tripDetail!.id);
+  if (!logDetail && trip) {
+    box.innerHTML = tripDetailPanel(trip, tripDetail!.busy);
+    box.hidden = false;
+    return;
+  }
   if (!logDetail) {
     box.hidden = true;
     return;
@@ -1483,6 +1491,7 @@ async function logWeather(id: string, track: TrackPoint[]): Promise<DriveWeather
 async function openLog(id: string) {
   const store = await storePromise;
   const log = savedLogs?.find((l) => l.id === id) ?? { id, name: id, size: 0 };
+  tripDetail = null;
   logDetail = { log };
   renderLogs();
   $("detail").scrollTop = 0;
@@ -1526,6 +1535,7 @@ async function openLog(id: string) {
 /** ログの詳細を閉じて一覧に戻る(地図の軌跡も消す) */
 function closeLog() {
   logDetail = null;
+  tripDetail = null;
   showTrack(map, []);
   showDriveEvents(map, []);
   renderLogs();
@@ -1538,6 +1548,14 @@ function onLogClick(e: MouseEvent) {
   const tripOpen = el.closest<HTMLElement>("[data-trip-open]");
   if (tripOpen) {
     e.preventDefault();
+    // 右に旅の記録の詳細(移動手段を直す欄)を出す。開いていたログの軌跡は消す
+    if (logDetail) {
+      logDetail = null;
+      showTrack(map, []);
+      showDriveEvents(map, []);
+    }
+    tripDetail = { id: tripOpen.dataset.tripOpen! };
+    renderLogs();
     const box = tripBounds(periodTrips.filter((t) => t.id === tripOpen.dataset.tripOpen));
     if (box) fitBox(map, box, detailPadding());
     return true;
@@ -1637,6 +1655,86 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   if (to) void openLog(to);
 });
+/** 地図に出すもののチェック("log:<ID>" / "trip:<走行ID>")を、移動手段を変えたあとの名前に付け替える */
+function renameShownKey(from: string, to: string) {
+  if (shownAll.delete(from)) {
+    shownAll.add(to);
+    writeJson(SHOWN_KEY, [...shownAll]);
+  }
+  let changed = false;
+  for (const [p, over] of Object.entries(periodShown)) {
+    if (!(from in over)) continue;
+    const { [from]: v, ...rest } = over;
+    periodShown = { ...periodShown, [p]: { ...rest, [to]: v } };
+    changed = true;
+  }
+  if (changed) writeJson(PERIOD_SHOWN_KEY, periodShown);
+}
+
+const modeLabel = (m: ShowMode) => PANEL_MODES.find((x) => x.id === m)?.label ?? m;
+
+/** ログ・旅の記録の詳細で選び直した移動手段を MiniPC に送って直す */
+async function fixSessionMode(sel: HTMLSelectElement) {
+  const session = sel.dataset.session!;
+  const from = sel.dataset.mode as ShowMode;
+  const mode = sel.value as ShowMode;
+  if (mode === from) return;
+  const note =
+    mode === "car"
+      ? "\n国道の制覇に入れて判定します。"
+      : from === "car"
+        ? `\n国道の制覇から外し、保存したログで判定し直します${serverJudge ? "(MiniPC で数分かかります)" : ""}。`
+        : "";
+  if (!confirm(`この記録の移動手段を「${modeLabel(from)}」から「${modeLabel(mode)}」に直しますか?${note}`)) {
+    sel.value = from;
+    return;
+  }
+  const oldLog = logDetail?.log.id;
+  if (logDetail) logDetail = { ...logDetail, modeBusy: true };
+  if (tripDetail) tripDetail = { ...tripDetail, busy: true };
+  renderLogDetail();
+  try {
+    const r = await changeSessionMode(session, mode);
+    periodTrips = await loadTravelTrips(true).catch(() => periodTrips);
+    const store = await storePromise;
+    savedLogs = store.shared ? await store.listLogs().catch(() => savedLogs) : savedLogs;
+    const newLog = savedLogs?.find((l) => sessionOfLog(l.name) === session);
+    // 直したあとの形(車のログか旅の記録か)で開き直す
+    if (mode === "car" && newLog) {
+      if (from !== "car") renameShownKey(`trip:${session}`, `log:${newLog.id}`);
+      void openLog(newLog.id);
+    } else {
+      if (oldLog && from === "car") renameShownKey(`log:${oldLog}`, `trip:${session}`);
+      logDetail = null;
+      showTrack(map, []);
+      showDriveEvents(map, []);
+      tripDetail = periodTrips.some((t) => t.id === session) ? { id: session } : null;
+    }
+    void drawSelection(false);
+    const lines = [`移動手段を「${modeLabel(r.from)}」から「${modeLabel(r.mode)}」に直しました`];
+    if (r.removed) lines.push("国道の制覇から外しました");
+    if (mode === "car" && r.gpx && from !== "car") lines.push("国道の制覇に入れて判定します");
+    if (mode === "car" && !r.gpx) lines.push("位置の記録がまだ届いていないので、届いたら判定します");
+    toast(lines);
+    if (r.rejudge === "server") {
+      watchedRun = "rejudge";
+      await checkJudge();
+    } else if (r.rejudge === "browser") {
+      // MiniPC で判定する準備がないときは、この画面で判定し直す(確かめてから)
+      $("rematch").click();
+    } else if (mode === "car") void checkJudge().then(importPending);
+  } catch (err) {
+    toast([(err as Error).message]);
+    if (logDetail) logDetail = { ...logDetail, modeBusy: false };
+    if (tripDetail) tripDetail = { ...tripDetail, busy: false };
+    renderLogs();
+  }
+}
+$("detail").addEventListener("change", (e) => {
+  const el = e.target as HTMLElement;
+  if (el instanceof HTMLSelectElement && el.id === "session-mode") void fixSessionMode(el);
+});
+
 /** いまの期間を旅行として保存する(同じ期間なら名前を変える) */
 async function saveJourney(name: string) {
   try {

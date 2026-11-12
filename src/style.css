@@ -343,3 +343,9 @@ button.link { padding: 0; border: 0; background: none; color: var(--accent); fon
 .wx-table { border-collapse: collapse; font-size: 12px; margin: 4px 0; width: 100%; }
 .wx-table th, .wx-table td { padding: 2px 6px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
 .wx-note { font-size: 11px; }
+
+/* 移動手段を直す欄(ログ・旅の記録の詳細) */
+.mode-fix { margin: 8px 0 12px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.mode-fix label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.mode-fix select { font-size: 16px; }
+.mode-fix p { margin: 6px 0 0; font-size: 12px; }
