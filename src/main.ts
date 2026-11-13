@@ -288,7 +288,8 @@ let prefFill = false;
 let paintedPrefs: unknown = undefined;
 function paintPrefs() {
   if (!prefShapes) return;
-  const byPref = (prefFill && data ? activeSummary()?.byPref : undefined) ?? null;
+  // ログタブでは道路タブの色分けを出さない
+  const byPref = (prefFill && data && !logMode ? activeSummary()?.byPref : undefined) ?? null;
   if (byPref === paintedPrefs) return;
   paintedPrefs = byPref;
   showPrefFill(map, prefShapes, byPref);
@@ -1198,6 +1199,10 @@ function showLogs() {
   for (const id of ["pref-picker", "overall", "categories", "routes-section"]) $(id).hidden = true;
   $("log-view").hidden = false;
   select(null, false);
+  // 直前のタブ(国道・高速道路・都道府県道)の線と都道府県の色分けを地図から消す。
+  // 道路のタブに戻ると showDataset が描き直す
+  clearRoutes(map);
+  paintPrefs();
   renderLogs();
   void refreshLogs().then(() => {
     if (logMode) void drawSelection(logYear === "range");
