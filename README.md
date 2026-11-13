@@ -199,3 +199,4 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
   - MiniPC は走行フォルダの `meta.json` の `mode` を書き換え、車と車以外で `<走行ID>` ⇔ `trips\<走行ID>` にフォルダを移します。トンネルなどを補った位置は新しい手段で補い直します(飛行機などは補った位置を捨てます)。
   - **運転にする**と国道の判定に足します(地図のログがなければ `location.csv` から精度 50m 以内の点で GPX を作り、判定待ちにする)。**運転以外にする**と地図のログを `data/logs/removed` に移して制覇から外し、保存したログで判定し直します(MiniPC で判定できないときは画面で判定し直す確認が出ます)。運転に戻すと removed のログを戻します。
   - API: `GET /api/rawlog/mode?session=<走行ID>`(いまの手段)、`POST /api/rawlog/mode?session=<走行ID>&mode=car|ride|train|plane|other`。同じ走行の GPX が `/api/inbox` にもう一度届いても二重に保存せず、車以外にした走行の GPX は地図に入れません。
+- **記録を分ける**(2026-11-12 から): iPhone のアプリの振り返り画面で、途中で手段が変わった記録(バスのあと歩いた、など)を分けられます。送ってあった記録は、アプリが `DELETE /api/rawlog/session?session=<走行ID>` で忘れてもらってから(走行フォルダは `replaced\<走行ID>_<時刻>` に移し、地図のログは `data/logs/replaced` に移して判定し直す)、前半と後半を別の記録として送り直します。
