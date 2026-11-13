@@ -322,7 +322,8 @@ export function logListPanel(
       ${kindTabs(includedItems(period.items, journey?.exclude), kind)}
       <p class="muted">${periodSummary(includedItems(items, journey?.exclude))}</p>
       <p class="muted">左のチェックを入れたものを地図に出します。地図右下の「旅」で、運転・電車などの手段ごとにまとめて切り替えられます(はじめは運転だけ)。${period.note ? ` ${esc(period.note)}` : ""}</p>
-      ${period.items.length ? `<button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>` : ""}
+      ${period.items.length ? `<div class="period-buttons"><button id="period-fit" type="button" class="secondary">この期間の全体を表示</button>
+        <button id="share-card" type="button" class="secondary" title="地図に出している経路とまとめを1枚の画像にする">📷 まとめ画像</button></div>` : ""}
       ${journey ? `<p class="muted">× で、この旅行から外せます(ログは消えません)。</p>` : ""}
       ${periodList(items, period.known, selectedId, journey ? new Set(journey.exclude ?? []) : null, show.shown)}`;
   }
@@ -366,7 +367,7 @@ export function logListPanel(
   return `${select}
     ${kindTabs(all, kind)}
     <p class="muted">${summary}</p>
-    <p class="muted">左のチェックを入れたログだけを地図に出します。${checked ? `(${checked} 本を表示中 <button id="show-clear" type="button" class="link">すべて外す</button>)` : ""}</p>
+    <p class="muted">左のチェックを入れたログだけを地図に出します。${checked ? `(${checked} 本を表示中 <button id="show-clear" type="button" class="link">すべて外す</button>・<button id="share-card" type="button" class="link">📷 まとめ画像</button>)` : ""}</p>
     <ol class="log-list" data-scroll="logs">${rows.map((r) => r.html).join("")}</ol>`;
 }
 
@@ -394,6 +395,7 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
       <span class="muted log-pos">${nav.index !== undefined ? `${nav.index} / ${nav.count}` : ""}</span>
       ${navBtn("log-next", nav.next, "古いログへ", "›")}
       <span class="spacer"></span>
+      <button id="log-share" type="button" aria-label="まとめ画像" title="経路とまとめを1枚の画像にする">📷</button>
       <button id="detail-fold" type="button" aria-label="${nav.folded ? "詳細を開く" : "地図を広く表示"}">${nav.folded ? "▾" : "▴"}</button>
       <button id="detail-close" type="button" aria-label="閉じる">×</button></div>
     <h2 class="log-title">${esc(d.log.name)}</h2>`;

@@ -37,6 +37,7 @@ import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
 import { addTravelLayer, changeSessionMode, loadTravelTrips, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
 import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
+import { carColor, composeCard, cardFileName, logCardInfo, mergeRoutes, openCardModal, periodCardInfo, renderRouteMap, tripLines, type CardInfo, type CardLine } from "./shareCard";
 import { REFERENCE_CATS, SEPARATE_CATS, applyDeclared, computeStats, effectiveCoverage, percent, type Progress } from "./stats";
 import { emptyRecord, exportBackup, importBackup, mergeRecord, openStore, type DriveEval, type DriveEvent, type DriveWeather, type JudgeRun, type Record, type SavedLog } from "./store";
 import {
@@ -1541,6 +1542,92 @@ function closeLog() {
   renderLogs();
 }
 
+// ---- まとめ画像(経路の地図とサマリー) ----
+
+/** いまの国道の総合制覇率(道路データがなければ undefined) */
+const kokudoOverall = () => (datasets.kokudo ? percent(computeStats(datasets.kokudo, coverageFor(datasets.kokudo)).overall) : undefined);
+
+/** 地図と文字をまとめて画像にして、枠に出す */
+async function finishCard(modal: ReturnType<typeof openCardModal>, lines: CardLine[], info: CardInfo, markers?: { at: [number, number]; color: string }[]) {
+  modal.status("地図を描いています…");
+  const img = await renderRouteMap(lines, { width: 540, height: 560, markers });
+  if (modal.closed) return;
+  modal.show(composeCard(img, info), cardFileName(info.title));
+}
+
+/** 1本の車のログのまとめ画像 */
+async function makeLogCard(id: string) {
+  const modal = openCardModal();
+  try {
+    const store = await storePromise;
+    const log = savedLogs?.find((l) => l.id === id) ?? logDetail?.log;
+    if (!log) throw new Error("ログが見つかりません");
+    const track = trackCache.get(id) ?? parseTrackText(await store.loadLog(id), log.name);
+    if (track.length === 0) throw new Error("位置の記録がありません");
+    if (modal.closed) return;
+    modal.status("通った道路を調べています…");
+    const routes = await logRoutes(id, track);
+    if (modal.closed) return;
+    const stats = logDetail?.log.id === id && logDetail.stats ? logDetail.stats : tripStats(track);
+    const coords = thinTrack(track);
+    await finishCard(modal, [{ coords, color: carColor() }], logCardInfo(log, stats, routes, kokudoOverall()), [
+      { at: coords[0], color: "#2e7d32" },
+      { at: coords[coords.length - 1], color: "#d32f2f" },
+    ]);
+  } catch (e) {
+    modal.status(`画像を作れませんでした: ${(e as Error).message}`);
+  }
+}
+
+/** 地図に出しているもの(期間・旅行、またはチェックしたログ)のまとめ画像 */
+async function makeListCard() {
+  const items = visibleItems();
+  if (items.length === 1 && items[0].kind === "log") return makeLogCard(items[0].log.id);
+  const modal = openCardModal();
+  if (!items.length) return modal.status("地図に出しているものがありません。一覧の左のチェックを入れてから作ってください。");
+  try {
+    const store = await storePromise;
+    const cars = items.flatMap((i) => (i.kind === "log" ? [i.log] : []));
+    const lists: PassedRoute[][] = [];
+    let known = true;
+    for (const [n, l] of cars.entries()) {
+      if (modal.closed) return;
+      modal.status(`通った道路を調べています(${n} / ${cars.length})…`);
+      let routes = passedCache.get(l.id) ?? null;
+      if (!routes || !periodTracks.get(l.id)?.coords.length) {
+        try {
+          const track = parseTrackText(await store.loadLog(l.id), l.name);
+          if (!periodTracks.get(l.id)?.coords.length) periodTracks.set(l.id, { coords: thinTrack(track), start: track.find((p) => p.time !== undefined)?.time });
+          routes ??= await logRoutes(l.id, track);
+        } catch {
+          // 読めないログは線も道路も入れない
+        }
+      }
+      if (routes) lists.push(routes);
+      else known = false;
+    }
+    if (modal.closed) return;
+    const lines: CardLine[] = items.flatMap((i) =>
+      i.kind === "log" ? [{ coords: periodTracks.get(i.log.id)?.coords ?? [], color: carColor() }] : tripLines(i.trip),
+    );
+    const journey = logYear === "range" ? journeyOf(journeys, logPeriod) : undefined;
+    const only = items.length === 1 ? items[0] : undefined;
+    const single = only?.kind === "trip" ? PANEL_MODES.find((m) => m.id === only.trip.mode) : undefined;
+    const title = journey ? `🧳 ${journey.name}` : single ? `${single.icon} ${single.label}の記録` : logYear === "range" ? "🧳 旅の記録" : "走った記録";
+    const info = periodCardInfo({
+      title,
+      ...(logYear === "range" ? { from: logPeriod.from, to: logPeriod.to } : {}),
+      items,
+      // 道路データがないなど、1本も調べられなかったときは欄を出さない
+      routes: lists.length || !cars.length ? mergeRoutes(lists) : known ? [] : null,
+      overall: kokudoOverall(),
+    });
+    await finishCard(modal, lines, info);
+  } catch (e) {
+    modal.status(`画像を作れませんでした: ${(e as Error).message}`);
+  }
+}
+
 /** ログの一覧と詳細の枠のクリック。ログタブでなければ false(国道の詳細として扱う) */
 function onLogClick(e: MouseEvent) {
   if (!logMode) return false;
@@ -1610,6 +1697,14 @@ function onLogClick(e: MouseEvent) {
   }
   if (el.closest("#period-fit")) {
     fitPeriod();
+    return true;
+  }
+  if (el.closest("#share-card")) {
+    void makeListCard();
+    return true;
+  }
+  if (el.closest("#log-share") && logDetail) {
+    void makeLogCard(logDetail.log.id);
     return true;
   }
   const open = el.closest<HTMLElement>("[data-log-open]");
