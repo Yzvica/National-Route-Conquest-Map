@@ -8,6 +8,7 @@ import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { listTrips, loadTripEval } from "./trips.mjs";
 import { fetchWeather, parseLocationCsv } from "./weather.mjs";
+import { createGmaps } from "./gmaps.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -1008,9 +1009,17 @@ function json(res, status, body) {
 }
 
 export function createApp() {
+  const gmaps = createGmaps(dirname(RECORD));
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
+      // Google マップの背景(キーは data/google-maps.json。server/gmaps.mjs)
+      if (url.pathname === "/api/gmaps/status") return json(res, 200, gmaps.status());
+      const gTile = /^\/api\/gmaps\/tile\/(\w+)\/(\d+)\/(\d+)\/(\d+)$/.exec(url.pathname);
+      if (gTile) return await gmaps.tile(req, res, gTile[1], gTile[2], gTile[3], gTile[4]);
+      const gView = /^\/api\/gmaps\/viewport\/(\w+)$/.exec(url.pathname);
+      if (gView) return json(res, 200, await gmaps.viewport(gView[1], url.searchParams));
+
       if (url.pathname === "/api/record") {
         if (req.method === "GET") return json(res, 200, loadRecord());
         if (req.method === "POST") {

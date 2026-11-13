@@ -209,6 +209,13 @@ button.link { padding: 1px 8px; font-size: 12px; }
   display: block; height: 29px; padding: 0 6px; border: 0; border-radius: 4px;
   background: #fff; color: #333; font: inherit; font-size: 13px; cursor: pointer;
 }
+/* Google マップを背景にしているときの表示(地図左下。規約で必要) */
+.google-attrib {
+  max-width: 70vw; padding: 1px 6px; border-radius: 3px;
+  background: rgba(255, 255, 255, 0.8); color: #333; font-size: 11px; line-height: 16px;
+}
+.google-attrib[hidden] { display: none; }
+.google-attrib .google-logo { font-weight: 700; color: #5f6368; }
 /* 旅の記録(電車・飛行機など)の表示を切り替えるボタン(地図右下) */
 .travel-ctrl { position: relative; }
 .travel-ctrl .travel-toggle { width: 29px; height: 29px; font-size: 13px; font-weight: 700; color: #999; }
