@@ -231,7 +231,8 @@ h1 { font-size: 20px; margin: 0 0 8px; } h2 { font-size: 16px; margin: 20px 0 6p
 .ok { background: var(--ok); } .ng { background: var(--warn); }
 ul.warn { color: var(--warn); padding-left: 20px; }
 table { border-collapse: collapse; width: 100%; } th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { width: 34%; font-weight: 600; white-space: nowrap; }
+th { width: 38%; font-weight: 600; } th, td { overflow-wrap: anywhere; }
+table { table-layout: fixed; }
 pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .muted { color: var(--muted); } a { color: inherit; }
 </style></head><body>
