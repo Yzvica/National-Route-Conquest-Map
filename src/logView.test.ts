@@ -179,6 +179,15 @@ describe("旅の記録の詳細(同乗)", () => {
     expect(altChart([{ t: 0, m: 5 }, { t: 1000, m: 5 }])).toContain("<svg");
   });
 
+  it("高度のグラフは最大の値まで入る(下端を目盛りに合わせて下げても上が切れない)", () => {
+    const ticks = (svg: string) => [...svg.matchAll(/text-anchor="end">([-\d,]+)</g)].map((m) => Number(m[1].replace(/,/g, "")));
+    for (const [lo, hi] of [[-17, 12389], [-5, 92], [62, 81], [0, 3000]]) {
+      const t = ticks(altChart([{ t: 0, m: lo }, { t: 1000, m: hi }]));
+      expect(Math.min(...t)).toBeLessThanOrEqual(lo);
+      expect(Math.max(...t)).toBeGreaterThanOrEqual(hi);
+    }
+  });
+
   it("天気が取れない理由があれば出す", () => {
     expect(weatherView(null, "Open-Meteo につながりませんでした(ENOTFOUND)")).toContain("ENOTFOUND");
   });

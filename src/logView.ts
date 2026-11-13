@@ -237,11 +237,11 @@ function lineChart(pts: { t: number; v: number }[], opt: { label: string; min?: 
     lo = Math.min(lo, p.v);
   }
   let base = opt.min ?? lo;
-  let span = Math.max(opt.minSpan, hi - base);
-  const step = niceStep(span);
+  const step = niceStep(Math.max(opt.minSpan, hi - base));
   if (opt.min === undefined) base = Math.floor(base / step) * step;
-  const top = Math.ceil((base + span) / step) * step;
-  span = top - base;
+  // 上端は最大の値から決める(下端を目盛りに合わせて下げても、上が切れないように)
+  const top = Math.max(Math.ceil(hi / step) * step, base + Math.ceil(opt.minSpan / step) * step);
+  const span = top - base;
   const plotW = W - PAD.l - PAD.r;
   const plotH = H - PAD.t - PAD.b;
   const x = (t: number) => PAD.l + ((t - t0) / (t1 - t0)) * plotW;
