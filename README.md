@@ -161,6 +161,17 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 
 地図の背景には[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)、道路データには © OpenStreetMap contributors を使っています。
 
+### サーバーの状態(保守用)
+
+`http://<MiniPC>:8080/health` を開くと、サーバーの様子を1画面で見られます(JSON は `/api/health`)。MiniPC のファイルを開かなくても、次がわかります。
+
+- 起動した時刻、動いているコード(起動時)・取り込んだコード・ビルドしたコード(`data\built.txt`)
+- 自動更新の失敗(`data\update.failed`)と `update.log`・`server.log`・`server.err.log` の最後の行
+- 国道判定の状態(判定待ち・判定中・最後の判定)、保存しているログの数、最後に届いた運転・旅の記録、天気の取り直し待ち
+- 空き容量、国道データ(リリース)の日付、Google マップのタイル数
+
+おかしなところ(自動更新の失敗、取り込んだのに再起動されていない、判定待ちが残っているのに判定していない、生データのフォルダが見つからない、空き容量 5GB 未満、Google の上限など)があると、上に赤で「注意」が出ます。
+
 ## 走ったときの天気
 
 - iPhone の走行ロガーの生データ(`meta.json` は最後に届く)を受け取ると、MiniPC が走った時刻・場所の天気を [Open-Meteo](https://open-meteo.com/)(無料・キー不要)から取り、走行フォルダに `weather.json` を書きます。飛行機の記録は取りません
