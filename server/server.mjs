@@ -9,6 +9,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { listTrips, loadTripEval } from "./trips.mjs";
 import { fetchWeather, parseLocationCsv } from "./weather.mjs";
 import { createGmaps } from "./gmaps.mjs";
+import { collectHealth, renderHealthHtml } from "./health.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DIST = join(ROOT, "dist");
@@ -1015,6 +1016,20 @@ export function createApp() {
     try {
       // Google マップの背景(キーは data/google-maps.json。server/gmaps.mjs)
       if (url.pathname === "/api/gmaps/status") return json(res, 200, gmaps.status());
+      // 保守用の状態まとめ(server/health.mjs)
+      if (url.pathname === "/api/health" || url.pathname === "/health") {
+        const h = collectHealth({
+          root: ROOT,
+          rawLogDir: RAW_LOG_DIR(),
+          judge: judgeStatus,
+          weatherPending: loadWeatherPending,
+          gmaps: gmaps.status,
+          logs: listLogs,
+        });
+        if (url.pathname === "/api/health") return json(res, 200, h);
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        return res.end(renderHealthHtml(h));
+      }
       const gTile = /^\/api\/gmaps\/tile\/(\w+)\/(\d+)\/(\d+)\/(\d+)$/.exec(url.pathname);
       if (gTile) return await gmaps.tile(req, res, gTile[1], gTile[2], gTile[3], gTile[4]);
       const gView = /^\/api\/gmaps\/viewport\/(\w+)$/.exec(url.pathname);
