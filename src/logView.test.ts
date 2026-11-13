@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripDetailPanel, tripStats, weatherPoints, type LogKind } from "./logView";
+import { altChart, logDetailPanel, logListPanel, maxKmhOf, passedRoutes, shownLogs, speedChart, tripDetailPanel, tripStats, weatherPoints, weatherView, type LogKind } from "./logView";
 import type { TravelTrip } from "./travel";
 import type { RouteData, TrackPoint } from "./types";
 
@@ -26,6 +26,20 @@ describe("tripStats", () => {
     expect(s.maxKmh!).toBeLessThan(41);
     expect(s.avgKmh!).toBeGreaterThan(34);
     expect(s.avgKmh!).toBeLessThan(41);
+  });
+
+  it("飛行機は時速 200km を超えても捨てず、GPS の速さを使う", () => {
+    // 1 分ごとに東へ約 13km(時速約 800km)。GPS の速さは 220 m/s
+    const t0 = Date.UTC(2026, 10, 9, 11, 0, 0);
+    const pts: TrackPoint[] = Array.from({ length: 61 }, (_, i) => ({ lat: 35, lon: 135 + i * 0.143, time: t0 + i * 60_000, speed: 220, alt: 10000 + i }));
+    const car = tripStats(pts);
+    expect(car.maxKmh).toBeUndefined();
+    const s = tripStats(pts, maxKmhOf("plane"));
+    expect(s.m / 1000).toBeGreaterThan(750);
+    expect(s.maxKmh!).toBeCloseTo(792, 0);
+    expect(s.avgKmh!).toBeGreaterThan(700);
+    expect(s.maxAltM).toBe(10060);
+    expect(s.minAltM).toBe(10000);
   });
 
   it("時刻のないログは距離だけ", () => {
@@ -155,6 +169,18 @@ describe("旅の記録の詳細(同乗)", () => {
     expect(html).not.toContain("運転評価");
     expect(html).not.toContain("通った道路");
     expect(html).toContain("速度");
+  });
+
+  it("電車も高度があれば高度の欄とグラフを出す", () => {
+    const withAlt = track.map((p, i) => ({ ...p, alt: 40 + i }));
+    const html = tripDetailPanel({ ...trip, mode: "train", score: undefined }, false, { stats: tripStats(withAlt), ev: null, weather: null });
+    expect(html).toContain("<dt>高度</dt><dd>40〜100 m</dd>");
+    expect(html).toContain("高度の変化");
+    expect(altChart([{ t: 0, m: 5 }, { t: 1000, m: 5 }])).toContain("<svg");
+  });
+
+  it("天気が取れない理由があれば出す", () => {
+    expect(weatherView(null, "Open-Meteo につながりませんでした(ENOTFOUND)")).toContain("ENOTFOUND");
   });
 
   it("一覧の行に同乗の点数を付ける(手持ちは *)", () => {

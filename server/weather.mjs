@@ -87,6 +87,15 @@ export function parseLocationCsv(text) {
   const cLat = head.indexOf("lat");
   const cLon = head.indexOf("lon");
   const cAcc = head.indexOf("h_acc_m");
+  const cAlt = head.indexOf("alt_m");
+  const cSp = head.indexOf("speed_ms");
+  const cEst = head.indexOf("speed_est_ms");
+  /** 空欄・負(iOS の「測れていない」)は null */
+  const val = (c, k) => {
+    if (k < 0 || c[k] === undefined || c[k].trim() === "") return null;
+    const v = Number(c[k]);
+    return Number.isFinite(v) ? v : null;
+  };
   if (cT < 0 || cLat < 0 || cLon < 0) return [];
   const out = [];
   for (const line of lines.slice(1)) {
@@ -97,7 +106,9 @@ export function parseLocationCsv(text) {
     const acc = cAcc >= 0 && c[cAcc] !== "" ? Number(c[cAcc]) : 0;
     if (!Number.isFinite(t) || !Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) continue;
     if (Number.isFinite(acc) && acc > 300) continue;
-    out.push({ t, lat, lon });
+    const sp = val(c, cSp);
+    const est = val(c, cEst);
+    out.push({ t, lat, lon, alt: val(c, cAlt), sp: sp !== null && sp >= 0 ? sp : est !== null && est >= 0 ? est : null });
   }
   return out.sort((a, b) => a.t - b.t);
 }
@@ -219,6 +230,17 @@ export function summarize(samples) {
   };
 }
 
+/** fetch の失敗の原因を短く(例: "ENOTFOUND api.open-meteo.com"、"UND_ERR_CONNECT_TIMEOUT") */
+export function netReason(e) {
+  const parts = [];
+  for (let c = e, depth = 0; c && depth < 4; c = c.cause, depth++) {
+    const code = c.code ?? (c.name === "TimeoutError" ? "TIMEOUT" : undefined);
+    const msg = code ? [code, c.hostname].filter(Boolean).join(" ") : c.message;
+    if (msg && !parts.includes(msg)) parts.push(msg);
+  }
+  return parts.join(" / ") || String(e);
+}
+
 /**
  * 地点ごとに天気を調べて、weather.json に書く中身を返す。
  * fetchImpl はテストで差し替える
@@ -227,7 +249,13 @@ export async function fetchWeather(points, { fetchImpl = fetch, now = Date.now()
   const samples = sampleTrack(points);
   if (samples.length === 0) throw new Error("位置の記録がないので天気を調べられません");
   const { url, api } = weatherUrl(samples, now);
-  const res = await fetchImpl(url, { signal: AbortSignal.timeout(30_000) });
+  let res;
+  try {
+    res = await fetchImpl(url, { signal: AbortSignal.timeout(30_000) });
+  } catch (e) {
+    // Node の fetch は「fetch failed」としか言わないので、原因(名前の引けない・つながらないなど)を足す
+    throw new Error(`Open-Meteo につながりませんでした(${netReason(e)})`);
+  }
   if (!res.ok) throw new Error(`天気を取れませんでした(HTTP ${res.status}: ${(await res.text()).slice(0, 200)})`);
   let body = await res.json();
   // 地点が1つのときは配列でなく1つの結果が返る

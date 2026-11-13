@@ -134,6 +134,10 @@ export interface TrackPoint {
   lon: number;
   /** UNIX ミリ秒。ログに時刻がなければ undefined */
   time?: number;
+  /** 高度(m)。iPhone の走行ロガーの旅の記録だけ */
+  alt?: number;
+  /** GPS の速さ(m/s)。iPhone の走行ロガーの旅の記録だけ */
+  speed?: number;
 }
 
 /** 区間ID → 走行済み割合(0〜1) */

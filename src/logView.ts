@@ -4,6 +4,7 @@ import { distance } from "./geo";
 import { driveEvalView, esc, km, num, sortLogs } from "./gameView";
 import type { DriveEval, DriveWeather, SavedLog } from "./store";
 import { includedItems, journeyOf, periodList, showBox, tripRow, periodSummary, shortPeriod, type Journey, type Period, type PeriodItem } from "./period";
+import { DEFAULT_OPTIONS } from "./matcher";
 import { trackLength } from "./trips";
 import { describeTrip, PANEL_MODES, tripDay, type ShowMode, type TravelTrip } from "./travel";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
@@ -12,8 +13,19 @@ import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type T
 const SPEED_WINDOW_S = 5;
 /** これより遅い間は止まっているとみなす(走行時間・平均速度に入れない) */
 const MOVING_KMH = 5;
-/** 時速これを超える値は GPS の飛びとして捨てる */
+/** 時速これを超える値は GPS の飛びとして捨てる(車・同乗など) */
 const MAX_KMH = 200;
+
+/** 移動手段ごとの、GPS の飛びとみなす速さ(km/h)。飛行機は時速 900km 前後で飛ぶ */
+export function maxKmhOf(mode?: string): number {
+  return mode === "plane" ? 1200 : mode === "train" ? 400 : MAX_KMH;
+}
+
+export interface AltPoint {
+  /** UNIX ミリ秒 */
+  t: number;
+  m: number;
+}
 
 export interface SpeedPoint {
   /** UNIX ミリ秒 */
@@ -32,23 +44,36 @@ export interface TripStats {
   avgKmh?: number;
   maxKmh?: number;
   speeds: SpeedPoint[];
+  /** 高度の変化(高度の記録があるログだけ) */
+  alts?: AltPoint[];
+  minAltM?: number;
+  maxAltM?: number;
 }
 
-/** ログの時間・距離・速度。時刻のないログは距離だけ */
-export function tripStats(track: TrackPoint[]): TripStats {
-  const m = trackLength(track);
+/**
+ * ログの時間・距離・速度・高度。時刻のないログは距離だけ。
+ * maxKmh: これより速い値は GPS の飛びとして捨てる(飛行機は maxKmhOf("plane"))。
+ * GPS の速さ(speed)がある点はその値を使い、ない点は前の点との距離と時間から求める
+ */
+export function tripStats(track: TrackPoint[], maxKmh = MAX_KMH): TripStats {
+  const m = trackLength(track, { ...DEFAULT_OPTIONS, maxSpeedKmh: maxKmh });
   const timed = track.filter((p): p is TrackPoint & { time: number } => p.time !== undefined);
-  if (timed.length < 2) return { m, speeds: [] };
+  const alts = altitudes(timed);
+  if (timed.length < 2) return { m, speeds: [], ...alts };
   const speeds: SpeedPoint[] = [];
   let j = 0;
   for (let i = 0; i < timed.length; i++) {
     while (j < i && timed[i].time - timed[j].time > SPEED_WINDOW_S * 1000) j++;
     const a = timed[j > 0 ? j - 1 : 0];
     const b = timed[i];
-    const dt = (b.time - a.time) / 3_600_000;
-    if (dt <= 0) continue;
-    const kmh = distance([a.lon, a.lat], [b.lon, b.lat]) / 1000 / dt;
-    if (kmh <= MAX_KMH) speeds.push({ t: b.time, kmh });
+    let kmh: number;
+    if (b.speed !== undefined) kmh = b.speed * 3.6;
+    else {
+      const dt = (b.time - a.time) / 3_600_000;
+      if (dt <= 0) continue;
+      kmh = distance([a.lon, a.lat], [b.lon, b.lat]) / 1000 / dt;
+    }
+    if (kmh <= maxKmh) speeds.push({ t: b.time, kmh });
   }
   let movingMs = 0;
   for (let i = 1; i < speeds.length; i++) {
@@ -65,9 +90,23 @@ export function tripStats(track: TrackPoint[]): TripStats {
     movingMs,
     m,
     avgKmh: movingMs > 0 ? m / 1000 / (movingMs / 3_600_000) : undefined,
-    maxKmh: speeds.length ? Math.max(...speeds.map((s) => s.kmh)) : undefined,
+    maxKmh: speeds.length ? speeds.reduce((x, s) => Math.max(x, s.kmh), 0) : undefined,
     speeds,
+    ...alts,
   };
+}
+
+/** 高度の変化と最低・最高(高度の記録がなければ何も返さない) */
+function altitudes(timed: (TrackPoint & { time: number })[]): Pick<TripStats, "alts" | "minAltM" | "maxAltM"> {
+  const alts: AltPoint[] = [];
+  for (const p of timed) if (p.alt !== undefined && Number.isFinite(p.alt)) alts.push({ t: p.time, m: p.alt });
+  if (alts.length < 2) return {};
+  let min = Infinity, max = -Infinity;
+  for (const a of alts) {
+    min = Math.min(min, a.m);
+    max = Math.max(max, a.m);
+  }
+  return { alts, minAltM: min, maxAltM: max };
 }
 
 /** そのログで通った路線と距離(m)。距離は区間の長さ × 通った割合 */
@@ -133,8 +172,9 @@ export const weatherBadge = (w: SavedLog["weather"]) =>
   w ? `<span class="wx-badge" title="${esc(w.label)}">${w.icon}${tempRange(w.tMin, w.tMax) ? ` ${tempRange(w.tMin, w.tMax)}` : ""}</span>` : "";
 
 /** ログの詳細に出す天気 */
-export function weatherView(w: DriveWeather | null | undefined): string {
+export function weatherView(w: DriveWeather | null | undefined, error?: string): string {
   if (w === undefined) return `<p class="muted">天気を調べています…</p>`;
+  if (w === null && error) return `<p class="muted">MiniPC が天気を取れていません: ${esc(error)}<br>30分ごとに取り直します。</p>`;
   if (w === null) return `<p class="muted">天気を取れませんでした(時刻のないログや、MiniPC がインターネットにつながっていないときなど)。</p>`;
   const s = w.summary;
   const facts = [
@@ -162,34 +202,62 @@ const PAD = { l: 36, r: 8, t: 8, b: 20 };
 
 /** 速度のグラフ。出来事(急ブレーキなど)の時刻に印を付ける */
 export function speedChart(speeds: SpeedPoint[], events: { t: number; label: string }[] = []): string {
-  if (speeds.length < 2) return "";
-  const t0 = speeds[0].t;
-  const t1 = speeds[speeds.length - 1].t;
+  return lineChart(speeds.map((s) => ({ t: s.t, v: s.kmh })), { label: "速度の変化", min: 0, minSpan: 60 }, events);
+}
+
+/** 高度のグラフ。飛行機は数千 m、電車などは数十 m なので、高さに合わせて目盛りを決める */
+export function altChart(alts: AltPoint[]): string {
+  return lineChart(alts.map((a) => ({ t: a.t, v: a.m })), { label: "高度の変化", minSpan: 20 });
+}
+
+/** きりのいい目盛りの幅(1・2・5 の 10 のべき乗倍) */
+function niceStep(span: number, ticks = 4): number {
+  const raw = span / ticks;
+  const p = 10 ** Math.floor(Math.log10(raw));
+  return [1, 2, 5, 10].map((k) => k * p).find((s) => s >= raw) ?? 10 * p;
+}
+
+/**
+ * 時刻の折れ線グラフ。min を決めると下端をその値にする(速度は 0)。決めなければ値に合わせる。
+ * minSpan: 縦軸の幅の最小(小さな揺れが大きく見えないように)
+ */
+function lineChart(pts: { t: number; v: number }[], opt: { label: string; min?: number; minSpan: number }, events: { t: number; label: string }[] = []): string {
+  if (pts.length < 2) return "";
+  const t0 = pts[0].t;
+  const t1 = pts[pts.length - 1].t;
   if (t1 <= t0) return "";
-  // 点が多いと重いので、横幅の2倍くらいまで間引く(区切りごとの最大をとって、速いところを潰さない)
+  // 点が多いと重いので、横幅の2倍くらいまで間引く(区切りごとの最大をとって、速いところ・高いところを潰さない)
   const n = W * 2;
-  const bins: number[] = new Array(n).fill(-1);
-  for (const s of speeds) {
-    const i = Math.min(n - 1, Math.floor(((s.t - t0) / (t1 - t0)) * n));
-    bins[i] = Math.max(bins[i], s.kmh);
+  const bins: (number | null)[] = new Array(n).fill(null);
+  let hi = -Infinity, lo = Infinity;
+  for (const p of pts) {
+    const i = Math.min(n - 1, Math.floor(((p.t - t0) / (t1 - t0)) * n));
+    bins[i] = bins[i] === null ? p.v : Math.max(bins[i]!, p.v);
+    hi = Math.max(hi, p.v);
+    lo = Math.min(lo, p.v);
   }
-  const max = Math.max(60, Math.ceil(Math.max(...bins) / 20) * 20);
+  let base = opt.min ?? lo;
+  let span = Math.max(opt.minSpan, hi - base);
+  const step = niceStep(span);
+  if (opt.min === undefined) base = Math.floor(base / step) * step;
+  const top = Math.ceil((base + span) / step) * step;
+  span = top - base;
   const plotW = W - PAD.l - PAD.r;
   const plotH = H - PAD.t - PAD.b;
   const x = (t: number) => PAD.l + ((t - t0) / (t1 - t0)) * plotW;
-  const y = (v: number) => PAD.t + plotH * (1 - v / max);
+  const y = (v: number) => PAD.t + plotH * (1 - (v - base) / span);
   let d = "";
   let pen = false;
   bins.forEach((v, i) => {
-    if (v < 0) return;
+    if (v === null) return;
     const px = PAD.l + ((i + 0.5) / n) * plotW;
     d += `${pen ? "L" : "M"}${px.toFixed(1)},${y(v).toFixed(1)}`;
     pen = true;
   });
   const grid = [];
-  for (let v = 0; v <= max; v += max > 100 ? 40 : 20) {
+  for (let v = base; v <= top + step / 2; v += step) {
     grid.push(`<line class="grid" x1="${PAD.l}" x2="${W - PAD.r}" y1="${y(v)}" y2="${y(v)}"/>
-      <text class="tick" x="${PAD.l - 4}" y="${y(v) + 4}" text-anchor="end">${v}</text>`);
+      <text class="tick" x="${PAD.l - 4}" y="${y(v) + 4}" text-anchor="end">${Math.round(v).toLocaleString()}</text>`);
   }
   const marks = events
     .filter((e) => e.t >= t0 && e.t <= t1)
@@ -198,7 +266,7 @@ export function speedChart(speeds: SpeedPoint[], events: { t: number; label: str
         <title>${hm(e.t)} ${esc(e.label)}</title></g>`,
     )
     .join("");
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="速度の変化">${grid.join("")}
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="${opt.label}">${grid.join("")}
     <path class="line" d="${d}"/>${marks}
     <text class="tick" x="${PAD.l}" y="${H - 5}">${hm(t0)}</text>
     <text class="tick" x="${W - PAD.r}" y="${H - 5}" text-anchor="end">${hm(t1)}</text></svg>`;
@@ -478,6 +546,8 @@ export interface TripDetailData {
   /** 同乗の運転評価(なければ null) */
   ev?: (DriveEval & { mount?: string; usable_ratio?: number; axes_quality?: number }) | null;
   weather?: DriveWeather | null;
+  /** 天気を取れなかったときの理由(MiniPC が取り直す一覧にあるとき) */
+  weatherError?: string;
   /** 通った道路(同乗だけ調べる) */
   routes?: PassedRoute[] | null;
 }
@@ -512,6 +582,7 @@ export function tripDetailPanel(t: TravelTrip, busy = false, d: TripDetailData =
     if (s.movingMs !== undefined) facts.push(["動いていた時間", duration(s.movingMs)]);
     if (s.avgKmh !== undefined) facts.push(["平均速度", `${num(s.avgKmh, 0)} km/h`]);
     if (s.maxKmh !== undefined) facts.push(["最高速度", `${num(s.maxKmh, 0)} km/h`]);
+    if (s.maxAltM !== undefined && s.minAltM !== undefined) facts.push(["高度", `${num(Math.round(s.minAltM), 0)}〜${num(Math.round(s.maxAltM), 0)} m`]);
   }
   const ride = t.mode === "ride";
   const events = d.ev?.events.map((e) => ({ t: e.t_unix * 1000, label: e.kind })) ?? [];
@@ -528,7 +599,8 @@ export function tripDetailPanel(t: TravelTrip, busy = false, d: TripDetailData =
     ${modePicker(t.id, t.mode, busy)}
     ${d.error ? `<p class="muted">詳しい記録を読み込めませんでした: ${esc(d.error)}</p>` : loading}
     ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
-    ${s?.start !== undefined && t.mode !== "plane" ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
+    ${s?.alts ? `<h3>高度 <span class="muted">(m)</span></h3>${altChart(s.alts)}` : ""}
+    ${s?.start !== undefined && t.mode !== "plane" ? `<h3>天気</h3>${weatherView(d.weather, d.weatherError)}` : ""}
     ${evalPart}
     ${ride && s ? `<h3>通った道路</h3>${routesView(d.routes)}` : ""}`;
 }
