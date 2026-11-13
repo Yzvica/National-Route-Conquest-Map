@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripStats, weatherPoints, type LogKind } from "./logView";
+import { logDetailPanel, logListPanel, passedRoutes, shownLogs, speedChart, tripDetailPanel, tripStats, weatherPoints, type LogKind } from "./logView";
+import type { TravelTrip } from "./travel";
 import type { RouteData, TrackPoint } from "./types";
 
 // 北へ 1 秒に約 11.1m(時速 40km)で進むログ。途中 60 秒止まる
@@ -131,5 +132,33 @@ describe("ログタブの画面", () => {
     const pts = weatherPoints(track());
     expect(pts.length).toBeGreaterThan(1);
     for (let i = 1; i < pts.length - 1; i++) expect(pts[i][0] - pts[i - 1][0]).toBeGreaterThanOrEqual(60);
+  });
+});
+
+describe("旅の記録の詳細(同乗)", () => {
+  const trip: TravelTrip = { id: "20261110-080000", mode: "ride", start: "2026-11-09T23:00:00Z", end: "2026-11-10T00:00:00Z", m: 30000, maxAltM: null, lines: [], gaps: [], score: 66, mount: "hand" };
+  const track: TrackPoint[] = Array.from({ length: 61 }, (_, i) => ({ lat: 35 + i * 0.0003, lon: 139, time: 1_700_000_000_000 + i * 1000 }));
+  const ev = { score: 66, items: [{ key: "sick", name: "酔いやすさ", value: 0.5, score: 40, weight: 0.3, good: 0.2, bad: 0.8 }], moving_s: 60, stops: 0, events: [{ kind: "急ブレーキ", type: "brake", value: 0.31, unit: "G", t_unix: 1_700_000_030, lat: 35.009, lon: 139, kmh: 40 }], mount: "hand", usable_ratio: 0.42 };
+
+  it("運転と同じように速度・評価・通った道路を出し、手持ちは参考値と書く", () => {
+    const html = tripDetailPanel(trip, false, { stats: tripStats(track), ev, weather: null, routes: [] });
+    expect(html).toContain("運転評価");
+    expect(html).toContain("酔いやすさ");
+    expect(html).toContain("手持ちで記録(参考値)・採点に使えた時間 42%");
+    expect(html).toContain("最高速度");
+    expect(html).toContain("通った道路");
+    expect(html).toContain('data-log-id="trip:20261110-080000"');
+  });
+
+  it("評価のない電車は評価・道路を出さない", () => {
+    const html = tripDetailPanel({ ...trip, mode: "train", score: undefined }, false, { stats: tripStats(track), ev: null, weather: null });
+    expect(html).not.toContain("運転評価");
+    expect(html).not.toContain("通った道路");
+    expect(html).toContain("速度");
+  });
+
+  it("一覧の行に同乗の点数を付ける(手持ちは *)", () => {
+    const html = logListPanel([{ id: "x", name: "a.gpx", size: 1, date: "2026-11-01" }], "all", true, undefined, undefined, [], { shown: new Set(), trips: [trip] });
+    expect(html).toContain("66 点*");
   });
 });

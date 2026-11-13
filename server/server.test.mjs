@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -253,6 +253,38 @@ describe("/api/rawlog", () => {
     expect((await put("..", "x.csv", "a")).status).toBe(400);
     expect((await put("a", "../x.csv", "a")).status).toBe(400);
     expect((await put("a", ".hidden", "a")).status).toBe(400);
+  });
+});
+
+describe("旅の記録の詳細", () => {
+  let server;
+  let base;
+  beforeAll(async () => {
+    server = createApp();
+    await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+    base = `http://127.0.0.1:${server.address().port}/api/trips`;
+  });
+  afterAll(() => server.close());
+
+  it("同乗の位置・運転評価・天気を返す", async () => {
+    const dir = join(process.env.RAW_LOG_DIR, "trips", "20261110-080000");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "location.csv"), "unix_s,lat,lon,h_acc_m\n100,35,139,5\n110,35.001,139,5\n120,35.002,139,999\n");
+    let d = await (await fetch(`${base}/20261110-080000/detail`)).json();
+    expect(d).toEqual({ track: [[100, 35, 139], [110, 35.001, 139]], eval: null, weather: null });
+    writeFileSync(join(dir, "evaluation.json"), JSON.stringify({ score: 70, items: [], moving_s: 20, stops: 0, events: [], mount: "fixed" }));
+    writeFileSync(join(dir, "weather.json"), JSON.stringify({ summary: { icon: "☀" }, samples: [] }));
+    d = await (await fetch(`${base}/20261110-080000/detail`)).json();
+    expect(d.eval.mount).toBe("fixed");
+    expect(d.weather.summary.icon).toBe("☀");
+    const list = await (await fetch(base)).json();
+    expect(list.trips.find((t) => t.id === "20261110-080000")).toMatchObject({ score: 70, mount: "fixed" });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ない走行・おかしな ID は 404", async () => {
+    expect((await fetch(`${base}/20991231-000000/detail`)).status).toBe(404);
+    expect((await fetch(`${base}/..%2Fx/detail`)).status).toBe(404);
   });
 });
 

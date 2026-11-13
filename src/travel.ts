@@ -1,6 +1,7 @@
 // 地図の「旅の記録」レイヤー。iPhone の走行ロガーで記録した電車・飛行機などの移動の線を出す。
 // 国道の制覇には使わない(見るだけ)。データは MiniPC のサーバーの GET /api/trips から読む
 import * as maplibregl from "maplibre-gl";
+import type { DriveEval, DriveWeather } from "./store";
 
 export type TripMode = "train" | "plane" | "ride" | "other";
 
@@ -17,6 +18,24 @@ export interface TravelTrip {
   lines: [number, number][][];
   /** 点が途切れた間(点線でつなぐ) */
   gaps: [number, number][][];
+  /** 運転評価の総合点(同乗でアプリが評価したもの) */
+  score?: number;
+  /** 評価したときの端末の置き方("fixed" 固定・"hand" 手持ち) */
+  mount?: string;
+}
+
+/** 旅の記録の詳細(GET /api/trips/<ID>/detail)。track は [UNIX 秒, 緯度, 経度] */
+export interface TravelTripDetail {
+  track: [number, number, number][];
+  eval: (DriveEval & { mount?: string; usable_ratio?: number; axes_quality?: number }) | null;
+  weather: DriveWeather | null;
+}
+
+/** 旅の記録の詳細を MiniPC から読む */
+export async function loadTripDetail(id: string): Promise<TravelTripDetail> {
+  const r = await fetch(`${import.meta.env.BASE_URL}api/trips/${encodeURIComponent(id)}/detail`);
+  if (!r.ok || !r.headers.get("content-type")?.includes("json")) throw new Error(`記録を読み込めませんでした(${r.status})`);
+  return r.json();
 }
 
 export const TRIP_MODES: { id: TripMode; label: string; icon: string; color: string }[] = [

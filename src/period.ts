@@ -139,7 +139,8 @@ export function tripRow(t: TravelTrip, shown: boolean): string {
   return `<li class="period-trip">${showBox(key, shown)}<a href="#" data-trip-open="${esc(t.id)}">
       <span class="muted">${esc(tripDay(t) || "日付なし")}${t.start ? ` ${hm(Date.parse(t.start))}` : ""}</span>
       <span class="log-name"><span class="travel-swatch" style="background:${m.color}"></span> ${m.icon} ${m.label}</span>
-      <span class="muted">${km(t.m)} km</span></a></li>`;
+      <span class="muted">${km(t.m)} km</span>
+      ${t.score !== undefined ? `<span class="eval-badge ${t.score >= 80 ? "good" : t.score >= 50 ? "fair" : "poor"}" title="同乗の運転評価${t.mount === "hand" ? "(手持ち・参考値)" : ""}">${Math.round(t.score)} 点${t.mount === "hand" ? "*" : ""}</span>` : ""}</a></li>`;
 }
 
 /** 外したものを除いた一覧(地図・合計・前後の移動に使う) */
