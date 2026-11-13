@@ -12,20 +12,32 @@ maplibregl.setWorkerUrl(maplibreWorkerUrl);
 const GSI_ATTRIBUTION =
   '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">地理院タイル</a> / 道路: © <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap contributors</a>';
 
-/** 背景の地図(地理院タイル)。白地図は道路や地名がほぼなく、走った線だけが目立つ */
-export const BASEMAPS = [
-  { id: "pale", label: "淡色地図", url: "pale/{z}/{x}/{y}.png", minzoom: 2, maxzoom: 18 },
-  { id: "blank", label: "白地図", url: "blank/{z}/{x}/{y}.png", minzoom: 5, maxzoom: 14 },
-  { id: "std", label: "標準地図", url: "std/{z}/{x}/{y}.png", minzoom: 2, maxzoom: 18 },
-  { id: "photo", label: "写真", url: "seamlessphoto/{z}/{x}/{y}.jpg", minzoom: 2, maxzoom: 18 },
-] as const;
-export type BasemapId = (typeof BASEMAPS)[number]["id"];
+/** 背景の地図。地理院タイルのほか、MiniPC に API キーを置いたときだけ Google マップも選べる(server/gmaps.mjs が中継) */
+type Basemap = {
+  id: string;
+  label: string;
+  tiles: string;
+  minzoom: number;
+  maxzoom: number;
+  /** Google マップの種類。著作権表示を出し、キーがないときは選べない */
+  google?: "roadmap" | "satellite";
+};
+const gsi = (path: string) => `https://cyberjapandata.gsi.go.jp/xyz/${path}`;
+export const BASEMAPS: readonly Basemap[] = [
+  { id: "pale", label: "淡色地図", tiles: gsi("pale/{z}/{x}/{y}.png"), minzoom: 2, maxzoom: 18 },
+  { id: "blank", label: "白地図", tiles: gsi("blank/{z}/{x}/{y}.png"), minzoom: 5, maxzoom: 14 },
+  { id: "std", label: "標準地図", tiles: gsi("std/{z}/{x}/{y}.png"), minzoom: 2, maxzoom: 18 },
+  { id: "photo", label: "写真", tiles: gsi("seamlessphoto/{z}/{x}/{y}.jpg"), minzoom: 2, maxzoom: 18 },
+  { id: "groad", label: "Google 地図", tiles: "/api/gmaps/tile/roadmap/{z}/{x}/{y}", minzoom: 0, maxzoom: 22, google: "roadmap" },
+  { id: "gsat", label: "Google 航空写真", tiles: "/api/gmaps/tile/satellite/{z}/{x}/{y}", minzoom: 0, maxzoom: 22, google: "satellite" },
+];
+export type BasemapId = string;
 const BASEMAP_KEY = "kokudo-basemap";
 
 function savedBasemap(): BasemapId {
   try {
     const v = localStorage.getItem(BASEMAP_KEY);
-    if (BASEMAPS.some((b) => b.id === v)) return v as BasemapId;
+    if (v && BASEMAPS.some((b) => b.id === v)) return v;
   } catch {
     // 保存できないブラウザでは毎回淡色地図にする
   }
@@ -42,11 +54,12 @@ export function createMap(container: HTMLElement): maplibregl.Map {
   for (const b of BASEMAPS) {
     sources[`basemap-${b.id}`] = {
       type: "raster",
-      tiles: [`https://cyberjapandata.gsi.go.jp/xyz/${b.url}`],
+      tiles: [b.tiles],
       tileSize: 256,
       minzoom: b.minzoom,
       maxzoom: b.maxzoom,
-      attribution: GSI_ATTRIBUTION,
+      // Google の著作権表示は GoogleAttribution が表示範囲に合わせて出す
+      ...(b.google ? {} : { attribution: GSI_ATTRIBUTION }),
     };
     // 表示していない背景は visibility: none なのでタイルを読まない
     layers.push({
@@ -65,33 +78,119 @@ export function createMap(container: HTMLElement): maplibregl.Map {
   });
 }
 
-export function setBasemap(map: maplibregl.Map, id: BasemapId) {
+/** 選べる背景(Google マップはサーバーにキーがあるときだけ) */
+let googleEnabled = false;
+const available = () => BASEMAPS.filter((b) => !b.google || googleEnabled);
+const basemapListeners: ((id: BasemapId) => void)[] = [];
+
+export function setBasemap(map: maplibregl.Map, id: BasemapId, remember = true) {
   for (const b of BASEMAPS) map.setLayoutProperty(`basemap-${b.id}`, "visibility", b.id === id ? "visible" : "none");
-  try {
-    localStorage.setItem(BASEMAP_KEY, id);
-  } catch {
-    // 保存できなくても切り替えはできる
+  if (remember) {
+    try {
+      localStorage.setItem(BASEMAP_KEY, id);
+    } catch {
+      // 保存できなくても切り替えはできる
+    }
   }
+  for (const f of basemapListeners) f(id);
 }
 
 /** 背景の地図を選ぶ欄 */
 class BasemapControl implements maplibregl.IControl {
   private el?: HTMLElement;
+  private select?: HTMLSelectElement;
   onAdd(map: maplibregl.Map) {
     const el = document.createElement("div");
     el.className = "maplibregl-ctrl maplibregl-ctrl-group basemap-ctrl";
     const select = document.createElement("select");
     select.setAttribute("aria-label", "背景の地図");
     select.title = "背景の地図";
-    const current = savedBasemap();
-    for (const b of BASEMAPS) select.add(new Option(b.label, b.id, false, b.id === current));
-    select.addEventListener("change", () => setBasemap(map, select.value as BasemapId));
+    select.addEventListener("change", () => setBasemap(map, select.value));
     el.append(select);
     this.el = el;
+    this.select = select;
+    this.fill(savedBasemap());
+    basemapListeners.push((id) => this.fill(id));
     return el;
+  }
+  fill(current: BasemapId) {
+    if (!this.select) return;
+    this.select.textContent = "";
+    for (const b of available()) this.select.add(new Option(b.label, b.id, false, b.id === current));
   }
   onRemove() {
     this.el?.remove();
+  }
+}
+
+/**
+ * Google マップを出しているときの表示(規約で必要な「Google Maps」と、表示範囲のデータの著作権)。
+ * 著作権は表示範囲で変わるので、動かし終わってから少し待って取り直す
+ */
+class GoogleAttribution implements maplibregl.IControl {
+  private el?: HTMLElement;
+  private timer = 0;
+  private lastQuery = "";
+  onAdd(map: maplibregl.Map) {
+    const el = document.createElement("div");
+    el.className = "maplibregl-ctrl google-attrib";
+    el.hidden = true;
+    this.el = el;
+    const update = () => {
+      const b = BASEMAPS.find((x) => x.google && map.getLayoutProperty(`basemap-${x.id}`, "visibility") === "visible");
+      el.hidden = !b;
+      if (!b) return;
+      clearTimeout(this.timer);
+      this.timer = window.setTimeout(() => void this.refresh(map, b.google!), 800);
+    };
+    map.on("moveend", update);
+    basemapListeners.push(() => update());
+    map.once("load", update);
+    return el;
+  }
+  private async refresh(map: maplibregl.Map, type: string) {
+    const bounds = map.getBounds();
+    const r = (v: number) => v.toFixed(2);
+    const q = new URLSearchParams({
+      zoom: String(Math.round(map.getZoom())),
+      north: r(Math.min(85, bounds.getNorth())),
+      south: r(Math.max(-85, bounds.getSouth())),
+      east: r(Math.min(180, bounds.getEast())),
+      west: r(Math.max(-180, bounds.getWest())),
+    }).toString();
+    const label = '<span class="google-logo">Google Maps</span>';
+    if (!this.el) return;
+    if (q === this.lastQuery) return;
+    this.lastQuery = q;
+    try {
+      const res = await fetch(`/api/gmaps/viewport/${type}?${q}`);
+      const body = (await res.json()) as { copyright?: string };
+      const text = (body.copyright ?? "").replace(/[<>&]/g, "");
+      this.el.innerHTML = text ? `${label} <span>${text}</span>` : label;
+    } catch {
+      this.el.innerHTML = label;
+    }
+  }
+  onRemove() {
+    this.el?.remove();
+  }
+}
+
+/** サーバーに Google マップのキーがあるか調べ、なければ Google の背景を選べないようにする */
+async function checkGoogle(map: maplibregl.Map) {
+  try {
+    const res = await fetch("/api/gmaps/status");
+    googleEnabled = res.ok && !!((await res.json()) as { enabled?: boolean }).enabled;
+  } catch {
+    googleEnabled = false;
+  }
+  const current = savedBasemap();
+  const apply = () => setBasemap(map, available().some((b) => b.id === current) ? current : "pale", false);
+  try {
+    apply();
+  } catch {
+    // 地図の準備がまだのとき
+    map.once("load", apply);
   }
 }
 
@@ -127,6 +226,8 @@ class NoGeolocateControl implements maplibregl.IControl {
 export function addMapControls(map: maplibregl.Map, notify: (lines: string[]) => void) {
   // 右上は詳細の枠と重なるので右下に置く
   map.addControl(new BasemapControl(), "bottom-right");
+  map.addControl(new GoogleAttribution(), "bottom-left");
+  void checkGoogle(map);
   if (!window.isSecureContext || !("geolocation" in navigator)) {
     map.addControl(new NoGeolocateControl(notify), "bottom-right");
     return;
