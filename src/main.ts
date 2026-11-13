@@ -10,7 +10,7 @@ import {
   type GameContext,
 } from "./game";
 import { achievementsView, esc, levelCard, prefsView, reviewView, suggestionsView } from "./gameView";
-import { logDetailPanel, logListPanel, passedRoutes, sessionOfLog, shownLogs, tripDetailPanel, tripStats, weatherPoints, type LogDetail, type TripDetailData, type LogKind, type PassedRoute } from "./logView";
+import { logDetailPanel, logListPanel, maxKmhOf, passedRoutes, sessionOfLog, shownLogs, tripDetailPanel, tripStats, weatherPoints, type LogDetail, type TripDetailData, type LogKind, type PassedRoute } from "./logView";
 import {
   addMapControls,
   addRoutes,
@@ -1554,9 +1554,16 @@ async function openTrip(id: string) {
   if (box) fitBox(map, box, detailPadding());
   try {
     const d = await loadTripDetail(id);
-    const track: TrackPoint[] = d.track.map(([t, lat, lon]) => ({ lat, lon, time: t * 1000 }));
+    const track: TrackPoint[] = d.track.map(([t, lat, lon, alt, speed]) => ({
+      lat,
+      lon,
+      time: t * 1000,
+      ...(typeof alt === "number" ? { alt } : {}),
+      ...(typeof speed === "number" ? { speed } : {}),
+    }));
     if (d.eval) evals.set(`trip:${id}`, d.eval);
-    if (!updateTripDetail(id, { stats: tripStats(track), ev: d.eval, weather: d.weather })) return;
+    const mode = periodTrips.find((t) => t.id === id)?.mode;
+    if (!updateTripDetail(id, { stats: tripStats(track, maxKmhOf(mode)), ev: d.eval, weather: d.weather, weatherError: d.weatherError })) return;
     const trip = periodTrips.find((t) => t.id === id);
     if (d.eval) showDriveEvents(map, d.eval.events.map((e) => ({ lat: e.lat, lon: e.lon, label: eventLabel(e) })));
     if (trip?.mode === "ride" && track.length) updateTripDetail(id, { routes: await logRoutes(`trip:${id}`, track).catch(() => null) });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { fetchWeather, parseLocationCsv, sampleTrack, summarize, weatherUrl } from "./weather.mjs";
+import { fetchWeather, netReason, parseLocationCsv, sampleTrack, summarize, weatherUrl } from "./weather.mjs";
 
 // Open-Meteo の代わり。地点ごとに、0時(UTC)から1時間ごとの値を返す。気温は「時」+10℃、10時(UTC)だけ雨
 const calls = [];
@@ -65,8 +65,17 @@ describe("天気を調べる点", () => {
   it("location.csv を読み、精度の悪い点は使わない", () => {
     const csv = "unix_s,lat,lon,alt_m,h_acc_m\n10,35,139,1,5\n5,35.1,139.1,1,1000\n1,35.2,139.2,1,\n";
     expect(parseLocationCsv(csv)).toEqual([
-      { t: 1, lat: 35.2, lon: 139.2 },
-      { t: 10, lat: 35, lon: 139 },
+      { t: 1, lat: 35.2, lon: 139.2, alt: 1, sp: null },
+      { t: 10, lat: 35, lon: 139, alt: 1, sp: null },
+    ]);
+  });
+
+  it("速さは GPS の値、なければ補ったときの推定の値(負は測れていない)", () => {
+    const csv = "unix_s,lat,lon,alt_m,h_acc_m,speed_ms,speed_est_ms\n1,35,139,,5,200.5,\n2,35,139,10,,,12\n3,35,139,10,5,-1,\n";
+    expect(parseLocationCsv(csv).map((p) => [p.alt, p.sp])).toEqual([
+      [null, 200.5],
+      [10, 12],
+      [10, null],
     ]);
   });
 
@@ -77,6 +86,12 @@ describe("天気を調べる点", () => {
 });
 
 describe("天気を取る", () => {
+  it("つながらないときは原因を書く", async () => {
+    const err = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.open-meteo.com"), { code: "ENOTFOUND", hostname: "api.open-meteo.com" }) });
+    expect(netReason(err)).toBe("fetch failed / ENOTFOUND api.open-meteo.com");
+    await expect(fetchWeather([{ t: 1_700_000_000, lat: 35, lon: 139 }], { fetchImpl: async () => { throw err; } })).rejects.toThrow("ENOTFOUND");
+  });
+
   it("地点ごとの天気と、まとめ(雨に当たれば雨)を作る", async () => {
     const w = await fetchWeather(track, { fetchImpl: fakeFetch, now: NOW });
     expect(w.api).toBe("forecast");

@@ -271,7 +271,7 @@ describe("旅の記録の詳細", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "location.csv"), "unix_s,lat,lon,h_acc_m\n100,35,139,5\n110,35.001,139,5\n120,35.002,139,999\n");
     let d = await (await fetch(`${base}/20261110-080000/detail`)).json();
-    expect(d).toEqual({ track: [[100, 35, 139], [110, 35.001, 139]], eval: null, weather: null });
+    expect(d).toEqual({ track: [[100, 35, 139, null, null], [110, 35.001, 139, null, null]], eval: null, weather: null });
     writeFileSync(join(dir, "evaluation.json"), JSON.stringify({ score: 70, items: [], moving_s: 20, stops: 0, events: [], mount: "fixed" }));
     writeFileSync(join(dir, "weather.json"), JSON.stringify({ summary: { icon: "☀" }, samples: [] }));
     d = await (await fetch(`${base}/20261110-080000/detail`)).json();

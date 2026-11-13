@@ -24,11 +24,13 @@ export interface TravelTrip {
   mount?: string;
 }
 
-/** 旅の記録の詳細(GET /api/trips/<ID>/detail)。track は [UNIX 秒, 緯度, 経度] */
+/** 旅の記録の詳細(GET /api/trips/<ID>/detail)。track は [UNIX 秒, 緯度, 経度, 高度 m, 速さ m/s](古いサーバーは高度・速さなし) */
 export interface TravelTripDetail {
-  track: [number, number, number][];
+  track: [number, number, number, (number | null)?, (number | null)?][];
   eval: (DriveEval & { mount?: string; usable_ratio?: number; axes_quality?: number }) | null;
   weather: DriveWeather | null;
+  /** 天気を取れなかった理由(取り直す一覧にあるとき) */
+  weatherError?: string;
 }
 
 /** 旅の記録の詳細を MiniPC から読む */
@@ -139,7 +141,7 @@ export function describeTrip(t: TravelTrip): string[] {
     const min = Math.round((new Date(t.end).getTime() - new Date(t.start).getTime()) / 60_000);
     if (min > 0) info.push(min >= 60 ? `${Math.floor(min / 60)}時間${min % 60}分` : `${min}分`);
   }
-  if (t.mode === "plane" && t.maxAltM !== null) info.push(`最高 ${t.maxAltM.toLocaleString()}m`);
+  if (t.maxAltM !== null) info.push(`最高 ${t.maxAltM.toLocaleString()}m`);
   lines.push(info.join(" / "));
   return lines;
 }

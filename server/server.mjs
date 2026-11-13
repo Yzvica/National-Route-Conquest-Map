@@ -797,7 +797,8 @@ function weatherPaths(id) {
 const TRIP_TRACK_MAX = 20000;
 
 /**
- * 旅の記録(trips/<走行ID>)の詳細。track は [UNIX 秒, 緯度, 経度] の並び(補った位置があればそちら)。
+ * 旅の記録(trips/<走行ID>)の詳細。track は [UNIX 秒, 緯度, 経度, 高度 m, 速さ m/s] の並び(補った位置があればそちら)。
+ * 高度・速さは記録がなければ null(速さは GPS の値、なければ補ったときの推定の値)。
  * 運転評価(同乗のとき)と天気は、なければ null。走行がなければ null
  */
 export function tripDetail(session) {
@@ -805,13 +806,14 @@ export function tripDetail(session) {
   if (!existsSync(dir)) return null;
   const pts = readTrackPoints(dir);
   const step = Math.max(1, Math.ceil(pts.length / TRIP_TRACK_MAX));
-  const track = pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map((p) => [p.t, p.lat, p.lon]);
+  const track = pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map((p) => [p.t, p.lat, p.lon, p.alt === null ? null : Math.round(p.alt * 10) / 10, p.sp === null ? null : Math.round(p.sp * 100) / 100]);
   let weather = null;
   try {
     const w = JSON.parse(readFileSync(join(dir, "weather.json"), "utf8"));
     if (w && w.summary && Array.isArray(w.samples)) weather = w;
   } catch {}
-  return { track, eval: loadTripEval(dir), weather };
+  const weatherError = weather ? undefined : loadWeatherPending().find((p) => p.dir === dir)?.error;
+  return { track, eval: loadTripEval(dir), weather, ...(weatherError ? { weatherError } : {}) };
 }
 
 /** ログの天気(weather.json の中身)。なければ null */
