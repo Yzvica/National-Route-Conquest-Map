@@ -528,7 +528,7 @@ function drawSeries(
   g.stroke();
 }
 
-/** G円: 前後(上が加速)と左右の G を点で、直近の数秒を尾で出す */
+/** G円: ボウルに乗った球のように、加速すると下・減速すると上・左に曲がると右へ球が動く。直近の数秒を尾で出す */
 function drawGCircle(s: State) {
   const c = document.getElementById("rp-gcircle") as HTMLCanvasElement | null;
   const g = c && setup(c);
@@ -561,14 +561,12 @@ function drawGCircle(s: State) {
   g.font = "9px system-ui, sans-serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText("加速", cx, 6);
-  g.fillText("減速", cx, H - 6);
-  g.fillText("左", 6, cy);
-  g.fillText("右", W - 6, cy);
-  // 左に曲がる(latG が +)と点は左へ、加速(lonG が +)で上へ
+  g.fillText("減速", cx, 6);
+  g.fillText("加速", cx, H - 6);
+  // 球は G と逆向き(体が押される向き)に動く: 加速(lonG が +)で下、左に曲がる(latG が +)と右
   const P = (lonG: number, latG: number): [number, number] => {
     const k = R / max;
-    let x = -latG * k, y = -lonG * k;
+    let x = latG * k, y = lonG * k;
     const r = Math.hypot(x, y);
     if (r > R) {
       x *= R / r;
