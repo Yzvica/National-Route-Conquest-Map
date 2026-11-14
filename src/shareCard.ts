@@ -335,14 +335,36 @@ export function composeCard(mapImage: CanvasImageSource & { width: number; heigh
     y += mapH + 44;
     // 大きな数字
     if (info.tiles.length) {
-      const tw = (W - PAD * 2) / info.tiles.length;
-      info.tiles.forEach((t, i) => {
-        const x = PAD + tw * i;
-        text(t.label, x, y + 28, 26, C.muted);
+      // 列幅は中身の長さに合わせて配る。全部が入らないときは数字ごと同じ割合で小さくする
+      // (「1時間30分」のような長い値が隣の列に重ならないように)
+      const n = info.tiles.length;
+      const GAP = 32;
+      const avail = W - PAD * 2 - GAP * (n - 1);
+      const natural = info.tiles.map((t) => {
         ctx.font = `700 60px ${FONT}`;
+        let w = ctx.measureText(t.value).width;
+        if (t.unit) {
+          ctx.font = `400 28px ${FONT}`;
+          w += 8 + ctx.measureText(t.unit).width;
+        }
+        ctx.font = `400 26px ${FONT}`;
+        return Math.max(w, ctx.measureText(t.label).width);
+      });
+      const sum = natural.reduce((s, w) => s + w, 0);
+      const scale = Math.min(1, avail / sum);
+      const extra = scale < 1 ? 0 : (avail - sum) / n;
+      const vs = Math.floor(60 * scale);
+      const us = Math.max(18, Math.floor(28 * scale));
+      let x = PAD;
+      info.tiles.forEach((t, i) => {
+        const cw = natural[i] * scale + extra;
+        ctx.font = `400 26px ${FONT}`;
+        text(fit(ctx, t.label, cw), x, y + 28, 26, C.muted);
+        ctx.font = `700 ${vs}px ${FONT}`;
         const vw = ctx.measureText(t.value).width;
-        text(t.value, x, y + 100, 60, C.fg, 700);
-        if (t.unit) text(t.unit, x + vw + 8, y + 100, 28, C.muted);
+        text(t.value, x, y + 100, vs, C.fg, 700);
+        if (t.unit) text(t.unit, x + vw + Math.round(8 * scale), y + 100, us, C.muted);
+        x += cw + GAP;
       });
       y += 132;
     }
