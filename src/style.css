@@ -370,3 +370,41 @@ button.link { padding: 0; border: 0; background: none; color: var(--accent); fon
 .card-actions { display: flex; gap: 8px; }
 .card-actions[hidden], .card-status[hidden], .card-hint[hidden] { display: none; }
 .card-box p { margin: 0; font-size: 13px; }
+
+/* 運転リプレイ(PC は地図の下に重ね、スマホは一覧の代わりに地図の下に出す) */
+.replay-open { display: block; width: 100%; margin: 8px 0; background: var(--accent); color: #fff; border-color: transparent; font-weight: 700; }
+#replay {
+  position: absolute; left: 352px; right: 12px; bottom: 28px; z-index: 6; height: 260px;
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--bg); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+}
+#replay[hidden] { display: none; }
+body:has(#detail:not([hidden])) #replay { right: 324px; }
+.rp-head { display: flex; align-items: center; gap: 6px; }
+.rp-head .spacer { flex: 1; }
+.rp-head button, .rp-head select { padding: 4px 10px; font-size: 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+.rp-head .rp-play { min-width: 44px; background: var(--accent); color: #fff; border-color: transparent; font-size: 16px; }
+.rp-follow[aria-pressed="true"] { background: var(--bar); font-weight: 700; box-shadow: inset 0 0 0 1px #8e24aa; }
+.rp-close { font-size: 18px; line-height: 1; }
+.rp-readout { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rp-body { flex: 1; min-height: 0; display: flex; gap: 8px; }
+.rp-gcircle { flex: none; width: 150px; height: 100%; max-height: 170px; align-self: center; }
+.rp-chart { flex: 1; min-width: 0; height: 100%; touch-action: none; cursor: ew-resize; }
+.rp-events { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+.rp-events button { flex: none; display: flex; flex-direction: column; align-items: center; padding: 2px 8px; font-size: 12px; font-weight: 700; border: 0; border-radius: 8px; background: color-mix(in srgb, #f57c00 20%, transparent); color: var(--fg); }
+.rp-events button span { font-weight: 400; font-size: 11px; color: var(--muted); }
+.rp-note { margin: 0; }
+.rp-marker { width: 32px; height: 32px; pointer-events: none; }
+@media (max-width: 720px) {
+  #replay {
+    position: static; flex: none; height: 46%; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none;
+    padding: 6px 10px calc(6px + env(safe-area-inset-bottom));
+  }
+  body.replaying #panel, body.replaying #detail, body.replaying #map-restore { display: none !important; }
+  .rp-head button, .rp-head select { padding: 6px 10px; }
+  .rp-readout { font-size: 12px; gap: 0 8px; }
+  .rp-body { flex-direction: column; gap: 4px; position: relative; }
+  /* G円はグラフの右上に小さく重ねる */
+  .rp-gcircle { position: absolute; right: 0; top: 0; width: 84px; height: 84px; z-index: 1; background: color-mix(in srgb, var(--bg) 85%, transparent); border-radius: 50%; }
+  .rp-body:has(.rp-gcircle) .rp-chart { margin-right: 88px; width: auto; }
+}

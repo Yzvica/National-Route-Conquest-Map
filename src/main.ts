@@ -35,6 +35,8 @@ import { comparePrefRefs, mergePrefData, prefFileName, prefRouteLabel, prefsOfTr
 import { isSplitIndex, openSplit } from "./splitData";
 import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
+import { fetchReplay, gbowlReplay, gpsReplay, type ReplayData } from "./replay";
+import { closeReplay, openReplay, replayOpen } from "./replayView";
 import { addTravelLayer, changeSessionMode, loadTravelTrips, loadTripDetail, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
 import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { carColor, composeCard, cardFileName, logCardInfo, mergeRoutes, openCardModal, periodCardInfo, renderRouteMap, tripLines, type CardInfo, type CardLine } from "./shareCard";
@@ -213,6 +215,10 @@ let tripDetail: { id: string; busy?: boolean; data?: TripDetailData } | null = n
 let storeShared = false;
 /** 読み込んだログの軌跡(いちばん最後に開いたものだけ)と、通った路線 */
 const trackCache = new Map<string, TrackPoint[]>();
+/** 開いている旅の記録の位置(リプレイ用) */
+let tripTrack: { id: string; track: TrackPoint[] } | null = null;
+/** 作ったリプレイのデータ(ログ ID・"trip:<ID>" → データ) */
+const replayCache = new Map<string, ReplayData>();
 const passedCache = new Map<string, PassedRoute[]>();
 /** 読み込んだ運転評価(ログ ID → 評価。読めなければ null) */
 const evals = new Map<string, DriveEval | null>();
@@ -1061,7 +1067,7 @@ function setMapOnly(on: boolean) {
   map.resize();
 }
 map.on("click", (e) => {
-  if (!mobile.matches) return;
+  if (!mobile.matches || replayOpen()) return;
   const roads = map.getStyle().layers.filter((l) => /^(overview|routes)-|^selected$/.test(l.id)).map((l) => l.id);
   if (roads.length && map.queryRenderedFeatures(e.point, { layers: roads }).length) return;
   setMapOnly(!mapOnly());
@@ -1402,6 +1408,7 @@ function fitPeriod() {
 
 /** ログタブを離れたとき: 地図に出しているログの線を消す */
 function clearPeriod() {
+  closeReplay();
   periodSeq++;
   periodNote = undefined;
   showPeriodTracks(map, [], () => {});
@@ -1497,6 +1504,7 @@ async function logWeather(id: string, track: TrackPoint[]): Promise<DriveWeather
 async function openLog(id: string) {
   const store = await storePromise;
   const log = savedLogs?.find((l) => l.id === id) ?? { id, name: id, size: 0 };
+  closeReplay();
   tripDetail = null;
   logDetail = { log };
   renderLogs();
@@ -1551,6 +1559,7 @@ function updateTripDetail(id: string, part: Partial<TripDetailData>) {
  * アプリが作った運転評価と出来事の場所、通った道路も出す
  */
 async function openTrip(id: string) {
+  closeReplay();
   tripDetail = { id, data: {} };
   showDriveEvents(map, []);
   renderLogs();
@@ -1566,6 +1575,7 @@ async function openTrip(id: string) {
       ...(typeof alt === "number" ? { alt } : {}),
       ...(typeof speed === "number" ? { speed } : {}),
     }));
+    tripTrack = { id, track };
     if (d.eval) evals.set(`trip:${id}`, d.eval);
     const mode = periodTrips.find((t) => t.id === id)?.mode;
     if (!updateTripDetail(id, { stats: tripStats(track, maxKmhOf(mode)), ev: d.eval, weather: d.weather, weatherError: d.weatherError })) return;
@@ -1579,11 +1589,64 @@ async function openTrip(id: string) {
 
 /** ログの詳細を閉じて一覧に戻る(地図の軌跡も消す) */
 function closeLog() {
+  closeReplay();
   logDetail = null;
   tripDetail = null;
   showTrack(map, []);
   showDriveEvents(map, []);
   renderLogs();
+}
+
+// ---- 運転リプレイ ----
+
+/**
+ * 開いているログ・旅の記録のリプレイを始める。iPhone のロガーの記録はアプリが送った replay.csv、
+ * GBowl の CSV は加速度の列から作り、どちらもなければ位置と速度だけで再生する
+ */
+async function startReplay() {
+  const store = await storePromise;
+  const target = logDetail ? { key: logDetail.log.id, log: logDetail.log } : tripDetail ? { key: `trip:${tripDetail.id}`, session: tripDetail.id } : null;
+  if (!target) return;
+  const btn = document.getElementById("replay-open") as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "読み込んでいます…";
+  }
+  try {
+    let data = replayCache.get(target.key) ?? null;
+    let track: TrackPoint[] = [];
+    if (!data) {
+      if ("log" in target && target.log) {
+        const log = target.log;
+        const text = trackCache.has(log.id) && !/\.csv$/i.test(log.name) ? "" : await store.loadLog(log.id);
+        track = trackCache.get(log.id) ?? parseTrackText(text, log.name);
+        const session = sessionOfLog(log.name);
+        if (session) data = await fetchReplay(session);
+        if (!data && /\.csv$/i.test(log.name)) data = gbowlReplay(text, log.name);
+      } else if (target.session) {
+        track = tripTrack?.id === target.session ? tripTrack.track : [];
+        data = await fetchReplay(target.session);
+      }
+      if (!data) {
+        const mode = tripDetail ? periodTrips.find((t) => t.id === tripDetail!.id)?.mode : undefined;
+        data = gpsReplay(track, tripStats(track, maxKmhOf(mode)).speeds);
+      }
+      if (!data) throw new Error("時刻つきの位置の記録がありません");
+      replayCache.set(target.key, data);
+    }
+    // 開いているものが変わっていたら始めない
+    const now = logDetail ? logDetail.log.id : tripDetail ? `trip:${tripDetail.id}` : null;
+    if (now !== target.key) return;
+    const ev = evals.get(target.key);
+    openReplay({ map, data, events: (ev?.events ?? []).map((e) => ({ t: e.t_unix * 1000, label: e.kind })) });
+  } catch (e) {
+    toast([`リプレイを開けませんでした: ${(e as Error).message}`]);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "▶ リプレイ";
+    }
+  }
 }
 
 // ---- まとめ画像(経路の地図とサマリー) ----
@@ -1744,6 +1807,10 @@ function onLogClick(e: MouseEvent) {
     void makeListCard();
     return true;
   }
+  if (el.closest("#replay-open")) {
+    void startReplay();
+    return true;
+  }
   if (el.closest("#log-share") && logDetail) {
     void makeLogCard(logDetail.log.id);
     return true;
@@ -1782,7 +1849,7 @@ $("log-view").addEventListener("click", onLogClick);
 
 // ログタブ: ↑↓(または J/K)で前後のログへ。文字を打っているときと地図を操作しているときは除く
 document.addEventListener("keydown", (e) => {
-  if (!logMode || !logDetail || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (!logMode || !logDetail || replayOpen() || e.altKey || e.ctrlKey || e.metaKey) return;
   const t = e.target as HTMLElement;
   if (t.closest("input, select, textarea, dialog[open], #map")) return;
   const dir = e.key === "ArrowUp" || e.key === "k" ? "prev" : e.key === "ArrowDown" || e.key === "j" ? "next" : null;
