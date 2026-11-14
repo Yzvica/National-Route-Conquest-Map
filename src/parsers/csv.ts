@@ -72,7 +72,7 @@ export function parseTime(s: string): number | undefined {
 const normalizeHeader = (h: string) => h.replace(/[(（].*?[)）]/g, "").trim();
 
 /** gbowl の 1行目 "#GBOWLCSV,2026-09-19 20:05:37 (13m) DriverA" から記録開始時刻(日本時間)を読む */
-function gbowlStartTime(rows: string[][]): number | undefined {
+export function gbowlStartTime(rows: string[][]): number | undefined {
   const first = rows[0]?.[0]?.trim();
   if (!first?.toUpperCase().startsWith("#GBOWL")) return undefined;
   // 日時は2列目のことが多いが、1列目に続けて書かれていることもある

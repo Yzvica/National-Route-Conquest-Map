@@ -249,6 +249,17 @@ describe("/api/rawlog", () => {
     expect((await fetch(`${root}/rawlog?session=a&file=b.csv&kind=../x`, { method: "PUT", body: "a" })).status).toBe(400);
   });
 
+  it("リプレイのデータ(replay.csv)を GET /api/replay/<走行ID> で返す(old・trips も探す)", async () => {
+    const csv = "unix_s,lat,lon,kmh,lon_g,lat_g,jerk\n1.0,35,139,10,0.1,-0.1,0.5\n";
+    expect((await put("20261114-100000", "replay.csv", csv)).status).toBe(200);
+    expect(await (await fetch(`${root}/replay/20261114-100000`)).text()).toBe(csv);
+    mkdirSync(join(process.env.RAW_LOG_DIR, "old", "20261114-110000"), { recursive: true });
+    writeFileSync(join(process.env.RAW_LOG_DIR, "old", "20261114-110000", "replay.csv"), csv);
+    expect(await (await fetch(`${root}/replay/20261114-110000`)).text()).toBe(csv);
+    expect((await fetch(`${root}/replay/20261114-120000`)).status).toBe(404);
+    expect((await fetch(`${root}/replay/..`)).status).not.toBe(200);
+  });
+
   it("フォルダの外には書けない", async () => {
     expect((await put("..", "x.csv", "a")).status).toBe(400);
     expect((await put("a", "../x.csv", "a")).status).toBe(400);

@@ -1186,6 +1186,21 @@ export function createApp() {
         const d = tripDetail(tripDetailMatch[1]);
         return d ? json(res, 200, d) : json(res, 404, { error: "not found" });
       }
+      // リプレイ用の 0.5 秒ごとの速度・前後G・横G・躍度(アプリが作って送る replay.csv)。車・old・trips の順に探す
+      const replayMatch = /^\/api\/replay\/(\d{8}-\d{6})$/.exec(url.pathname);
+      if (replayMatch) {
+        if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+        const s = findSession(replayMatch[1]);
+        const path = s && join(s.dir, "replay.csv");
+        if (!path || !existsSync(path)) return json(res, 404, { error: "not found" });
+        const body = readFileSync(path);
+        if (/\bgzip\b/.test(req.headers["accept-encoding"] ?? "")) {
+          res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Content-Encoding": "gzip", "Cache-Control": "no-cache", Vary: "Accept-Encoding" });
+          return res.end(gzipSync(body));
+        }
+        res.writeHead(200, { "Content-Type": "text/csv; charset=utf-8", "Cache-Control": "no-cache" });
+        return res.end(body);
+      }
       if (url.pathname === "/api/trips") {
         if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
         const body = Buffer.from(JSON.stringify({ trips: listTrips(RAW_LOG_DIR()) }));

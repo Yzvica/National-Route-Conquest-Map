@@ -439,6 +439,12 @@ export function logListPanel(
     <ol class="log-list" data-scroll="logs">${rows.map((r) => r.html).join("")}</ol>`;
 }
 
+/** 運転リプレイを開くボタン(時刻のあるログだけ) */
+const replayButton = (stats: TripStats | undefined) =>
+  stats?.start !== undefined && stats.speeds.length > 1
+    ? `<button type="button" id="replay-open" class="replay-open" title="地図の上で走りを再生し、速度・G・躍度の推移を見る">▶ リプレイ</button>`
+    : "";
+
 const grade = (score: number) => (score >= 80 ? "good" : score >= 50 ? "fair" : "poor");
 
 /** 詳細の上に出す、前後のログへ移るボタンのための情報 */
@@ -487,6 +493,7 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
   const routes = routesView(d.routes);
   return `${head}
     <dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${replayButton(s)}
     ${session ? modePicker(session, "car", d.modeBusy) : ""}
     ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
     ${s.start !== undefined ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
@@ -598,6 +605,7 @@ export function tripDetailPanel(t: TravelTrip, busy = false, d: TripDetailData =
     <p class="muted">走行 ID: ${esc(t.id)}</p>
     ${modePicker(t.id, t.mode, busy)}
     ${d.error ? `<p class="muted">詳しい記録を読み込めませんでした: ${esc(d.error)}</p>` : loading}
+    ${replayButton(s)}
     ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
     ${s?.alts ? `<h3>高度 <span class="muted">(m)</span></h3>${altChart(s.alts)}` : ""}
     ${s?.start !== undefined && t.mode !== "plane" ? `<h3>天気</h3>${weatherView(d.weather, d.weatherError)}` : ""}
