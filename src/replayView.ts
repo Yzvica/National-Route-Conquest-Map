@@ -15,7 +15,12 @@ export interface ReplayOptions {
   events: ReplayEvent[];
   /** 閉じたとき(× や Esc) */
   onClose?: () => void;
+  /** その時刻(UNIX ミリ秒)の場面を YouTube で開く URL。動画が無ければ undefined */
+  videoUrl?: (t: number) => string | undefined;
 }
+
+/** 動画を開くときは、押した時刻のこの秒数前から(見逃さないように) */
+const VIDEO_LEAD_MS = 3000;
 
 /** 急な操作の目安(運転評価の HARSH_G・HARSH_JERK と同じ) */
 const HARSH_G = 0.35;
@@ -73,6 +78,7 @@ export function openReplay(opts: ReplayOptions) {
       <select id="rp-rate" aria-label="再生の速さ">${RATES.map((r) => `<option value="${r}"${r === 10 ? " selected" : ""}>×${r}</option>`).join("")}</select>
       <select id="rp-win" aria-label="グラフの表示幅">${WINDOWS.map(([s, l]) => `<option value="${s}">${l}</option>`).join("")}</select>
       <button type="button" id="rp-follow" class="rp-follow" aria-pressed="true" title="地図が丸についていく">追尾</button>
+      ${opts.videoUrl ? `<button type="button" id="rp-video" class="rp-video" title="この場面を YouTube の車載動画で開く" hidden>🎬 動画</button>` : ""}
       <span class="spacer"></span>
       <button type="button" id="rp-close" class="rp-close" aria-label="リプレイを閉じる">×</button>
     </div>
@@ -156,6 +162,15 @@ function bind(s: State) {
     render();
   });
   on($("rp-follow"), "click", () => setFollow(!s.follow));
+  const videoBtn = document.getElementById("rp-video");
+  if (videoBtn && s.opts.videoUrl) {
+    on(videoBtn, "click", () => {
+      const url = s.opts.videoUrl!(Math.max(d.t[0], s.t - VIDEO_LEAD_MS));
+      if (!url) return;
+      setPlaying(false);
+      window.open(url, "_blank", "noopener");
+    });
+  }
   on($("rp-close"), "click", () => {
     const cb = s.opts.onClose;
     closeReplay();
@@ -295,6 +310,8 @@ function render() {
   if (f.bearing !== undefined) s.marker.setRotation(f.bearing);
   if (s.follow) s.opts.map.setCenter([f.lon, f.lat]);
   readout(f);
+  const videoBtn = document.getElementById("rp-video");
+  if (videoBtn) videoBtn.hidden = !s.opts.videoUrl?.(s.t);
   drawChart(s, f);
   drawGCircle(s);
 }

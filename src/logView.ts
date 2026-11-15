@@ -8,6 +8,7 @@ import { DEFAULT_OPTIONS } from "./matcher";
 import { trackLength } from "./trips";
 import { describeTrip, PANEL_MODES, tripDay, type ShowMode, type TravelTrip } from "./travel";
 import { DATASET_LABELS, type Coverage, type DatasetKind, type RouteData, type TrackPoint } from "./types";
+import { videoTime, watchUrl, type VideoHit } from "./videos";
 
 /** 速度はこの秒数ぶん離れた点どうしで求める(GPS の細かい揺れで速く見えないように) */
 const SPEED_WINDOW_S = 5;
@@ -285,6 +286,8 @@ export interface LogDetail {
   routes?: PassedRoute[] | null;
   /** 移動手段を直している途中 */
   modeBusy?: boolean;
+  /** このログの時間帯が入っている車載動画(YouTube) */
+  videos?: VideoHit[];
 }
 
 /** ログが何年のものか(日付のないものは "") */
@@ -494,11 +497,32 @@ export function logDetailPanel(d: LogDetail, nav: LogNav = { count: 0, folded: f
   return `${head}
     <dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
     ${replayButton(s)}
+    ${videoView(d.videos)}
     ${session ? modePicker(session, "car", d.modeBusy) : ""}
     ${chart ? `<h3>速度 <span class="muted">(km/h${events.length ? "・縦線は出来事" : ""})</span></h3>${chart}` : ""}
     ${s.start !== undefined ? `<h3>天気</h3>${weatherView(d.weather)}` : ""}
     ${evalPart}
     <h3>通った道路</h3>${routes}`;
+}
+
+/**
+ * 車載動画(YouTube)の欄。URL を貼ってあれば、このログの始まり(動画に入っている所の最初)から開くリンク。
+ * まだなら URL を貼る欄
+ */
+export function videoView(hits: VideoHit[] | undefined): string {
+  if (!hits?.length) return "";
+  return `<div class="videos">${hits
+    .map(({ video: v, sec }) => {
+      const id = esc(v.id);
+      return v.youtube
+        ? `<p class="video-row"><a class="video-open" href="${watchUrl(v.youtube, sec)}" target="_blank" rel="noopener">🎬 動画で見る</a>
+            <span class="muted">動画の ${videoTime(sec)} から</span>
+            <button type="button" class="link" data-video-clear="${id}" title="${id} の URL を外す">URL を外す</button></p>`
+        : `<div class="video-url"><p class="muted">動画 ${id} に入っています。YouTube の URL を貼ると、ここやリプレイからその場面を開けます。</p>
+            <span class="video-url-row"><input type="url" inputmode="url" data-video-input="${id}" placeholder="https://youtu.be/…" aria-label="YouTube の URL">
+            <button type="button" data-video-save="${id}">保存</button></span></div>`;
+    })
+    .join("")}</div>`;
 }
 
 /** 通った道路の一覧。調べている間は undefined、道路データがなければ null */

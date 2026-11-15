@@ -389,6 +389,39 @@ describe("旅行(/api/journeys)", () => {
   });
 });
 
+describe("車載動画(/api/videos)", () => {
+  it("録画の並びを送り、URL を貼る・作り直しても URL は残る・外す・消す", async () => {
+    const app = createApp().listen(0);
+    await new Promise((ok) => app.once("listening", ok));
+    const base = `http://localhost:${app.address().port}/api/videos`;
+    try {
+      const post = (b) => fetch(base, { method: "POST", body: JSON.stringify(b) });
+      expect((await post({ id: "x", clips: [] })).status).toBe(400);
+      expect((await post({ id: "../x", clips: [{ start: 1763045228, dur: 60, offset: 0 }] })).status).toBe(400);
+      const clips = [
+        { start: 1763046000, dur: 300, offset: 597 },
+        { start: 1763045228, dur: 600, offset: 0 },
+        { start: 5, dur: 1, offset: 0 }, // おかしな値は捨てる
+      ];
+      let list = await (await post({ id: "2026-11-13_23-47-08", clips, total: 897 })).json();
+      expect(list).toEqual([{ id: "2026-11-13_23-47-08", total: 897, clips: [clips[1], clips[0]] }]);
+      const patch = (url) => fetch(`${base}/2026-11-13_23-47-08`, { method: "PATCH", body: JSON.stringify({ url }) });
+      expect((await patch("https://example.com/")).status).toBe(400);
+      list = await (await patch("https://youtu.be/8U_c9mUY-Sg?si=a")).json();
+      expect(list[0].youtube).toBe("8U_c9mUY-Sg");
+      list = await (await post({ id: "2026-11-13_23-47-08", clips: [clips[1]] })).json();
+      expect(list[0]).toMatchObject({ youtube: "8U_c9mUY-Sg", clips: [clips[1]] });
+      list = await (await patch("")).json();
+      expect(list[0].youtube).toBeUndefined();
+      expect((await fetch(`${base}/none`, { method: "PATCH", body: "{}" })).status).toBe(404);
+      await fetch(`${base}/2026-11-13_23-47-08`, { method: "DELETE" });
+      expect(await (await fetch(base)).json()).toEqual([]);
+    } finally {
+      app.close();
+    }
+  });
+});
+
 describe("旅行から外す(PATCH /api/journeys/<id>)", () => {
   it("外すものを置き換え、名前を付け直しても残る", async () => {
     const app = createApp().listen(0);

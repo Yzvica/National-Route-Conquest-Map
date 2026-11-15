@@ -37,6 +37,7 @@ import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
 import { fetchReplay, gbowlReplay, gpsReplay, type ReplayData } from "./replay";
 import { closeReplay, openReplay, replayOpen } from "./replayView";
+import { fetchVideos, setVideoUrl, videoAt, videosInRange, watchUrl, type Video } from "./videos";
 import { addTravelLayer, changeSessionMode, loadTravelTrips, loadTripDetail, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
 import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
 import { carColor, composeCard, cardFileName, logCardInfo, mergeRoutes, openCardModal, periodCardInfo, renderRouteMap, tripLines, type CardInfo, type CardLine } from "./shareCard";
@@ -199,6 +200,8 @@ let logPeriod: Period =
   })();
 /** 名前を付けて保存した期間(旅行) */
 let journeys: Journey[] = [];
+/** 車載動画(YouTube)とログのひも付け(MiniPC の data/videos.json) */
+let videos: Video[] = [];
 /** 期間の一覧に出す旅の記録(電車・飛行機など) */
 let periodTrips: TravelTrip[] = [];
 /** 期間の地図に出すため読んだ車のログ(ログ ID → 間引いた線と開始時刻) */
@@ -238,6 +241,7 @@ async function refreshLogs() {
   const store = await storePromise;
   savedLogs = store.shared ? await store.listLogs().catch(() => []) : [];
   if (store.shared) journeys = await fetchJourneys().catch(() => journeys);
+  if (store.shared) videos = await fetchVideos().catch(() => videos);
   renderLogs();
   void fillLogStarts();
 }
@@ -1446,8 +1450,27 @@ function renderLogDetail() {
     box.hidden = true;
     return;
   }
-  box.innerHTML = logDetailPanel(logDetail, { ...logNeighbors(logDetail.log.id), folded: mapOnly() });
+  const s = logDetail.stats;
+  const hits = s?.start !== undefined && s.end !== undefined ? videosInRange(videos, s.start, s.end) : [];
+  box.innerHTML = logDetailPanel({ ...logDetail, videos: hits }, { ...logNeighbors(logDetail.log.id), folded: mapOnly() });
   box.hidden = false;
+}
+
+/** 動画に YouTube の URL を貼る・外す */
+async function saveVideoUrl(id: string, url: string) {
+  try {
+    videos = await setVideoUrl(id, url);
+    renderLogs();
+    toast([url ? "動画の URL を保存しました" : "動画の URL を外しました"]);
+  } catch (e) {
+    toast([(e as Error).message]);
+  }
+}
+
+/** リプレイの時刻の場面を開く URL(URL を貼ってある動画だけ) */
+function replayVideoUrl(t: number): string | undefined {
+  const hit = videoAt(videos, t);
+  return hit?.video.youtube ? watchUrl(hit.video.youtube, hit.sec) : undefined;
 }
 
 /** 開いているログの詳細を更新する(ほかのログに切り替わっていたら何もしない) */
@@ -1638,7 +1661,7 @@ async function startReplay() {
     const now = logDetail ? logDetail.log.id : tripDetail ? `trip:${tripDetail.id}` : null;
     if (now !== target.key) return;
     const ev = evals.get(target.key);
-    openReplay({ map, data, events: (ev?.events ?? []).map((e) => ({ t: e.t_unix * 1000, label: e.kind })) });
+    openReplay({ map, data, events: (ev?.events ?? []).map((e) => ({ t: e.t_unix * 1000, label: e.kind })), videoUrl: replayVideoUrl });
   } catch (e) {
     toast([`リプレイを開けませんでした: ${(e as Error).message}`]);
   } finally {
@@ -1809,6 +1832,18 @@ function onLogClick(e: MouseEvent) {
   }
   if (el.closest("#replay-open")) {
     void startReplay();
+    return true;
+  }
+  const videoSave = el.closest<HTMLElement>("[data-video-save]");
+  if (videoSave) {
+    const id = videoSave.dataset.videoSave!;
+    const input = document.querySelector<HTMLInputElement>(`[data-video-input="${CSS.escape(id)}"]`);
+    if (input?.value.trim()) void saveVideoUrl(id, input.value);
+    return true;
+  }
+  const videoClear = el.closest<HTMLElement>("[data-video-clear]");
+  if (videoClear) {
+    void saveVideoUrl(videoClear.dataset.videoClear!, "");
     return true;
   }
   if (el.closest("#log-share") && logDetail) {
