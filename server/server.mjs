@@ -4,7 +4,7 @@
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { freemem } from "node:os";
-import { dirname, extname, join, normalize, resolve } from "node:path";
+import { basename, dirname, extname, join, normalize, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { listTrips, loadTripEval } from "./trips.mjs";
@@ -509,7 +509,12 @@ function fillAfterUpload(dir, kind) {
     meta = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
   } catch {}
   if (!shouldFill(kind, meta)) return;
-  void enqueue(() => fillOne(dir).catch((e) => console.error(`途切れた区間の補間に失敗: ${dir}: ${e.message}`)));
+  void enqueue(() =>
+    fillOne(dir).then(
+      () => applyFillToLogs(dir, kind),
+      (e) => console.error(`途切れた区間の補間に失敗: ${dir}: ${e.message}`),
+    ),
+  );
 }
 
 /**
@@ -605,6 +610,113 @@ export function gpxFromLocationCsv(text, name) {
     points: pts.length,
     gpx: `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="DriveLogger" xmlns="http://www.topografix.com/GPX/1/1">\n<trk><name>${name}</name><trkseg>\n${pts.join("\n")}\n</trkseg></trk>\n</gpx>\n`,
   };
+}
+
+/**
+ * 車のログ(GPX)に、トンネルなどで途切れた区間を補った点(location_filled.csv の src=road / line)を入れる。
+ * 補った区間(sections の fromS〜toS)の中にあった GPX の点(復帰直後の精度の悪い点など)は捨てる。
+ * 補った区間がない、または GPX の点に時刻のないものがあるときは null(変えない)
+ */
+export function gpxWithFill(gpx, filledCsv, sections) {
+  if (!Array.isArray(sections) || sections.length === 0) return null;
+  const inside = (t) => sections.some((s) => t > s.fromS + 1e-3 && t < s.toS - 1e-3);
+  const pts = [];
+  for (const m of gpx.matchAll(/<trkpt\b[\s\S]*?<\/trkpt>/g)) {
+    const time = /<time>([^<]+)<\/time>/.exec(m[0])?.[1];
+    const t = time ? Date.parse(time) / 1000 : NaN;
+    if (!Number.isFinite(t)) return null;
+    if (!inside(t)) pts.push({ t, s: m[0] });
+  }
+  const lines = filledCsv.split(/\r?\n/);
+  const head = lines[0].split(",");
+  const [ti, la, lo, al, est, src] = ["unix_s", "lat", "lon", "alt_m", "speed_est_ms", "src"].map((n) => head.indexOf(n));
+  if (ti < 0 || la < 0 || lo < 0 || src < 0) return null;
+  let added = 0;
+  for (const line of lines.slice(1)) {
+    const c = line.split(",");
+    if (c[src] !== "road" && c[src] !== "line") continue;
+    const t = Number(c[ti]), lat = Number(c[la]), lon = Number(c[lo]);
+    if (!Number.isFinite(t) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    let p = `<trkpt lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}">`;
+    if (al >= 0 && c[al] !== "" && Number.isFinite(Number(c[al]))) p += `<ele>${Number(c[al]).toFixed(1)}</ele>`;
+    p += `<time>${new Date(Math.round(t * 1000)).toISOString()}</time>`;
+    if (est >= 0 && c[est] !== "" && Number(c[est]) >= 0) p += `<extensions><speed>${Number(c[est]).toFixed(2)}</speed></extensions>`;
+    pts.push({ t, s: `${p}</trkpt>` });
+    added++;
+  }
+  const a = gpx.indexOf("<trkseg>");
+  const b = gpx.lastIndexOf("</trkseg>");
+  if (added === 0 || a < 0 || b < a) return null;
+  pts.sort((x, y) => x.t - y.t);
+  return `${gpx.slice(0, a)}<trkseg>\n${pts.map((p) => p.s).join("\n")}\n${gpx.slice(b)}`;
+}
+
+/** 補う前の車のログ(補い直すときはこちらから作る) */
+const UNFILLED = () => join(LOGS, "unfilled");
+
+/**
+ * 車の走行を補ったあと、地図のログ(<走行ID>.gpx)にも補った点を入れて、判定し直す(通った区間を足す)。
+ * 元のログはログフォルダの unfilled に残し、補い直すときはそこから作る。補った区間がなくなったら元に戻す
+ */
+function applyFillToLogs(dir, kind) {
+  if (kind !== "drive") return;
+  const session = basename(dir);
+  let summary = null;
+  let filled = "";
+  try {
+    summary = JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8"));
+    filled = readFileSync(join(dir, "location_filled.csv"), "utf8");
+  } catch {
+    return;
+  }
+  const sections = (summary?.sections ?? []).filter((s) => s.points > 0);
+  for (const id of sessionLogs(session)) {
+    const path = join(LOGS, id);
+    const orig = join(UNFILLED(), id);
+    const base = existsSync(orig) ? readFileSync(orig) : readFileSync(path);
+    const next = gpxWithFill(gunzipSync(base).toString("utf8"), filled, sections);
+    const body = next === null ? gunzipSync(base) : Buffer.from(next);
+    if (gunzipSync(readFileSync(path)).equals(body)) continue;
+    if (!existsSync(orig)) {
+      mkdirSync(UNFILLED(), { recursive: true });
+      writeFileSync(orig, base);
+    }
+    writeFileSync(`${path}.part`, gzipSync(body));
+    renameSync(`${path}.part`, path);
+    judge.rev++;
+    if (serverJudge() && !loadPending().includes(id)) void enqueue(() => rejudgeLog(id));
+  }
+}
+
+/** 補った区間があるのに、地図のログがまだ補う前のまま(unfilled に元がない)車の走行フォルダ */
+export function carsToApplyFill(root = RAW_LOG_DIR()) {
+  if (!existsSync(root)) return [];
+  const out = [];
+  for (const e of readdirSync(root, { withFileTypes: true })) {
+    if (!e.isDirectory() || !SESSION_ID_RE.test(e.name)) continue;
+    const dir = join(root, e.name);
+    try {
+      const sum = JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8"));
+      if (!(sum.sections ?? []).some((x) => x.points > 0)) continue;
+      if (sessionLogs(e.name).some((id) => !existsSync(join(UNFILLED(), id)))) out.push(dir);
+    } catch {}
+  }
+  return out;
+}
+
+/** テスト用 */
+export const applyFillToLogsForTest = applyFillToLogs;
+
+/** 1本のログを判定し直して、通った区間・走行距離を記録に足す(ログの一覧には足さない) */
+async function rejudgeLog(id) {
+  try {
+    const r = await judgeOne(id);
+    saveRecord(mergeRecord(loadRecord(), toAdded(r, false)));
+    updateMeta(id, r.trip);
+    judge.rev++;
+  } catch (e) {
+    console.error(`補ったログの判定に失敗: ${id}: ${e.message}`);
+  }
 }
 
 /** 走行 ID のログ(地図に保存した「<走行ID>.gpx」)。dir を渡すとそのフォルダから探す */
@@ -1187,6 +1299,11 @@ export function createApp() {
           }
           const { id, added } = saveLog(name, body, null);
           if (added) {
+            // 生データが先に届いて補ってあれば、補った点を入れてから判定する
+            if (sm) {
+              const s = findSession(sm[1]);
+              if (s?.kind === "drive") applyFillToLogs(s.dir, "drive");
+            }
             savePending([...loadPending(), id]);
             if (serverJudge()) void enqueue(judgePending);
           }
@@ -1322,7 +1439,9 @@ export function createApp() {
           let out = null;
           let err = null;
           await enqueue(() => fillOne(dir).then((r) => (out = r), (e) => (err = e)));
-          return err ? json(res, 500, { error: err.message }) : json(res, 200, out);
+          if (err) return json(res, 500, { error: err.message });
+          applyFillToLogs(dir, kind);
+          return json(res, 200, out);
         }
         return json(res, 405, { error: "method not allowed" });
       }
@@ -1441,6 +1560,10 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
         if (trains.length) console.log(`線路に沿って補っていない電車の記録 ${trains.length} 本を補います`);
         for (const dir of trains) void enqueue(() => fillOne(dir).catch((e) => console.error(`途切れた区間の補間に失敗: ${dir}: ${e.message}`)));
       }
+      // 前に補ってあるのに、地図のログに補った点が入っていない車の走行
+      const cars = carsToApplyFill();
+      if (cars.length) console.log(`補った点を地図のログに入れる車の走行 ${cars.length} 本`);
+      for (const dir of cars) applyFillToLogs(dir, "drive");
     } else console.log("サーバーで判定する準備ができていないので、走行ログはブラウザで判定します(npm run build で準備できます)");
   });
 }
