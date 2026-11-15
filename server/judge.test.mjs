@@ -10,6 +10,8 @@ process.env.LOGS_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-logs-"));
 process.env.JUDGE_WORKER = join(import.meta.dirname, "__fixtures__", "fakeJudgeWorker.mjs");
 process.env.JUDGE_DATA_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-data-"));
 process.env.JUDGE_IDLE_MS = "10";
+// テスト用の worker は小さいので、上限を小さくしてメモリの上限で止まったときを試す
+process.env.JUDGE_MAX_MB = "64";
 process.env.RAW_LOG_DIR = mkdtempSync(join(tmpdir(), "kokudo-judge-raw-"));
 writeFileSync(join(process.env.JUDGE_DATA_DIR, "routes.json"), "{}");
 const { createApp, judgeIdle, shouldFill, trainsToFill } = await import("./server.mjs");
@@ -82,6 +84,19 @@ describe("サーバーでの判定", () => {
     expect((await get("/record")).coverage.s9).toBe(1);
     expect(existsSync(dirname(process.env.RECORD_FILE))).toBe(true);
   });
+
+  it("判定がメモリの上限を超えたら、その判定だけ失敗にして /health に出し、次のログはまた判定できる", async () => {
+    await send("hog.csv", "HOG\n");
+    await judgeIdle();
+    const st = await get("/judge");
+    expect(st.last.failed.join("\n")).toMatch(/メモリの上限\(64MB\)/);
+    const h = await get("/health");
+    expect(h.memory.judgeWorker).toMatchObject({ limitMB: 64, oom: { limitMB: 64 } });
+    expect(h.warnings.join("\n")).toMatch(/メモリの上限\(64 MB\)を超えて止まりました/);
+    await send("d.csv", "s10,1,2026-11-04\n");
+    await judgeIdle();
+    expect((await get("/record")).coverage.s10).toBe(1);
+  }, 30_000);
 });
 
 describe("トンネルの補間", () => {

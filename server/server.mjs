@@ -3,6 +3,7 @@
 // Node.js の標準機能だけで動く。
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { freemem } from "node:os";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -23,6 +24,13 @@ const JUDGE_WORKER = process.env.JUDGE_WORKER ?? join(ROOT, "server", "build", "
 const JUDGE_DATA = process.env.JUDGE_DATA_DIR ?? join(DIST, "data");
 // 判定し終えてから worker(道路データで数百MB使う)を止めるまでの時間。続けて送られてきたログで読み直さないよう少し待つ
 const JUDGE_IDLE_MS = Number(process.env.JUDGE_IDLE_MS ?? 3 * 60_000);
+// 判定 worker が使ってよいメモリ(V8 のヒープの上限、MB)。0 にすると上限なし。
+// 実データで測ると、道路データを読んだだけで約 400MB、東京〜大阪(約4万点)の判定で最大約 850MB、
+// 全都道府県を通る極端なログでも約 950MB だったので 1024MB にする(上限が近いと V8 がこまめに片付けるので、上限なしより使う量も減る)。
+// 上限を超えたらその判定は失敗にし(サーバー本体は止まらない)、/health に出す
+export const JUDGE_MAX_MB = Number(process.env.JUDGE_MAX_MB ?? 1024);
+// 空きメモリ(MB)がこれより少ないときは、判定し終えたらすぐ worker を止めてメモリを返す
+const JUDGE_LOW_FREE_MB = Number(process.env.JUDGE_LOW_FREE_MB ?? 1500);
 // iPhone の走行ロガー(drive-logger-ios)が送る生データ(加速度など)の置き場所。
 // RAW_LOG_DIR → data/rawlog_dir.txt の1行目(Google ドライブの _drivelog など)→ data/rawlogs の順に決める
 const RAW_LOG_DIR = () => {
@@ -327,17 +335,73 @@ let workerReady = null;
 let idleTimer = null;
 let seq = 0;
 const waiting = new Map(); // seq → { ok, ng }
+/** 判定 worker のメモリの様子(/health に出す) */
+const workerMem = { startedAt: null, heapMB: null, peakHeapMB: null, lastPeakHeapMB: null, oom: null };
+
+const toMB = (b) => Math.round(b / 1048576);
+
+/** worker のヒープの使用量を読む(判定中でも読める)。止まっている・読めないときは null */
+async function readWorkerHeap(w = worker) {
+  if (!w || typeof w.getHeapStatistics !== "function") return null;
+  try {
+    const h = await Promise.race([w.getHeapStatistics(), new Promise((ok) => setTimeout(ok, 1000, null).unref?.())]);
+    if (!h) return null;
+    const mb = toMB(h.used_heap_size);
+    if (w === worker) {
+      workerMem.heapMB = mb;
+      workerMem.peakHeapMB = Math.max(workerMem.peakHeapMB ?? 0, mb);
+    }
+    return mb;
+  } catch {
+    return null;
+  }
+}
+
+/** /health に出す判定 worker のメモリ */
+export async function judgeMemory() {
+  if (worker) await readWorkerHeap();
+  return {
+    running: !!worker,
+    limitMB: JUDGE_MAX_MB > 0 ? JUDGE_MAX_MB : null,
+    lowFreeMB: JUDGE_LOW_FREE_MB,
+    startedAt: worker ? workerMem.startedAt : null,
+    heapMB: worker ? workerMem.heapMB : null,
+    peakHeapMB: worker ? workerMem.peakHeapMB : null,
+    // 前に動いていた worker の最大(止めたあとも残す)
+    lastPeakHeapMB: workerMem.lastPeakHeapMB,
+    oom: workerMem.oom,
+  };
+}
+
+/** 空きメモリ(MB)。Windows では「利用可能」の量 */
+const freeMB = () => toMB(freemem());
+
+/** 判定を待つ人がいなくなったら worker を止める。空きメモリが少なければすぐ止める */
+function scheduleStop() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(stopWorker, freeMB() < JUDGE_LOW_FREE_MB ? 0 : JUDGE_IDLE_MS);
+  idleTimer.unref?.();
+}
 
 function stopWorker() {
   const w = worker;
   worker = null;
   workerReady = null;
-  if (w) void w.terminate();
+  if (w) {
+    if (workerMem.peakHeapMB !== null) workerMem.lastPeakHeapMB = workerMem.peakHeapMB;
+    void w.terminate();
+  }
 }
 
 function startWorker() {
-  const w = new Worker(JUDGE_WORKER, { workerData: { dataDir: JUDGE_DATA, logsDir: LOGS } });
+  const w = new Worker(JUDGE_WORKER, {
+    workerData: { dataDir: JUDGE_DATA, logsDir: LOGS },
+    ...(JUDGE_MAX_MB > 0 ? { resourceLimits: { maxOldGenerationSizeMb: JUDGE_MAX_MB } } : {}),
+  });
   worker = w;
+  workerMem.startedAt = new Date().toISOString();
+  workerMem.heapMB = null;
+  workerMem.peakHeapMB = null;
   workerReady = new Promise((ok, ng) => {
     w.on("message", (m) => {
       if (m?.ready) return ok();
@@ -356,11 +420,30 @@ function startWorker() {
       for (const p of waiting.values()) p.ng(e);
       waiting.clear();
     };
-    w.on("error", fail);
+    w.on("error", (e) => {
+      if (e?.code === "ERR_WORKER_OUT_OF_MEMORY") {
+        workerMem.oom = { at: new Date().toISOString(), limitMB: JUDGE_MAX_MB, freeMB: freeMB() };
+        if (workerMem.peakHeapMB !== null) workerMem.lastPeakHeapMB = workerMem.peakHeapMB;
+        const msg = `判定の処理がメモリの上限(${JUDGE_MAX_MB}MB)を超えたので止めました`;
+        console.error(msg);
+        return fail(new Error(msg));
+      }
+      fail(e);
+    });
     w.on("exit", (code) => fail(new Error(`判定の処理が止まりました(${code})`)));
   });
   // 待っている人がいないときに起きた失敗で、未処理の拒否にならないように
   workerReady.catch(() => undefined);
+}
+
+/** 判定し終えたら、そのときの worker のヒープを読んでおく(最大値を /health に出すため) */
+async function afterJob(p) {
+  const w = worker;
+  try {
+    return await p;
+  } finally {
+    await readWorkerHeap(w);
+  }
 }
 
 /** 保存してあるログ 1 本を判定する */
@@ -369,10 +452,12 @@ async function judgeOne(id) {
   if (!worker) startWorker();
   await workerReady;
   const n = ++seq;
-  return new Promise((ok, ng) => {
-    waiting.set(n, { ok, ng });
-    worker.postMessage({ seq: n, logId: id });
-  });
+  return afterJob(
+    new Promise((ok, ng) => {
+      waiting.set(n, { ok, ng });
+      worker.postMessage({ seq: n, logId: id });
+    }),
+  );
 }
 
 /**
@@ -384,10 +469,12 @@ async function fillOne(dir) {
   if (!worker) startWorker();
   await workerReady;
   const n = ++seq;
-  return new Promise((ok, ng) => {
-    waiting.set(n, { ok, ng });
-    worker.postMessage({ seq: n, fillDir: dir });
-  });
+  return afterJob(
+    new Promise((ok, ng) => {
+      waiting.set(n, { ok, ng });
+      worker.postMessage({ seq: n, fillDir: dir });
+    }),
+  );
 }
 
 /** GET /api/rawlog で返してよいファイル(サーバーが作るもの) */
@@ -863,9 +950,7 @@ function enqueue(fn) {
     .catch((e) => console.error(e))
     .finally(() => {
       if (judge.running || waiting.size) return;
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(stopWorker, JUDGE_IDLE_MS);
-      idleTimer.unref?.();
+      scheduleStop();
     });
   return queue;
 }
@@ -1022,6 +1107,7 @@ export function createApp() {
           root: ROOT,
           rawLogDir: RAW_LOG_DIR(),
           judge: judgeStatus,
+          judgeMemory: await judgeMemory(),
           weatherPending: loadWeatherPending,
           gmaps: gmaps.status,
           logs: listLogs,

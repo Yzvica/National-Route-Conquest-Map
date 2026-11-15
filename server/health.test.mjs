@@ -26,6 +26,8 @@ const ctx = (root, raw, judge = { enabled: true, pending: 0, running: null, last
   weatherPending: () => [{ dir: "x", since: "2026-11-10T00:00:00Z" }],
   gmaps: createGmaps(join(root, "data")).status,
   logs: () => [{ date: "2026-11-12" }, { date: "2026-11-13" }],
+  os: { total: 8 * 2 ** 30, free: 3 * 2 ** 30 },
+  judgeMemory: { running: false, limitMB: 1024, lowFreeMB: 1500, startedAt: null, heapMB: null, peakHeapMB: null, lastPeakHeapMB: 820, oom: null },
 });
 
 describe("collectHealth", () => {
@@ -57,5 +59,33 @@ describe("collectHealth", () => {
     expect(h.warnings.join("\n")).toMatch(/まだビルドされていません/);
     expect(h.warnings.join("\n")).toMatch(/判定待ちのログが 3 件/);
     expect(renderHealthHtml(h)).toContain("注意 3件");
+  });
+
+  it("空きメモリと node・判定の処理の使用量を出し、少ないときや上限で止まったときは注意に出す", () => {
+    const { root, raw } = setup();
+    writeFileSync(join(root, "data", "built.txt"), "abc1234def\n");
+    const ok = collectHealth(ctx(root, raw));
+    expect(ok.memory).toMatchObject({ totalMB: 8192, freeMB: 3072, judgeWorker: { limitMB: 1024, lastPeakHeapMB: 820 } });
+    expect(ok.memory.node.rssMB).toBeGreaterThan(0);
+    expect(ok.memory.node.heapUsedMB).toBeGreaterThan(0);
+    expect(renderHealthHtml(ok)).toContain("3072 MB / 8192 MB");
+    expect(renderHealthHtml(ok)).toContain("前回の判定後の最大 820 MB");
+
+    const oomAt = new Date(Date.now() - 3600_000).toISOString();
+    const low = collectHealth({
+      ...ctx(root, raw),
+      os: { total: 8 * 2 ** 30, free: 700 * 2 ** 20 },
+      judgeMemory: { running: true, limitMB: 1024, heapMB: 400, peakHeapMB: 900, lastPeakHeapMB: null, oom: { at: oomAt, limitMB: 1024, freeMB: 600 } },
+    });
+    expect(low.ok).toBe(false);
+    expect(low.warnings.join("\n")).toMatch(/空きメモリが少なくなっています\(残り 700 MB/);
+    expect(low.warnings.join("\n")).toMatch(/メモリの上限\(1024 MB\)を超えて止まりました/);
+    const html = renderHealthHtml(low);
+    expect(html).toContain("ヒープ 400 MB(判定後の最大 900 MB)");
+    expect(html).toContain("(少ない)");
+
+    // 1日たてば上限で止まったことは注意に出さない(画面には残る)
+    const old = collectHealth({ ...ctx(root, raw), judgeMemory: { running: false, limitMB: 1024, oom: { at: "2026-01-01T00:00:00Z", limitMB: 1024 } } });
+    expect(old.warnings).toEqual([]);
   });
 });
