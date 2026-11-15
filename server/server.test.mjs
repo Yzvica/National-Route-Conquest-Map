@@ -436,6 +436,41 @@ describe("移動手段を直す(/api/rawlog/mode)", () => {
     expect(gpx).toContain('<trkpt lat="35.6002000" lon="139.7002000"><time>2025-11-11T22:26:42.000Z</time></trkpt>');
   });
 
+  it("車のログに補った点を入れ、補った区間の中の GPX の点は捨てる", async () => {
+    const { gpxWithFill } = await import("./server.mjs");
+    const pt = (t, lat) => `<trkpt lat="${lat}" lon="139.5"><time>${new Date(t * 1000).toISOString()}</time></trkpt>`;
+    const gpx = `<?xml version="1.0"?>\n<gpx><trk><name>x</name><trkseg>\n${[pt(100, 35), pt(110, 35.9), pt(120, 35.002)].join("\n")}\n</trkseg></trk>\n</gpx>\n`;
+    const filled = "unix_s,lat,lon,alt_m,h_acc_m,speed_ms,speed_est_ms,src\n100,35,139.5,1,5,10,,gps\n105,35.001,139.5,1,,,10.00,road\n115,35.0015,139.5,,,,9.50,line\n120,35.002,139.5,1,5,10,,gps\n";
+    const out = gpxWithFill(gpx, filled, [{ fromS: 100, toS: 120, points: 2 }]);
+    const times = [...out.matchAll(/<time>([^<]+)<\/time>/g)].map((m) => Date.parse(m[1]) / 1000);
+    expect(times).toEqual([100, 105, 115, 120]); // 110 秒の精度の悪い点は捨てる
+    expect(out).toContain('<trkpt lat="35.0010000" lon="139.5000000"><ele>1.0</ele><time>1970-01-01T00:01:45.000Z</time><extensions><speed>10.00</speed></extensions></trkpt>');
+    expect(out.startsWith('<?xml version="1.0"?>\n<gpx><trk><name>x</name><trkseg>\n')).toBe(true);
+    expect(out.endsWith("</trkseg></trk>\n</gpx>\n")).toBe(true);
+    expect(gpxWithFill(gpx, filled, [])).toBeNull();
+  });
+
+  it("車の走行を補い直すと、地図のログに補った点が入り、元のログは unfilled に残る", async () => {
+    const s = "20261113-234459";
+    const dir = join(RAW(), s);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "location.csv"), "unix_s,lat,lon\n");
+    writeFileSync(join(dir, "location_filled.csv"), "unix_s,lat,lon,speed_est_ms,src\n1794583110,35.6,139.5,13,road\n");
+    writeFileSync(join(dir, "tunnel_fill.json"), JSON.stringify({ sections: [{ fromS: 1794583100, toS: 1794583120, points: 1 }] }));
+    const gpx = `<gpx><trk><trkseg>\n<trkpt lat="35.59" lon="139.5"><time>${new Date(1794583100e3).toISOString()}</time></trkpt>\n<trkpt lat="35.61" lon="139.5"><time>${new Date(1794583120e3).toISOString()}</time></trkpt>\n</trkseg></trk></gpx>`;
+    const { id } = await (await fetch(`${root}/inbox?name=${s}.gpx`, { method: "POST", body: gpx })).json();
+    // 生データが先に届いていたので、保存したときに補った点が入る
+    const saved = await (await fetch(`${root}/logs/${id}`)).text();
+    expect(saved).toContain('lat="35.6000000"');
+    expect(readFileSync(join(process.env.LOGS_DIR, "unfilled", id))).toBeTruthy();
+    // 補った区間がなくなれば元に戻す
+    writeFileSync(join(dir, "tunnel_fill.json"), JSON.stringify({ sections: [] }));
+    const { applyFillToLogsForTest, carsToApplyFill } = await import("./server.mjs");
+    expect(carsToApplyFill()).toEqual([]); // もう入れてある
+    applyFillToLogsForTest(dir, "drive");
+    expect(await (await fetch(`${root}/logs/${id}`)).text()).toBe(gpx);
+  });
+
   it("電車で記録したものを車に直すと、車のフォルダに移して地図のログを作り、判定待ちにする", async () => {
     const s = "20261111-090000";
     const dir = join(RAW(), "trips", s);
