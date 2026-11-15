@@ -373,6 +373,14 @@ button.link { padding: 0; border: 0; background: none; color: var(--accent); fon
 
 /* 運転リプレイ(PC は地図の下に重ね、スマホは一覧の代わりに地図の下に出す) */
 .replay-open { display: block; width: 100%; margin: 8px 0; background: var(--accent); color: #fff; border-color: transparent; font-weight: 700; }
+/* 車載動画(YouTube)の欄 */
+.videos { margin: 4px 0 8px; }
+.video-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 4px 0; }
+.video-open { font-weight: 700; }
+.video-url p { margin: 4px 0; font-size: 12px; }
+.video-url-row { display: flex; gap: 6px; }
+.video-url-row input { flex: 1; min-width: 0; font-size: 16px; }
+.rp-video[hidden] { display: none; }
 #replay {
   position: absolute; left: 352px; right: 12px; bottom: 28px; z-index: 6; height: 260px;
   display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border: 1px solid var(--line);

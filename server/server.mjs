@@ -121,6 +121,95 @@ export function addJourney(body) {
   return saveJourneys(list);
 }
 
+// --- 車載動画(YouTube)とログのひも付け ---
+// _drivelog の YouTubeDesc.bat(youtube_desc.py)が、1 本の動画に入っている録画の時刻と動画の中の位置を送る。
+// 地図で YouTube の URL を貼ると、ログ詳細やリプレイからその場面を開ける
+const VIDEOS = () => join(dirname(RECORD), "videos.json");
+const VIDEO_ID_RE = /^[\w.-]{1,80}$/;
+
+/** 録画の並び。おかしな値は捨て、始まりの早い順にする */
+function cleanClips(v) {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((c) => ({ start: Number(c?.start), dur: Number(c?.dur), offset: Number(c?.offset) }))
+    .filter((c) => c.start > 1e9 && c.start < 1e10 && c.dur > 0 && c.dur < 86400 && c.offset >= 0 && c.offset < 86400 * 2)
+    .sort((a, b) => a.start - b.start)
+    .slice(0, 200);
+}
+
+export function loadVideos() {
+  try {
+    const list = JSON.parse(readFileSync(VIDEOS(), "utf8"));
+    if (!Array.isArray(list)) return [];
+    return list.filter((v) => v && VIDEO_ID_RE.test(v.id)).map((v) => ({ ...v, clips: cleanClips(v.clips) })).filter((v) => v.clips.length);
+  } catch {
+    return [];
+  }
+}
+
+function saveVideos(list) {
+  mkdirSync(dirname(VIDEOS()), { recursive: true });
+  // 新しい動画が上
+  list.sort((a, b) => b.clips[0].start - a.clips[0].start);
+  writeFileSync(`${VIDEOS()}.tmp`, JSON.stringify(list, null, 1));
+  renameSync(`${VIDEOS()}.tmp`, VIDEOS());
+  return list;
+}
+
+/** YouTube の URL か動画 ID から ID(11 文字)を取り出す。分からなければ undefined */
+export function youtubeId(text) {
+  const s = String(text ?? "").trim();
+  if (/^[\w-]{11}$/.test(s)) return s;
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    return undefined;
+  }
+  const host = u.hostname.replace(/^(www|m|music)\./, "");
+  let id;
+  if (host === "youtu.be") id = u.pathname.split("/")[1];
+  else if (host === "youtube.com" || host === "youtube-nocookie.com")
+    id = u.searchParams.get("v") ?? /^\/(?:shorts|live|embed)\/([^/?#]+)/.exec(u.pathname)?.[1];
+  return id && /^[\w-]{11}$/.test(id) ? id : undefined;
+}
+
+/**
+ * 動画を足す・作り直す({ id, clips, total?, url? })。同じ id があれば録画の並びを置き換え、
+ * 貼ってある YouTube の URL は残す。おかしな値なら null
+ */
+export function upsertVideo(body) {
+  const id = typeof body?.id === "string" ? body.id.trim() : "";
+  const clips = cleanClips(body?.clips);
+  if (!VIDEO_ID_RE.test(id) || !clips.length) return null;
+  const list = loadVideos();
+  let v = list.find((x) => x.id === id);
+  if (!v) {
+    v = { id, clips };
+    list.push(v);
+  }
+  v.clips = clips;
+  const total = Number(body.total);
+  if (total > 0 && total < 86400 * 2) v.total = total;
+  const yt = body.url ? youtubeId(body.url) : undefined;
+  if (yt) v.youtube = yt;
+  return saveVideos(list);
+}
+
+/** 動画に YouTube の URL を貼る(空なら外す)。動画が無ければ null、URL が読めなければ "bad" */
+export function setVideoUrl(id, url) {
+  const list = loadVideos();
+  const v = list.find((x) => x.id === id);
+  if (!v) return null;
+  if (!String(url ?? "").trim()) delete v.youtube;
+  else {
+    const yt = youtubeId(url);
+    if (!yt) return "bad";
+    v.youtube = yt;
+  }
+  return saveVideos(list);
+}
+
 /** 置き換える前の記録を data/backup/record-<時刻>.json に残す(戻せるように) */
 function backupRecord() {
   if (!existsSync(RECORD)) return;
@@ -1373,6 +1462,26 @@ export function createApp() {
           const list = addJourney(JSON.parse(await readBody(req)));
           return list ? json(res, 200, list) : json(res, 400, { error: "名前と期間(YYYY-MM-DD)を入れてください" });
         }
+        return json(res, 405, { error: "method not allowed" });
+      }
+      // 車載動画(YouTube)とログのひも付け
+      if (url.pathname === "/api/videos") {
+        if (req.method === "GET") return json(res, 200, loadVideos());
+        if (req.method === "POST") {
+          const list = upsertVideo(JSON.parse(await readBody(req)));
+          return list ? json(res, 200, list) : json(res, 400, { error: "id と clips(start・dur・offset)を入れてください" });
+        }
+        return json(res, 405, { error: "method not allowed" });
+      }
+      const videoMatch = /^\/api\/videos\/([^/]+)$/.exec(url.pathname);
+      if (videoMatch) {
+        const id = decodeURIComponent(videoMatch[1]);
+        if (req.method === "PATCH") {
+          const r = setVideoUrl(id, JSON.parse(await readBody(req)).url);
+          if (r === "bad") return json(res, 400, { error: "YouTube の URL が読めませんでした" });
+          return r ? json(res, 200, r) : json(res, 404, { error: "not found" });
+        }
+        if (req.method === "DELETE") return json(res, 200, saveVideos(loadVideos().filter((v) => v.id !== id)));
         return json(res, 405, { error: "method not allowed" });
       }
       const journeyMatch = /^\/api\/journeys\/([^/]+)$/.exec(url.pathname);
