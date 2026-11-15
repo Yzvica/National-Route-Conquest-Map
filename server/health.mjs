@@ -1,6 +1,7 @@
 // 保守用の状態まとめ。/api/health(JSON)と /health(見やすい画面)で出す。
 // MiniPC のファイル(data\update.log など)を見に行かなくても、サーバーの様子がわかるようにする。
 import { existsSync, readdirSync, readFileSync, statSync, statfsSync } from "node:fs";
+import { freemem, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 
 const startedAt = new Date();
@@ -80,6 +81,8 @@ function latestSession(dir) {
  * @param {() => object[]} ctx.weatherPending 天気の取り直し待ち
  * @param {() => object} ctx.gmaps Google マップの状態
  * @param {() => object[]} ctx.logs 保存しているログ
+ * @param {object} [ctx.judgeMemory] 判定 worker のメモリ(server.mjs の judgeMemory())
+ * @param {{ total: number, free: number }} [ctx.os] 物理メモリ(バイト。テスト用。省くと実際の値)
  */
 // 起動したとき(このファイルを読んだとき)のコミット。取り込んだのに再起動で入れ替わっていないのを見つける
 const startedCommit = gitHead(resolve(import.meta.dirname, "..")).commit;
@@ -136,6 +139,13 @@ export function collectHealth(ctx) {
   }
 
   const mem = process.memoryUsage();
+  const MB = (b) => Math.round(b / 1048576);
+  const sys = ctx.os ?? { total: totalmem(), free: freemem() };
+  let peakRssMB = null;
+  try {
+    // 起動してからの最大(KB)。判定 worker もこのプロセスの中なので、判定中の山も入る
+    peakRssMB = Math.round(process.resourceUsage().maxRSS / 1024);
+  } catch {}
   const health = {
     time: now.toISOString(),
     server: {
@@ -162,6 +172,19 @@ export function collectHealth(ctx) {
       logTail: tail(join(repoData, "server.log"), 10, "shift_jis") ?? [],
       errTail: tail(join(repoData, "server.err.log"), 10) ?? [],
     },
+    memory: {
+      totalMB: MB(sys.total),
+      freeMB: MB(sys.free),
+      node: {
+        rssMB: MB(mem.rss),
+        peakRssMB,
+        heapUsedMB: MB(mem.heapUsed),
+        heapTotalMB: MB(mem.heapTotal),
+        externalMB: MB(mem.external),
+        arrayBuffersMB: MB(mem.arrayBuffers),
+      },
+      judgeWorker: ctx.judgeMemory ?? null,
+    },
     judge,
     weather: {
       pending: weatherPending.length,
@@ -183,8 +206,19 @@ export function collectHealth(ctx) {
   return health;
 }
 
+/** 空きメモリがこれより少ないと注意に出す(MB)。MiniPC(8GB)で 1GB を切ると、スワップで応答が遅くなっていた */
+export const LOW_MEMORY_MB = 1024;
+/** 判定 worker がメモリの上限で止まったのを、注意に出しておく時間 */
+const OOM_WARN_MS = 24 * 3600_000;
+
 function warnings(h) {
   const w = [];
+  const m = h.memory;
+  if (m.freeMB < LOW_MEMORY_MB)
+    w.push(`空きメモリが少なくなっています(残り ${m.freeMB} MB / ${m.totalMB} MB)。応答が遅くなったり、判定が止まったりすることがあります`);
+  const oom = m.judgeWorker?.oom;
+  if (oom && Date.parse(h.time) - Date.parse(oom.at) < OOM_WARN_MS)
+    w.push(`判定の処理がメモリの上限(${oom.limitMB} MB)を超えて止まりました(${jst(oom.at)})。そのときの判定は失敗しています`);
   if (h.update.failed) w.push(`自動更新が失敗しています(${h.update.failed.at}): ${h.update.failed.what}`);
   if (h.code.commit && h.code.built && !h.code.builtIsHead) w.push("取り込んだコードがまだビルドされていません(自動更新の途中か、失敗)");
   else if (h.code.commit && h.code.startedCommit && h.code.commit !== h.code.startedCommit)
@@ -212,6 +246,17 @@ function runText(r) {
   return esc(`${kind} ${r.done ?? 0}/${r.total ?? 0} 件${fail}(${when})${cur}`);
 }
 
+/** 判定 worker のメモリ */
+function workerText(w) {
+  if (!w) return "—";
+  const limit = w.limitMB ? `上限 ${w.limitMB} MB` : "上限なし";
+  const now = w.running
+    ? `動いている · ヒープ ${w.heapMB ?? "—"} MB(判定後の最大 ${w.peakHeapMB ?? "—"} MB)`
+    : `止まっている${w.lastPeakHeapMB !== null && w.lastPeakHeapMB !== undefined ? `(前回の判定後の最大 ${w.lastPeakHeapMB} MB)` : ""}`;
+  const oom = w.oom ? ` · 上限で止まった: ${jst(w.oom.at)}` : "";
+  return esc(`${now} · ${limit}${oom}`);
+}
+
 export function renderHealthHtml(h) {
   const row = (k, v) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`;
   const lines = (arr) => (arr.length ? `<pre>${arr.map(esc).join("\n")}</pre>` : '<span class="muted">なし</span>');
@@ -220,6 +265,7 @@ export function renderHealthHtml(h) {
   const upText = up >= 1440 ? `${Math.floor(up / 1440)}日 ${Math.floor((up % 1440) / 60)}時間` : up >= 60 ? `${Math.floor(up / 60)}時間 ${up % 60}分` : `${up}分`;
   const j = h.judge;
   const g = h.gmaps;
+  const mem = h.memory;
   return `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>サーバーの状態</title>
@@ -244,8 +290,14 @@ ${row("起動した時刻", `${esc(jst(h.server.startedAt))}(${esc(upText)}前)`
 ${row("動いているコード(起動時)", short(h.code.startedCommit))}
 ${row("取り込んだコード", `${short(h.code.commit)}(${esc(h.code.branch ?? "—")})`)}
 ${row("ビルドしたコード", short(h.code.built))}
-${row("Node / メモリ", `${esc(h.server.node)} / ${h.server.memoryMB} MB`)}
+${row("Node", esc(h.server.node))}
 ${h.disks.map((d) => row(`空き容量 ${d.path}`, d.freeGB === null ? "—" : `${d.freeGB} GB / ${d.totalGB} GB`)).join("")}
+</table>
+<h2>メモリ</h2><table>
+${row("空きメモリ(PC 全体)", `${mem.freeMB} MB / ${mem.totalMB} MB${mem.freeMB < LOW_MEMORY_MB ? " <b>(少ない)</b>" : ""}`)}
+${row("サーバー(node)", `${mem.node.rssMB} MB${mem.node.peakRssMB !== null ? `(起動してから最大 ${mem.node.peakRssMB} MB)` : ""}`)}
+${row("うち本体の JS ヒープ", `${mem.node.heapUsedMB} MB / ${mem.node.heapTotalMB} MB`)}
+${row("判定の処理(worker)", workerText(mem.judgeWorker))}
 </table>
 <h2>国道判定</h2><table>
 ${row("サーバーで判定", j.enabled ? "できる" : "できない")}

@@ -1,4 +1,5 @@
 // テスト用の判定 worker。ログの各行「区間ID,割合,日付」をそのまま判定結果として返す。"BAD" を含むログは読めないことにする。
+// "HOG" を含むログはメモリを使い続ける(上限で止まる)。
 // トンネルの補間(fillDir)は、location.csv の行数だけをまとめに入れて返す
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +14,11 @@ parentPort.on("message", ({ seq, logId, fillDir }) => {
     return parentPort.postMessage({ seq, fill });
   }
   const text = gunzipSync(readFileSync(join(workerData.logsDir, logId))).toString("utf8");
+  // メモリの上限を超えるまで使い続ける(上限で止まったときのテスト)
+  if (text.includes("HOG")) {
+    const hog = [];
+    for (;;) hog.push(new Array(1e5).fill({ x: hog.length }));
+  }
   if (text.includes("BAD")) return parentPort.postMessage({ seq, error: "読めないログ" });
   const rows = text.trim().split("\n").map((l) => l.split(","));
   const day = rows[0][2];
