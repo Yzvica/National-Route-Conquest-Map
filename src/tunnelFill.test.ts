@@ -65,11 +65,57 @@ describe("fillTunnels", () => {
     expect(fillTunnels(fast, () => ROADS).skipped[0].reason).toBe("too_fast");
   });
 
-  it("短い途切れや止まっていたときは補わない", () => {
+  it("止まっていたときは補わず、短い途切れ(15秒未満)は補う", () => {
     const lines = [HEAD, row(0, east(0)), row(10, east(200)), row(100, east(250))];
     const r = fillTunnels(lines.join("\n"), () => ROADS);
-    expect(r.sections).toEqual([]);
+    // 0〜10秒(200m)は短い途切れとして補い、10〜100秒(50m)は止まっていただけなので補わない
+    expect(r.sections).toEqual([expect.objectContaining({ fromS: 0, toS: 10, points: 9, short: true })]);
+    expect(r.sections[0].line).toBeUndefined();
     expect(r.skipped).toEqual([]);
+  });
+
+  it("短い途切れを道路に沿って補い、復帰直後の精度の悪い点を捨てる(iPhone X の途切れ)", () => {
+    const lines = [HEAD];
+    for (let t = 0; t <= 50; t++) lines.push(row(t, east(t * 15), { speed: 15 }));
+    // 50〜63秒は点がなく、復帰直後の2点は精度が悪く 60〜120m 北にずれている
+    lines.push(row(63, [east(63 * 15)[0], 35.0011], { speed: 15, acc: 170 }));
+    lines.push(row(64, [east(64 * 15)[0], 35.0005], { speed: 15, acc: 45 }));
+    for (let t = 65; t <= 80; t++) lines.push(row(t, east(t * 15), { speed: 15, acc: t === 65 ? 25 : 5 }));
+    const r = fillTunnels(lines.join("\n"), () => ROADS);
+    expect(r.dropped).toBe(2);
+    expect(r.skipped).toEqual([]);
+    expect(r.sections).toEqual([expect.objectContaining({ fromS: 50, toS: 65, points: 14, short: true, roads: ["国道1号"] })]);
+    const rows = parse(r.csv);
+    expect(rows.some((x) => x.h_acc_m === "170" || x.h_acc_m === "45")).toBe(false);
+    const filled = rows.filter((x) => x.src === "road");
+    expect(filled).toHaveLength(14);
+    for (const x of filled) expect(Math.abs(Number(x.lat) - 35)).toBeLessThan(1e-6);
+    const mid = filled.find((x) => x.unix_s === "57.000")!;
+    expect(distance([Number(mid.lon), Number(mid.lat)], east(57 * 15))).toBeLessThan(2);
+  });
+
+  it("短い途切れで道路データにない道なら直線でつなぎ、前後の速さに合わない移動は補わない", () => {
+    const lines = [HEAD, row(0, east(0), { speed: 15 }), row(10, east(150), { speed: 15 })];
+    const r = fillTunnels(lines.join("\n"), () => []);
+    expect(r.sections).toEqual([expect.objectContaining({ points: 9, short: true, line: true, roadM: 150 })]);
+    expect(parse(r.csv).filter((x) => x.src === "line")).toHaveLength(9);
+    // 前後は 18km/h なのに、10秒で 300m(108km/h)進んでいる
+    const fast = [HEAD, row(0, east(0), { speed: 5 }), row(10, east(300), { speed: 5 })].join("\n");
+    const f = fillTunnels(fast, () => ROADS);
+    expect(f.sections).toEqual([]);
+    expect(f.skipped).toEqual([expect.objectContaining({ reason: "too_fast" })]);
+  });
+
+  it("復帰直後の点を捨てるのは途切れの後、精度が戻るまで(最大30秒)だけ", () => {
+    const lines = [HEAD];
+    // 途切れのない ±35m の点は捨てない
+    for (let t = 0; t <= 5; t++) lines.push(row(t, east(t * 15), { speed: 15, acc: 35 }));
+    // 5〜10秒の途切れの後、±40m の点が 40 秒続く → 30 秒ぶん(10〜40秒)だけ捨てる
+    for (let t = 10; t <= 50; t++) lines.push(row(t, east(t * 15), { speed: 15, acc: 40 }));
+    const r = fillTunnels(lines.join("\n"), () => ROADS);
+    expect(r.dropped).toBe(31);
+    const ts = parse(r.csv).filter((x) => x.src === "gps").map((x) => Number(x.unix_s));
+    expect(ts).toEqual([0, 1, 2, 3, 4, 5, ...Array.from({ length: 10 }, (_, i) => 41 + i)]);
   });
 
   it("一方通行の道は進んでいた向きのほうを使う", () => {

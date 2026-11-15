@@ -28,6 +28,9 @@ export const RAIL_FILL_OPTIONS: FillOptions = {
   detourRatio: 1.6,
   detourExtraM: 1500,
   maxSpeedMS: 330 / 3.6,
+  // 短い途切れの補完と復帰直後の点を捨てるのは、車(道路)だけにする
+  shortGapSec: 0,
+  recoverMaxAcc: Infinity,
 };
 
 /** 駅からこの距離以内の線路どうしを乗り換えでつなぐ(m) */

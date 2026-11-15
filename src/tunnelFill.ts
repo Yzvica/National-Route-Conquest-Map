@@ -2,6 +2,8 @@
 // トンネルの中では iOS が位置を推測で進めるが、1km ほどで止まり、その後は基地局の測位(±1km)になる。
 // そこで、入口の手前で最後に取れた GPS の点と出口の後で最初に取れた点を、道路データの上でいちばん近い道でつなぎ、
 // 2点の時刻と速度に合うように1秒ごとの点を置く。元の location.csv は変えず、補った版を別のファイルに書く。
+// 短い途切れ(15秒未満や、直線300m未満)も同じやり方で補い、道路データにない道なら2点の間を直線でつなぐ。
+// また、途切れから復帰した直後の点は精度が悪い(±30〜170m)ので、精度が戻るまでの点を捨てる。
 import { distance } from "./geo";
 import type { LonLat, RouteData } from "./types";
 
@@ -39,6 +41,26 @@ export interface FillOptions {
   /** 端の点の向きで道を絞り込むのは、この速さ(m/s)以上で、向きの精度がこれ(度)以内のときだけ */
   minCourseSpeedMS: number;
   maxCourseAccDeg: number;
+  /**
+   * 短い途切れ: minGapSec / minGapM に届かない途切れでも、この秒数以上・この直線距離(m)以上なら補う。
+   * shortGapSec を 0 にすると補わない
+   */
+  shortGapSec: number;
+  shortGapM: number;
+  /** 短い途切れで、直線距離 ÷ 秒数がこれ(m/s)未満なら止まっていたとみなして補わない */
+  shortMinSpeedMS: number;
+  /** 短い途切れで採る道のりの上限(直線距離 × shortDetourRatio + shortDetourExtraM) */
+  shortDetourRatio: number;
+  shortDetourExtraM: number;
+  /** 短い途切れで道路が見つからないとき、端の2点を直線でつなぐ */
+  shortLineFallback: boolean;
+  /**
+   * 復帰直後の点を捨てる: GPS の点(速度あり)がこの秒数以上来なかった後、精度が recoverMaxAcc(m)より悪い点は
+   * recoverWindowSec 秒の間、精度が戻るまで捨てる。recoverMaxAcc を Infinity にすると捨てない
+   */
+  recoverGapSec: number;
+  recoverMaxAcc: number;
+  recoverWindowSec: number;
 }
 
 export const DEFAULT_FILL_OPTIONS: FillOptions = {
@@ -52,7 +74,22 @@ export const DEFAULT_FILL_OPTIONS: FillOptions = {
   wrongWayCost: 4,
   minCourseSpeedMS: 2,
   maxCourseAccDeg: 45,
+  shortGapSec: 4,
+  shortGapM: 40,
+  shortMinSpeedMS: 2,
+  shortDetourRatio: 1.3,
+  shortDetourExtraM: 100,
+  shortLineFallback: true,
+  recoverGapSec: 4,
+  recoverMaxAcc: 30,
+  recoverWindowSec: 30,
 };
+
+/**
+ * 短い途切れの平均の速さの上限。前後の GPS の速さからかけ離れた道(遠回り)は採らない(m/s)
+ * 例: 前後とも 50km/h(13.9m/s)なら 23.8m/s(約86km/h)まで
+ */
+const shortSpeedLimit = (vA: number, vB: number) => Math.max(vA, vB) * 1.5 + 3;
 
 /** 補った区間のまとめ(tunnel_fill.json) */
 export interface FilledSection {
@@ -69,6 +106,10 @@ export interface FilledSection {
   points: number;
   /** 置き換えた(捨てた)iOS の推測・基地局の点の数 */
   replaced: number;
+  /** 短い途切れ(minGapSec / minGapM に届かないもの)を補った */
+  short?: boolean;
+  /** 道路が見つからず、直線でつないだ(短い途切れだけ) */
+  line?: boolean;
 }
 
 export interface SkippedSection {
@@ -82,6 +123,8 @@ export interface FillResult {
   csv: string;
   sections: FilledSection[];
   skipped: SkippedSection[];
+  /** 捨てた復帰直後の精度の悪い点の数 */
+  dropped: number;
 }
 
 // --- CSV ---
@@ -369,8 +412,9 @@ export function speedProfile(L: number, T: number, vA: number, vB: number): (tau
 
 /**
  * location.csv の GPS が途切れた区間を道路に沿って補う。
- * 返す CSV は元の列 + speed_est_ms(なければ足す)+ src。src は gps(GPS の点)/ inferred(iOS の推測・基地局の点)/ road(補った点)。
- * 補った区間の中にあった inferred の点は捨てる
+ * 返す CSV は元の列 + speed_est_ms(なければ足す)+ src。src は gps(GPS の点)/ inferred(iOS の推測・基地局の点)/
+ * road(道路に沿って補った点)/ line(短い途切れを直線で補った点)。
+ * 補った区間の中にあった inferred の点は捨てる。途切れから復帰した直後の精度の悪い点も捨てる
  */
 export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = DEFAULT_FILL_OPTIONS): FillResult {
   const { head, rows } = parseCsv(text);
@@ -414,14 +458,36 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
   const skipped: SkippedSection[] = [];
   let lastAnchor = -1;
   let pending: string[][] = []; // 前の GPS の点の後に来た、GPS でない点
+  let dropped = 0;
+  let lastFixT = NaN; // 最後の GPS の点(速度あり)の時刻
+  let recoverStart = NaN; // 復帰した時刻(精度が戻ったら NaN)
 
   const flushPending = () => {
     for (const r of pending) out.push(pad(r, "inferred"));
     pending = [];
   };
 
+  /** 途切れから復帰した直後で、精度が悪いので捨てる点か */
+  const isRecoveryNoise = (r: string[]): boolean => {
+    if (!Number.isFinite(opt.recoverMaxAcc) || num(r[cSpeed]) === undefined || !Number.isFinite(t(r))) return false;
+    const tr = t(r);
+    if (Number.isFinite(lastFixT) && tr - lastFixT >= opt.recoverGapSec) recoverStart = tr;
+    lastFixT = tr;
+    if (!Number.isFinite(recoverStart)) return false;
+    const acc = num(r[cAcc]);
+    if ((acc !== undefined && acc >= 0 && acc <= opt.recoverMaxAcc) || tr - recoverStart > opt.recoverWindowSec) {
+      recoverStart = NaN;
+      return false;
+    }
+    return true;
+  };
+
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
+    if (isRecoveryNoise(r)) {
+      dropped++;
+      continue;
+    }
     if (!isAnchor(r)) {
       if (lastAnchor >= 0) pending.push(r);
       else out.push(pad(r, "inferred"));
@@ -432,8 +498,10 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
       const T = t(r) - t(ra);
       const a = pos(ra), b = pos(r);
       const straight = distance(a, b);
-      if (T >= opt.minGapSec && straight >= opt.minGapM) {
-        const filled = fillOne(ra, r, T, a, b, straight);
+      const long = T >= opt.minGapSec && straight >= opt.minGapM;
+      const short = !long && opt.shortGapSec > 0 && T >= opt.shortGapSec && straight >= opt.shortGapM && straight / T >= opt.shortMinSpeedMS;
+      if (long || short) {
+        const filled = fillOne(ra, r, T, a, b, straight, short);
         if (filled) {
           for (const f of filled) out.push(f);
           sections[sections.length - 1].replaced = pending.length;
@@ -447,10 +515,14 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
   }
   flushPending();
 
-  function fillOne(ra: string[], rb: string[], T: number, a: LonLat, b: LonLat, straight: number): string[][] | null {
+  function fillOne(ra: string[], rb: string[], T: number, a: LonLat, b: LonLat, straight: number, short: boolean): string[][] | null {
     const base = { fromS: t(ra), toS: t(rb), straightM: Math.round(straight) };
+    const vA = Math.max(0, num(ra[cSpeed]) ?? 0);
+    const vB = Math.max(0, num(rb[cSpeed]) ?? 0);
+    // 短い途切れは、前後の速さで走れる範囲の道だけ採る
+    const maxSpeed = short ? Math.min(opt.maxSpeedMS, shortSpeedLimit(vA, vB)) : opt.maxSpeedMS;
     // 飛行機など、直線でも速すぎる移動は道路を探さない
-    if (straight / T > opt.maxSpeedMS) {
+    if (straight / T > maxSpeed) {
       skipped.push({ ...base, reason: "too_fast" });
       return null;
     }
@@ -462,26 +534,25 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
     ];
     const g = new Graph();
     for (const road of roads(bbox)) g.addRoad(road, opt.wrongWayCost);
-    const path = route(g, a, courseOf(ra), b, courseOf(rb), opt);
-    if (!path || path.coords.length < 2) {
-      skipped.push({ ...base, reason: "no_road" });
-      return null;
+    const found = route(g, a, courseOf(ra), b, courseOf(rb), opt);
+    let reason: SkippedSection["reason"] | undefined;
+    if (!found || found.coords.length < 2) reason = "no_road";
+    else if (found.len > (short ? straight * opt.shortDetourRatio + opt.shortDetourExtraM : straight * opt.detourRatio + opt.detourExtraM)) reason = "detour";
+    else if (found.len / T > maxSpeed) reason = "too_fast";
+    const line = reason !== undefined;
+    if (reason) {
+      // 短い途切れで道路データにない道(市町村道など)を通っていたときは、直線でつなぐ(速さはもう確かめてある)
+      if (!(short && opt.shortLineFallback && reason !== "too_fast")) {
+        skipped.push({ ...base, reason });
+        return null;
+      }
     }
-    if (path.len > straight * opt.detourRatio + opt.detourExtraM) {
-      skipped.push({ ...base, reason: "detour" });
-      return null;
-    }
-    if (path.len / T > opt.maxSpeedMS) {
-      skipped.push({ ...base, reason: "too_fast" });
-      return null;
-    }
+    const path: RoutePath = line || !found ? { coords: [], len: straight, tunnelM: 0, roads: [] } : found;
     // 端の点そのものから始めて、端の点で終わるようにする(道路に下ろした位置との差は数十m以内)
     const coords = [a, ...path.coords, b];
     const cum = [0];
     for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + distance(coords[i - 1], coords[i]));
     const L = cum[cum.length - 1];
-    const vA = Math.max(0, num(ra[cSpeed]) ?? 0);
-    const vB = Math.max(0, num(rb[cSpeed]) ?? 0);
     const prof = speedProfile(L, T, vA, vB);
     const altA = num(ra[cAlt]), altB = num(rb[cAlt]);
     const res: string[][] = [];
@@ -495,7 +566,7 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
       if (cAlt >= 0 && altA !== undefined && altB !== undefined) row[cAlt] = (altA + ((altB - altA) * tau) / T).toFixed(2);
       if (cCourse >= 0) row[cCourse] = course.toFixed(1);
       row[cEst] = v.toFixed(2);
-      row[cSrc] = "road";
+      row[cSrc] = line ? "line" : "road";
       res.push(row);
     }
     sections.push({
@@ -506,11 +577,13 @@ export function fillTunnels(text: string, roads: RoadSource, opt: FillOptions = 
       roads: path.roads,
       points: res.length,
       replaced: 0,
+      ...(short ? { short: true } : {}),
+      ...(line ? { line: true } : {}),
     });
     return res;
   }
 
-  return { csv: [outHead, ...out].map((r) => r.join(",")).join("\n") + "\n", sections, skipped };
+  return { csv: [outHead, ...out].map((r) => r.join(",")).join("\n") + "\n", sections, skipped, dropped };
 }
 
 /** 判定用の道路データ(国道・高速道路・都道府県道)から、範囲にかかる線を取り出す */
