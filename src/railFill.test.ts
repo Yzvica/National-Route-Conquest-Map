@@ -85,4 +85,10 @@ describe("railsFromData", () => {
     const bad = [HEAD, row(0, at(200)), row(200, at(4200), { speed: 10, course: 317, courseAcc: 95 })];
     expect(fillTunnels(bad.join("\n"), railsFromData(DATA), RAIL_FILL_OPTIONS).sections).toHaveLength(1);
   });
+  it("電車は短い途切れを補わず、復帰直後の点も捨てない", () => {
+    const lines = [HEAD, row(0, at(0)), row(10, at(150)), row(20, at(300), { acc: 90 }), row(21, at(315))];
+    const r = fillTunnels(lines.join("\n"), railsFromData(DATA), RAIL_FILL_OPTIONS);
+    expect(r.sections).toEqual([]);
+    expect(r.dropped).toBe(0);
+  });
 });

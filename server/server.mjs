@@ -396,8 +396,11 @@ const RAW_READABLE = new Set(["location_filled.csv", "tunnel_fill.json", "weathe
 /** 走行ごとのフォルダ(車は RAW_LOG_DIR/<走行ID>、車以外は trips/<走行ID>) */
 const rawDir = (session, kind) => (kind === "trip" ? join(RAW_LOG_DIR(), "trips", session) : join(RAW_LOG_DIR(), session));
 
-/** 補い方の版(src/judgeWorker.ts の FILL_REV と合わせる) */
-const FILL_REV = 2;
+/**
+ * 電車の補い方の版(src/judgeWorker.ts の FILL_REV のうち、電車の補い方が変わった版)。
+ * これより古い電車の記録は起動時に補い直す。rev 3 は車だけの変更なので 2 のまま
+ */
+const RAIL_FILL_REV = 2;
 
 /** 線路のデータ(電車の記録を補うのに使う。scripts/build_railways.py で作り、リリース route-data に置く) */
 const hasRails = () => existsSync(join(JUDGE_DATA, "railways.json.gz"));
@@ -437,7 +440,7 @@ export function trainsToFill(root = RAW_LOG_DIR()) {
       if (!existsSync(join(dir, "location.csv"))) continue;
       if (JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).mode !== "train") continue;
       const prev = existsSync(join(dir, "tunnel_fill.json")) ? JSON.parse(readFileSync(join(dir, "tunnel_fill.json"), "utf8")) : null;
-      const done = prev?.source === "rail" && (prev.rev ?? 1) >= FILL_REV;
+      const done = prev?.source === "rail" && (prev.rev ?? 1) >= RAIL_FILL_REV;
       if (!done) out.push(dir);
     } catch {}
   }
