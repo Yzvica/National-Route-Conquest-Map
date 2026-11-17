@@ -277,9 +277,18 @@ export function addMapControls(map: maplibregl.Map, notify: (lines: string[]) =>
 /** 今のデータ(国道/高速道路)で登録したイベントの後始末。データを切り替えるときに呼ぶ */
 let cleanups: (() => void)[] = [];
 
+/** 国道ナビで点を選んでいる間は、道路の線を押しても路線を選ばない */
+let roadClicksMuted = false;
+export function muteRoadClicks(on: boolean) {
+  roadClicksMuted = on;
+}
+
 function onLayers(map: maplibregl.Map, layers: string[], fn: (e: maplibregl.MapLayerMouseEvent) => void) {
-  map.on("click", layers, fn);
-  cleanups.push(() => map.off("click", layers, fn));
+  const guarded = (e: maplibregl.MapLayerMouseEvent) => {
+    if (!roadClicksMuted) fn(e);
+  };
+  map.on("click", layers, guarded);
+  cleanups.push(() => map.off("click", layers, guarded));
 }
 
 const routeLabel = (data: RouteData, ref: string) =>
