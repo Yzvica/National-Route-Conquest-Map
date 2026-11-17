@@ -416,3 +416,40 @@ body:has(#detail:not([hidden])) #replay { right: 324px; }
   .rp-gcircle { position: absolute; right: 0; top: 0; width: 84px; height: 84px; z-index: 1; background: color-mix(in srgb, var(--bg) 85%, transparent); border-radius: 50%; }
   .rp-body:has(.rp-gcircle) .rp-chart { margin-right: 88px; width: auto; }
 }
+
+/* ---- 国道ナビ(Google マップに送る) ---- */
+#navi-open { display: block; width: 100%; margin: 0 0 8px; }
+.navi {
+  position: absolute; top: 12px; left: 12px; z-index: 6; width: 320px; max-width: calc(100% - 24px);
+  max-height: calc(100% - 60px); overflow-y: auto; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--bg); color: var(--fg); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); font-size: 14px;
+}
+.navi[hidden] { display: none; }
+.navi-head { display: flex; align-items: center; gap: 8px; }
+.navi-head h2 { flex: 1; margin: 0; font-size: 16px; }
+.navi-head button { padding: 2px 10px; font-size: 18px; line-height: 1; }
+.navi p { margin: 8px 0; }
+.navi-points, .navi-links { list-style: none; margin: 8px 0; padding: 0; }
+.navi-points li { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.navi-points button { padding: 0 8px; }
+.navi-no { min-width: 2.5em; font-weight: 700; }
+.navi-road { flex: 1; color: var(--muted); font-size: 13px; }
+.navi-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.navi-row button { padding: 6px 10px; }
+.navi-per select { margin-left: 4px; }
+.navi-summary { font-weight: 700; }
+.navi-error { color: var(--accent); }
+.navi-links li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.navi-links .button { padding: 6px 10px; text-decoration: none; }
+.navi-links button { padding: 6px 8px; }
+.navi-link-text { flex: 1; font-size: 13px; }
+.navi-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); }
+.navi-pin {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; cursor: grab;
+  background: #7b1fa2; color: #fff; font: 700 13px/1 system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 6px rgb(0 0 0 / 0.4);
+}
+@media (max-width: 720px) {
+  /* スマホ: 地図を広く使い、ナビの枠は下にまとめる */
+  .navi { top: auto; bottom: 12px; left: 8px; right: 8px; width: auto; max-width: none; max-height: 45%; }
+}
+.navi-help summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 6px; }

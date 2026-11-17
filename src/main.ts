@@ -37,6 +37,7 @@ import { trackLength, trackStart, type Trip } from "./trips";
 import { distance } from "./geo";
 import { fetchReplay, gbowlReplay, gpsReplay, type ReplayData } from "./replay";
 import { closeReplay, openReplay, replayOpen } from "./replayView";
+import { naviOpen, openNavi } from "./naviView";
 import { fetchVideos, setVideoUrl, videoAt, videosInRange, watchUrl, type Video } from "./videos";
 import { addTravelLayer, changeSessionMode, loadTravelTrips, loadTripDetail, PANEL_MODES, refreshTravelPanel, setTravelHooks, showOnlyTrips, travelModes, tripBounds, type ShowMode, type TravelTrip } from "./travel";
 import { addJourney, deleteJourney, fetchJourneys, includedItems, itemKey, journeyOf, setJourneyExclude, loadPeriod, makePeriod, periodItems, savePeriod, type Journey, type Period, type PeriodItem } from "./period";
@@ -1071,7 +1072,7 @@ function setMapOnly(on: boolean) {
   map.resize();
 }
 map.on("click", (e) => {
-  if (!mobile.matches || replayOpen()) return;
+  if (!mobile.matches || replayOpen() || naviOpen()) return;
   const roads = map.getStyle().layers.filter((l) => /^(overview|routes)-|^selected$/.test(l.id)).map((l) => l.id);
   if (roads.length && map.queryRenderedFeatures(e.point, { layers: roads }).length) return;
   setMapOnly(!mapOnly());
@@ -1086,6 +1087,12 @@ mobile.addEventListener("change", () => {
 // スマホでは地図が狭いので、出典の文字は最初からたたんでおく(右下の i で開ける。地図を動かしてもたたまれる)
 map.once("idle", () => {
   if (mobile.matches) document.querySelector(".maplibregl-ctrl-attrib.maplibregl-compact-show")?.classList.remove("maplibregl-compact-show");
+});
+
+// 国道ナビ: 地図で点を選ぶと、国道だけを通る Google マップのナビ用リンクを作る
+$("navi-open").addEventListener("click", () => {
+  if (mobile.matches) setMapOnly(true);
+  openNavi({ map, kokudo: () => datasets.kokudo, routeName: (ref) => `国道${ref}号`, toast });
 });
 
 $("route-filter").addEventListener("input", render);
