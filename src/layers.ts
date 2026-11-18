@@ -14,7 +14,7 @@ export interface RoadLayers {
   raw: Uint8Array;
   /** 高速道路のデータにある OSM の way。国道データのうちこれと同じ way の区間は、高速道路と同じ道 */
   expWays: Set<string>;
-  /** ログの近くにある国道・都道府県道の way。高速道路データのうちこれと同じ way の区間は、下の道と同じ道 */
+  /** ログの近くにある国道・都道府県道の way。高速道路データのうちこれと同じ way の区間は、国道などと同じ道(国道の自動車専用道路など) */
   genWays: Set<string>;
 }
 
@@ -170,7 +170,12 @@ export function classifyTrack(
   for (const d of generals) {
     for (const seg of d.segments) {
       if (!nearTrack(seg.coords, seg.len)) continue;
-      genWays.add(wayOf(seg.id));
+      const way = wayOf(seg.id);
+      genWays.add(way);
+      // 高速道路のデータにもある同じ道(国道の自動車専用道路など。仙台南部道路は国道6号)は、高速道路の側として扱う。
+      // 下の道に入れると、すぐ横を並んで走る一般道(国道286号など)から見て「近くに下の道がある」ことになり、
+      // 一般道を走っただけでもその道を走ったことになってしまう(2026-11-18 仙台南部道路の誤判定)
+      if (expWays.has(way)) continue;
       for (const s of samplePointsWithDir(seg.coords, SAMPLE_STEP)) genGrid.add(s.p, s.dir);
     }
   }

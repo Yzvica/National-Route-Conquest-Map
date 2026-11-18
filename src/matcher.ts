@@ -198,7 +198,8 @@ function tunnelPassed(
  * 1本のログで、各区間を何割走ったかを求める。
  * layers(classifyTrack の結果)を渡すと、高速道路のデータは高速道路の上と判定したログの点だけで、
  * 国道・都道府県道のデータは下の道と判定した点だけで判定する(高架の高速と下の国道を取り違えないため)。
- * 両方のデータにある同じ道(国道の自動車専用道路など)は、どちらの点でも判定する
+ * 両方のデータにある同じ道(国道の自動車専用道路など)は、どちらのデータでも高速道路の上と判定した点だけで判定する
+ * (すぐ横を並んで走る一般道の点で、自動車専用道路を走ったことにしないため)
  */
 export function matchTrack(
   data: RouteData,
@@ -228,15 +229,16 @@ export function matchTrack(
   const maxAngle = (opt.maxAngle * Math.PI) / 180;
 
   const raw = new PointGrid<number>(Math.max(opt.portalRadius, 50));
-  const rawAll = layers ? new PointGrid<number>(Math.max(opt.portalRadius, 50)) : raw;
+  // 両方のデータにある同じ道のトンネルは、高速道路の上と判定した点で判定する
+  const rawShared = layers && role === 0 ? new PointGrid<number>(Math.max(opt.portalRadius, 50)) : raw;
   track.forEach((p, i) => {
     if (!layers || layers.raw[i] === role) raw.add([p.lon, p.lat], i);
-    if (layers) rawAll.add([p.lon, p.lat], i);
+    if (layers && role === 0 && layers.raw[i] === 1) rawShared.add([p.lon, p.lat], i);
   });
 
   const tunnelOk = new Map<string, boolean>();
   for (const t of data.tunnels) {
-    tunnelOk.set(t.id, tunnelPassed(isShared(t.id) ? rawAll : raw, track, t.a, t.b, t.len, opt));
+    tunnelOk.set(t.id, tunnelPassed(isShared(t.id) ? rawShared : raw, track, t.a, t.b, t.len, opt));
   }
 
   // 近くを、道路と同じ向き(上り下りは問わない)に進んでいたログの点があれば通ったとみなす。
@@ -253,7 +255,8 @@ export function matchTrack(
     let hit = 0;
     for (const s of samples) {
       const ok = along(s.dir);
-      if (dense.some(s.p, opt.tolerance, ok) || (shared && other.some(s.p, opt.tolerance, ok))) hit++;
+      // 両方のデータにある同じ道は、高速道路の上の点(高速道路のデータなら dense、国道などのデータなら other)で判定する
+      if ((shared && role === 0 ? other : dense).some(s.p, opt.tolerance, ok)) hit++;
     }
     // 交差点で隣の区間の端に触れただけ、のようなものは数えない
     if (hit * SAMPLE_STEP < MIN_HIT_METERS) continue;
