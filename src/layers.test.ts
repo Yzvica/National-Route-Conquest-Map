@@ -173,6 +173,37 @@ describe("classifyTrack(高架の高速道路と下の国道)", () => {
     }
   });
 
+  it("国道の自動車専用道路(国道と高速道路のデータにある同じ道)のすぐ横の一般道を走っただけなら、どちらも塗らない", () => {
+    // 2026-11-18: 国道286号を走っただけで、すぐ横(10〜15m)の仙台南部道路(国道6号の自動車専用道路)を走ったことになっていた
+    // 信号で止まりながら走ったとき / 並ぶ区間(約1.5km)を止まらずに走り抜けたとき
+    for (const [kmh, stopEvery, to] of [[40, 800, 139.06], [60, Infinity, 139.036]]) {
+      const k = kokudo();
+      k.segments.push(...line("w101", [139.02, EY], [139.06, EY], "motorroad", "6"));
+      const e = expressway(true);
+      const track = drive([[139.0, Y], [to, Y]], kmh, stopEvery);
+      const layers = classifyTrack(track, e, [k]);
+      const ck = matchTrack(k, track, DEFAULT_OPTIONS, layers);
+      const ce = matchTrack(e, track, DEFAULT_OPTIONS, layers);
+      const shared = e.segments.filter((x) => x.id.startsWith("w101-"));
+      expect(shared.filter((x) => (ce.get(x.id) ?? 0) > 0)).toEqual([]);
+      expect(shared.filter((x) => (ck.get(x.id) ?? 0) > 0)).toEqual([]);
+      expect(k.segments.filter((x) => x.id.startsWith("w1-") && ck.get(x.id) === 1).length).toBeGreaterThan(15);
+    }
+  });
+
+  it("国道の自動車専用道路をランプから上って走れば、国道・高速道路のどちらにも塗る", () => {
+    const k = kokudo();
+    k.segments.push(...line("w101", [139.02, EY], [139.06, EY], "motorroad", "6"));
+    const e = expressway(true);
+    const track = drive([[139.0, Y], ...RAMP, [139.06, EY]], 60);
+    const layers = classifyTrack(track, e, [k]);
+    const ck = matchTrack(k, track, DEFAULT_OPTIONS, layers);
+    const ce = matchTrack(e, track, DEFAULT_OPTIONS, layers);
+    const after = e.segments.filter((x) => x.id.startsWith("w101-") && x.coords[0][0] >= 139.036);
+    expect(after.filter((x) => ce.get(x.id) === 1).length).toBe(after.length);
+    expect(after.filter((x) => ck.get(x.id) === 1).length).toBe(after.length);
+  });
+
   it("ランプで高架に上がってから渋滞で何度か止まっても、高速道路のまま(ランプの本線側で一瞬だけ乗り換えたことにしない)", () => {
     const track = drive([[139.0, Y], ...RAMP, [139.06, EY]], 30, 400);
     const r = judge(track, true, 139.036);
