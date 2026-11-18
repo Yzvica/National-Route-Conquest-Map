@@ -23,7 +23,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
 /* iPhone の Safari ではアドレスバーの分だけ 100% が画面より高くなるので、見えている高さに合わせる */
 @supports (height: 100dvh) { html, body { height: 100dvh; } }
 button, .button, a, select, summary { touch-action: manipulation; }
-#app { display: flex; height: 100%; position: relative; }
+/* iPhone のホーム画面から開いたときも、ノッチ・ステータスバー・ホームバーの下に操作する物が入らないようにする
+   (viewport-fit=cover にしたので env(safe-area-inset-*) が効く。PC では全部 0) */
+#app {
+  display: flex; height: 100%; position: relative;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
 #panel { width: 340px; overflow-y: auto; padding: 16px; border-right: 1px solid var(--line); }
 #map { flex: 1; }
 body.dragging::after {
@@ -382,7 +387,7 @@ button.link { padding: 0; border: 0; background: none; color: var(--accent); fon
 .video-url-row input { flex: 1; min-width: 0; font-size: 16px; }
 .rp-video[hidden] { display: none; }
 #replay {
-  position: absolute; left: 352px; right: 12px; bottom: 28px; z-index: 6; height: 260px;
+  position: absolute; left: 352px; right: 12px; bottom: calc(28px + env(safe-area-inset-bottom)); z-index: 6; height: 260px;
   display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border: 1px solid var(--line);
   border-radius: 12px; background: var(--bg); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
 }
@@ -405,11 +410,20 @@ body:has(#detail:not([hidden])) #replay { right: 324px; }
 .rp-marker { width: 32px; height: 32px; pointer-events: none; }
 @media (max-width: 720px) {
   #replay {
-    position: static; flex: none; height: 46%; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none;
-    padding: 6px 10px calc(6px + env(safe-area-inset-bottom));
+    position: static; flex: none; border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none;
+    height: 50%;
+    /* 一番下の出来事チップがホームバー(上へのスワイプでホームに戻る所)に重ならないよう、下に余白を取る */
+    padding: 6px 10px calc(10px + env(safe-area-inset-bottom));
   }
   body.replaying #panel, body.replaying #detail, body.replaying #map-restore { display: none !important; }
-  .rp-head button, .rp-head select { padding: 6px 10px; }
+  /* 指で押しやすい大きさ(高さ 40px 前後) */
+  .rp-head { gap: 8px; }
+  .rp-head button, .rp-head select { min-height: 40px; padding: 6px 12px; }
+  .rp-head .rp-play { min-width: 56px; }
+  .rp-close { min-width: 44px; }
+  .rp-events { gap: 8px; padding: 2px 0; overscroll-behavior-x: contain; }
+  .rp-events button { min-height: 44px; justify-content: center; padding: 4px 12px; font-size: 13px; }
+  .rp-events button span { font-size: 12px; }
   .rp-readout { font-size: 12px; gap: 0 8px; }
   .rp-body { flex-direction: column; gap: 4px; position: relative; }
   /* G円はグラフの右上に小さく重ねる */
