@@ -23,6 +23,9 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
 /* iPhone の Safari ではアドレスバーの分だけ 100% が画面より高くなるので、見えている高さに合わせる */
 @supports (height: 100dvh) { html, body { height: 100dvh; } }
 button, .button, a, select, summary { touch-action: manipulation; }
+/* PC のブラウザ(Windows の Chrome/Edge など)では、ドロップダウンを開いたときの一覧が背景の指定を引き継がず
+   白地のままになり、ナイトモードの明るい文字が読めなくなるので、一覧の色もテーマに合わせる */
+option, optgroup { background-color: var(--bg); color: var(--fg); }
 /* iPhone のホーム画面から開いたときも、ノッチ・ステータスバー・ホームバーの下に操作する物が入らないようにする
    (viewport-fit=cover にしたので env(safe-area-inset-*) が効く。PC では全部 0) */
 #app {
@@ -395,7 +398,7 @@ button.link { padding: 0; border: 0; background: none; color: var(--accent); fon
 body:has(#detail:not([hidden])) #replay { right: 324px; }
 .rp-head { display: flex; align-items: center; gap: 6px; }
 .rp-head .spacer { flex: 1; }
-.rp-head button, .rp-head select { padding: 4px 10px; font-size: 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+.rp-head button, .rp-head select { padding: 4px 10px; font-size: 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 .rp-head .rp-play { min-width: 44px; background: var(--accent); color: #fff; border-color: transparent; font-size: 16px; }
 .rp-follow[aria-pressed="true"] { background: var(--bar); font-weight: 700; box-shadow: inset 0 0 0 1px #8e24aa; }
 .rp-close { font-size: 18px; line-height: 1; }

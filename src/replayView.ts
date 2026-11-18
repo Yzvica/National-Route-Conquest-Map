@@ -101,7 +101,9 @@ export function openReplay(opts: ReplayOptions) {
   const el = document.createElement("div");
   el.className = "rp-marker";
   el.innerHTML = `<svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="${COLORS.speed}" stroke="#fff" stroke-width="3"/><path class="rp-arrow" d="M16 7 L22.5 22 L16 18.5 L9.5 22 Z" fill="#fff"/><circle class="rp-dot" cx="16" cy="16" r="3.5" fill="#fff"/></svg>`;
-  const marker = new maplibregl.Marker({ element: el, rotationAlignment: "map", pitchAlignment: "map" }).setLngLat([d.lon[0], d.lat[0]]).addTo(map);
+  // 追尾中は丸が地図の真ん中に来るが、真ん中が 196.5px のように半端だと、整数に丸める既定の置き方では
+  // 196 と 197 を行ったり来たりして丸がブルブル震える(iPhone の幅 393px など)。丸めずに置く
+  const marker = new maplibregl.Marker({ element: el, rotationAlignment: "map", pitchAlignment: "map", subpixelPositioning: true }).setLngLat([d.lon[0], d.lat[0]]).addTo(map);
 
   st = {
     opts,
