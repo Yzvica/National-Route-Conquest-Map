@@ -200,6 +200,15 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 
   止めるときは `tailscale serve reset`。iPhone では Safari の設定で位置情報を許可してください。
 
+## ナビ・コース(Google マップに送る)
+
+- 国道タブの「🧭 ナビ・コース」で、地図を押して出発 → 通りたい道 → 到着 の順に点を置くと、道筋を作って Google マップのナビ用リンク(経由地 9 個ずつ)にします。
+- **道の選び方**: 「国道だけ」/「国道 → 都道府県道」(都道府県道は主要地方道 1.25 倍・一般県道 1.5 倍の長さとみなして国道を優先)/「国道 → 都道府県道 → 一般道」(データの道の切れ目どうしや、道から 80m 以上離れた点を、Google マップに道を任せる区間=点線でつなぐ)。都道府県道を使うときは、範囲にかかる都道府県のファイルを読みます。
+- **Google で確かめる**: 各リンクを MiniPC 経由で Google の Routes API(Compute Routes)に問い合わせ、Google が引く道(灰色)と、道筋から外れる所(赤)を出します。「外れた所に経由地を足す」で外れた区間の真ん中に経由地を足して作り直せます(一般道の区間で外れるのは数えません)。
+  - Google Cloud で **Routes API** を有効にし、キーの「API の制限」に Routes API も足してください。
+  - 料金の安い Essentials の使い方(経由地 10 個まで・渋滞を見ない)だけで問い合わせます。無料枠は月 1 万回。`data\google-maps.json` の `routesDailyLimit`(既定 100)・`routesMonthlyLimit`(既定 3000)を超えると問い合わせません。回数は `/api/gmaps/status` と保守ページで見られます。
+- **コース**: 名前を付けて保存すると MiniPC の `data/navi-courses.json` に入り(`GET|POST /api/navi/courses`、`DELETE /api/navi/courses?name=`)、ほかの端末からも開けます。足した経由地も一緒に保存します。MiniPC につながらないときはその端末のブラウザに保存します。
+
 ## 旅の記録(電車・飛行機など)
 
 - iPhone の走行ロガーで「電車・飛行機・同乗・その他」を選んで記録した移動(生データの保存先の `trips\<走行ID>`)を、地図に別の線で出します。**国道などの制覇の判定には使いません**(見るだけ)。

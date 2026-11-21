@@ -1298,6 +1298,50 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ---- ナビのコース(data/navi-courses.json) ----
+const COURSES = join(dirname(RECORD), "navi-courses.json");
+const NAVI_MODES = ["kokudo", "pref", "free"];
+
+export function loadCourses() {
+  try {
+    const list = JSON.parse(readFileSync(COURSES, "utf8"));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCourses(list) {
+  mkdirSync(dirname(COURSES), { recursive: true });
+  writeFileSync(COURSES, JSON.stringify(list, null, 1));
+}
+
+/** 同じ名前があれば置き換える。新しく保存したものが先頭 */
+export function saveCourse(body) {
+  const name = String(body?.name ?? "").trim().slice(0, 60);
+  const pts = (v) =>
+    Array.isArray(v)
+      ? v
+          .map((p) => ({ lon: Number(p?.lon), lat: Number(p?.lat) }))
+          .filter((p) => Number.isFinite(p.lon) && Number.isFinite(p.lat) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180)
+      : [];
+  const points = pts(body?.points);
+  if (!name || points.length < 2 || points.length > 200) return null;
+  const mode = NAVI_MODES.includes(body?.mode) ? body.mode : "kokudo";
+  // Google が道筋から外れた所に足した経由地
+  const extra = pts(body?.extra).slice(0, 100);
+  const list = loadCourses().filter((c) => c.name !== name);
+  list.unshift({ name, points, mode, extra, savedAt: new Date().toISOString() });
+  writeCourses(list);
+  return list;
+}
+
+export function deleteCourse(name) {
+  const list = loadCourses().filter((c) => c.name !== name);
+  writeCourses(list);
+  return list;
+}
+
 export function createApp() {
   const gmaps = createGmaps(dirname(RECORD));
   return createServer(async (req, res) => {
@@ -1305,6 +1349,28 @@ export function createApp() {
     try {
       // Google マップの背景(キーは data/google-maps.json。server/gmaps.mjs)
       if (url.pathname === "/api/gmaps/status") return json(res, 200, gmaps.status());
+      // ナビのリンクを Google(Routes API)で確かめる
+      if (url.pathname === "/api/gmaps/route") {
+        if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return json(res, 400, { error: "bad json" });
+        }
+        const [code, out] = await gmaps.route(body);
+        return json(res, code, out);
+      }
+      // ナビのコース(名前を付けて保存した点の並び)
+      if (url.pathname === "/api/navi/courses") {
+        if (req.method === "GET") return json(res, 200, loadCourses());
+        if (req.method === "POST") {
+          const list = saveCourse(JSON.parse(await readBody(req)));
+          return list ? json(res, 200, list) : json(res, 400, { error: "名前と2つ以上の点を入れてください" });
+        }
+        if (req.method === "DELETE") return json(res, 200, deleteCourse(url.searchParams.get("name") ?? ""));
+        return json(res, 405, { error: "method not allowed" });
+      }
       // 保守用の状態まとめ(server/health.mjs)
       if (url.pathname === "/api/health" || url.pathname === "/health") {
         const h = collectHealth({

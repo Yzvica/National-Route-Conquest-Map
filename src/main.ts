@@ -1089,10 +1089,10 @@ map.once("idle", () => {
   if (mobile.matches) document.querySelector(".maplibregl-ctrl-attrib.maplibregl-compact-show")?.classList.remove("maplibregl-compact-show");
 });
 
-// 国道ナビ: 地図で点を選ぶと、国道だけを通る Google マップのナビ用リンクを作る
+// ナビ・コース: 地図で点を選ぶと、国道(・都道府県道・一般道)を通る Google マップのナビ用リンクを作る
 $("navi-open").addEventListener("click", () => {
   if (mobile.matches) setMapOnly(true);
-  openNavi({ map, kokudo: () => datasets.kokudo, routeName: (ref) => `国道${ref}号`, toast });
+  openNavi({ map, kokudo: () => datasets.kokudo, prefIndex: () => prefIndex, loadPref: loadPrefFile, prefName, toast });
 });
 
 $("route-filter").addEventListener("input", render);

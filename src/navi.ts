@@ -1,6 +1,8 @@
-// 国道だけを通るルートを Google マップのナビに送るためのリンクを作る。
-// Google マップは「速い道」を選ぶので、県道の近道を選ばせないよう、国道の上に経由地を細かく置く。
-//   1. 地図で選んだ点(出発・通りたい国道の上・到着)を、国道のデータだけでつないだ道筋にする
+// 国道(と都道府県道)を通るルートを Google マップのナビに送るためのリンクを作る。
+// Google マップは「速い道」を選ぶので、ほかの道の近道を選ばせないよう、道筋の上に経由地を細かく置く。
+//   1. 地図で選んだ点(出発・通りたい道の上・到着)を、国道(と都道府県道)のデータでつないだ道筋にする。
+//      都道府県道は少し遠回りとみなして国道を優先する。「一般道も使う」ときは、データの道の切れ目どうしや、
+//      道から離れた点を「一般道」(手持ちのデータにない道。そこは Google マップに道を任せる)でつなぐ
 //   2. 道筋の上に経由地を置く。曲がりくねって近道ができやすいところほど細かく、
 //      国道を乗り換えたところ(分岐点)の少し先には必ず置く(手前で県道へ逃げにくくする)
 //   3. Google マップの URL は経由地が最大9個(スマホのブラウザは3個)なので、区間ごとに複数のリンクに分ける
@@ -19,7 +21,7 @@ export interface Waypoint {
   lat: number;
   /** 道筋の最初からの距離(m) */
   at: number;
-  /** その場所の国道番号 */
+  /** その場所の国道番号(都道府県道は "4-22"、一般道は "*") */
   routes: string[];
 }
 
@@ -44,6 +46,10 @@ export interface NaviPlan {
   /** 通る国道(順番) */
   routes: string[];
   links: NaviLink[];
+  /** 道筋の各点の、最初からの距離(m) */
+  acc: number[];
+  /** 一般道(Google に任せる)の区間(道筋の最初からの距離 m)。長さは直線で数えている */
+  freeSpans: { from: number; to: number }[];
 }
 
 export interface NaviOptions {
@@ -53,6 +59,36 @@ export interface NaviOptions {
   ratio?: number;
   /** 経由地の間の最大距離(m) */
   maxGap?: number;
+  /** データの道の切れ目や、道から離れた点を一般道でつなぐ */
+  free?: boolean;
+  /** 必ず経由地を置く場所(道筋の上か、そのそば 300m 以内)。Google が道筋を通らなかったときに足す */
+  extra?: NaviPoint[];
+}
+
+/** 一般道の印(路線のかわり) */
+export const FREE_REF = "*";
+
+/** 都道府県道を通るときの重み(この倍の長さの国道と同じとみなす)。国道を優先させる */
+export const PREF_WEIGHT = { major: 1.25, general: 1.5 };
+/** 区間の重み: 国道 1、主要地方道・一般都道府県道は PREF_WEIGHT */
+export function roadWeight(s: Segment): number {
+  if (s.cats.includes("general")) return PREF_WEIGHT.general;
+  if (s.cats.includes("major")) return PREF_WEIGHT.major;
+  return 1;
+}
+
+/** 路線の並び: 国道(番号順) → 都道府県道 → 一般道 */
+export function compareRef(a: string, b: string): number {
+  const rank = (r: string) => (r === FREE_REF ? 2 : r.includes("-") ? 1 : 0);
+  const ra = rank(a);
+  const rb = rank(b);
+  if (ra !== rb) return ra - rb;
+  if (ra === 1) {
+    const [ca, na] = a.split("-").map(Number);
+    const [cb, nb] = b.split("-").map(Number);
+    return ca - cb || na - nb;
+  }
+  return Number(a) - Number(b);
 }
 
 export type NaviResult = NaviPlan | { error: string; leg?: number };
@@ -70,14 +106,31 @@ const STEP = 100;
 const LINK_DIST = 120;
 /** そのつなぎを使うときの上乗せ(m)。つながっている道があればそちらを選ぶように */
 const LINK_COST = 300;
+/** 一般道でつなぐ距離の上限(m、直線) */
+const FREE_RADIUS = 2500;
+/** 一般道の重み: 直線距離のこの倍 + FREE_COST。実際の道は直線の1.3倍くらいなので、都道府県道よりさらに避ける */
+const FREE_FACTOR = 2.5;
+const FREE_COST = 500;
+/** 選んだ点がデータの道からこれより離れていたら、一般道の上の点とみなす(一般道も使うとき) */
+const OFF_ROAD = 80;
+/** 辺の区間の番号: 近くの別の道とのつなぎ / 一般道 */
+const SEG_LINK = -1;
+const SEG_FREE = -2;
 /** 橋・高架・トンネルの上は経由地にしない(下の道や近くの道に付いてしまうため)。この長さ未満の区間は橋などとみなす */
 const SAFE_LEN = 250;
 
 interface Edge {
   to: number;
   w: number;
-  /** 区間(つなぎの辺は -1) */
+  /** 区間(つなぎの辺は -1、一般道は -2) */
   seg: number;
+}
+
+export interface RoadGraphOptions {
+  /** 区間の重み(長さに掛ける)。既定は roadWeight */
+  weight?: (s: Segment) => number;
+  /** データの道の切れ目どうしを一般道でつなぐ */
+  free?: boolean;
 }
 
 /** 国道のデータから作った道のつながり */
@@ -87,9 +140,17 @@ export class RoadGraph {
   readonly adj: Edge[][] = [];
   private readonly ids = new Map<string, number>();
   private readonly nodeRoutes: Set<string>[] = [];
+  /** 一時的に足した点・辺(planNavi の間だけ。終わったら戻す) */
+  private tempEdges: number[] = [];
+  private baseSize = 0;
 
-  constructor(readonly segments: Segment[]) {
+  constructor(
+    readonly segments: Segment[],
+    opts: RoadGraphOptions = {},
+  ) {
+    const weight = opts.weight ?? roadWeight;
     segments.forEach((s, si) => {
+      const wk = weight(s);
       const c = s.coords;
       // 上下線が別の道は一方通行(点の並びの向きに進む)
       const oneway = !!s.pair;
@@ -100,13 +161,130 @@ export class RoadGraph {
         for (let k = 1; k <= n; k++) {
           const p: LonLat = k === n ? c[i + 1] : [c[i][0] + ((c[i + 1][0] - c[i][0]) * k) / n, c[i][1] + ((c[i + 1][1] - c[i][1]) * k) / n];
           const cur = this.node(p, s.routes);
-          this.adj[prev].push({ to: cur, w: d / n, seg: si });
-          if (!oneway) this.adj[cur].push({ to: prev, w: d / n, seg: si });
+          this.adj[prev].push({ to: cur, w: (d / n) * wk, seg: si });
+          if (!oneway) this.adj[cur].push({ to: prev, w: (d / n) * wk, seg: si });
           prev = cur;
         }
       }
     });
     this.linkNearby();
+    if (opts.free) this.linkEnds();
+    this.baseSize = this.size;
+  }
+
+  /** 道筋を作るときに足した点・辺を消す */
+  resetTemp() {
+    while (this.tempEdges.length) this.adj[this.tempEdges.pop()!].pop();
+    this.lon.length = this.lat.length = this.adj.length = this.nodeRoutes.length = this.baseSize;
+  }
+
+  private addFree(a: number, b: number, temp: boolean) {
+    const w = dist(this.pos(a), this.pos(b)) * FREE_FACTOR + FREE_COST;
+    this.adj[a].push({ to: b, w, seg: SEG_FREE });
+    this.adj[b].push({ to: a, w, seg: SEG_FREE });
+    if (temp) this.tempEdges.push(a, b);
+  }
+
+  /** 点のまわり radius m 以内の点を、道(路線の組み合わせ)とつながりのかたまりごとに、近い順に max 個 */
+  private nearbyGroups(p: LonLat, radius: number, max: number, skip: (j: number) => boolean, comp?: Int32Array): number[] {
+    const best = new Map<string, [number, number]>();
+    const cell = 0.01;
+    const g = this.coarse ?? (this.coarse = this.grid(cell));
+    const rx = Math.ceil(radius / (111320 * Math.cos(p[1] * RAD) * cell));
+    const ry = Math.ceil(radius / (110950 * cell));
+    const gx = Math.floor(p[0] / cell);
+    const gy = Math.floor(p[1] / cell);
+    for (let dx = -rx; dx <= rx; dx++)
+      for (let dy = -ry; dy <= ry; dy++)
+        for (const j of g.get(`${gx + dx},${gy + dy}`) ?? []) {
+          if (skip(j)) continue;
+          const d = dist(p, this.pos(j));
+          if (d > radius) continue;
+          const key = `${comp ? comp[j] : 0}|${[...this.nodeRoutes[j]].sort().join(",")}`;
+          const cur = best.get(key);
+          if (!cur || d < cur[1]) best.set(key, [j, d]);
+        }
+    return [...best.values()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, max)
+      .map(([j]) => j);
+  }
+  private coarse?: Map<string, number[]>;
+
+  /** つながりのかたまり(向きは見ない)の番号 */
+  private components(): Int32Array {
+    const comp = new Int32Array(this.size).fill(-1);
+    const und: number[][] = this.adj.map(() => []);
+    this.adj.forEach((es, i) => {
+      for (const e of es) {
+        und[i].push(e.to);
+        und[e.to].push(i);
+      }
+    });
+    let c = 0;
+    for (let s = 0; s < this.size; s++) {
+      if (comp[s] >= 0) continue;
+      const stack = [s];
+      comp[s] = c;
+      while (stack.length) {
+        const u = stack.pop()!;
+        for (const v of und[u])
+          if (comp[v] < 0) {
+            comp[v] = c;
+            stack.push(v);
+          }
+      }
+      c++;
+    }
+    return comp;
+  }
+
+  /**
+   * データの道の切れ目(行き止まりの点)から、近くの別の道へ一般道でつなぐ。
+   * 都道府県道のデータは市町村道との交差点などで切れていることが多く、その先は Google に任せる
+   */
+  private linkEnds() {
+    const comp = this.components();
+    const nb: Set<number>[] = this.adj.map(() => new Set());
+    this.adj.forEach((es, i) => {
+      for (const e of es)
+        if (e.seg >= 0) {
+          nb[i].add(e.to);
+          nb[e.to].add(i);
+        }
+    });
+    const ends: number[] = [];
+    for (let i = 0; i < this.size; i++) if (nb[i].size <= 1) ends.push(i);
+    for (const i of ends) {
+      const p = this.pos(i);
+      // 同じかたまりの同じ道(戻るだけ)はつながない
+      const near = this.nearbyGroups(p, FREE_RADIUS, 6, (j) => j === i || (comp[j] === comp[i] && shares(this.nodeRoutes[i], this.nodeRoutes[j])), comp);
+      for (const j of near) this.addFree(i, j, false);
+    }
+  }
+
+  /** 道から離れた点を、一般道で近くの道につないだ点として足す(道筋を作る間だけ) */
+  addOffRoad(p: NaviPoint): number {
+    const q: LonLat = [p.lon, p.lat];
+    const i = this.lon.length;
+    this.lon.push(p.lon);
+    this.lat.push(p.lat);
+    this.adj.push([]);
+    this.nodeRoutes.push(new Set());
+    let near = this.nearbyGroups(q, FREE_RADIUS, 8, (j) => j >= this.baseSize);
+    if (!near.length) near = this.nearest(p, 0, Infinity).slice(0, 1);
+    for (const j of near) this.addFree(i, j, true);
+    return i;
+  }
+
+  /** 2つの点を一般道でじかにつなぐ(道筋を作る間だけ。データの道でつながらないときの最後の手段) */
+  addFreeLink(a: number, b: number) {
+    this.addFree(a, b, true);
+  }
+
+  /** その点が、一時的に足した点(道から離れた点)か */
+  isTemp(i: number) {
+    return i >= this.baseSize;
   }
 
   get size() {
@@ -175,20 +353,27 @@ export class RoadGraph {
     const q: LonLat = [p.lon, p.lat];
     let dmin = Infinity;
     const ds: number[] = new Array(this.size);
-    for (let i = 0; i < this.size; i++) {
+    const n = this.baseSize || this.size;
+    for (let i = 0; i < n; i++) {
       ds[i] = dist(q, this.pos(i));
       if (ds[i] < dmin) dmin = ds[i];
     }
     if (dmin > within) return [];
     const out: number[] = [];
-    for (let i = 0; i < this.size; i++) if (ds[i] <= dmin + slack) out.push(i);
+    for (let i = 0; i < n; i++) if (ds[i] <= dmin + slack) out.push(i);
     return out;
+  }
+
+  /** 点からいちばん近い道までの距離(m) */
+  distanceTo(p: NaviPoint): number {
+    const n = this.nearest(p, 0, Infinity);
+    return n.length ? dist([p.lon, p.lat], this.pos(n[0])) : Infinity;
   }
 
   /** 点のいちばん近くの国道(画面の表示用) */
   routesNear(p: NaviPoint): string[] {
     const n = this.nearest(p, 0);
-    return n.length ? [...this.nodeRoutes[n[0]]].sort((a, b) => Number(a) - Number(b)) : [];
+    return n.length ? [...this.nodeRoutes[n[0]]].sort(compareRef) : [];
   }
 
   /** いくつかの点からいくつかの点への最短の道筋(点の番号の列と、通る辺) */
@@ -278,9 +463,18 @@ class Heap {
   }
 }
 
-/** 点の並びを、国道だけでつないだ道筋にして経由地とリンクを作る */
+/** 点の並びを、国道(と都道府県道・一般道)でつないだ道筋にして経由地とリンクを作る */
 export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions = {}): NaviResult {
   if (points.length < 2) return { error: "出発と到着の2か所以上を選んでください" };
+  try {
+    return planInner(graph, points, opts);
+  } finally {
+    graph.resetTemp();
+  }
+}
+
+function planInner(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions): NaviResult {
+  const free = !!opts.free;
   const perLink = Math.max(1, Math.min(9, opts.perLink ?? 9));
   const ratio = opts.ratio ?? 1.15;
   const maxGap = opts.maxGap ?? 7000;
@@ -290,18 +484,28 @@ export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOption
   const edges: Edge[] = [];
   /** 選んだ点(途中)に着いた位置(nodes の添字) */
   const picked: number[] = [];
-  let from = graph.nearest(points[0]);
-  if (!from.length) return { error: "1番目の点の近くに国道がありません", leg: 0 };
+  /** 道から離れた点(その場所にそのまま経由地を置く) */
+  const exact = new Set<number>();
+  // 一般道も使うときは、道から離れた点はその場所の点にして、一般道で近くの道につなぐ
+  const snap = (p: NaviPoint): number[] => (free && graph.distanceTo(p) > OFF_ROAD ? [graph.addOffRoad(p)] : graph.nearest(p));
+  let from = snap(points[0]);
+  if (!from.length) return { error: "1番目の点の近くに道がありません", leg: 0 };
   for (let i = 1; i < points.length; i++) {
-    const to = graph.nearest(points[i]);
-    if (!to.length) return { error: `${i + 1}番目の点の近くに国道がありません`, leg: i };
-    const r = graph.shortest(from, to);
-    if (!r) return { error: `${i}番目から${i + 1}番目の点まで、国道だけではつながりませんでした(上下線の向きや、データの切れ目のため)`, leg: i };
+    const to = snap(points[i]);
+    if (!to.length) return { error: `${i + 1}番目の点の近くに道がありません`, leg: i };
+    let r = graph.shortest(from, to);
+    if (!r && free) {
+      // データの道でつながらなければ、その区間はまるごと Google に任せる
+      graph.addFreeLink(from[0], to[0]);
+      r = graph.shortest(from, to);
+    }
+    if (!r) return { error: `${i}番目から${i + 1}番目の点まで、データの道だけではつながりませんでした(上下線の向きや、データの切れ目のため。「一般道も使う」にするとつなげます)`, leg: i };
     if (nodes.length) r.nodes.shift();
     else nodes.push(r.nodes.shift()!);
     nodes.push(...r.nodes);
     edges.push(...r.edges);
     if (i < points.length - 1) picked.push(nodes.length - 1);
+    if (graph.isTemp(nodes[nodes.length - 1])) exact.add(nodes.length - 1);
     from = [nodes[nodes.length - 1]];
   }
   const pos = nodes.map((n) => graph.pos(n));
@@ -311,14 +515,23 @@ export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOption
   if (end < 1) return { error: "出発と到着が同じ場所です" };
 
   // 各点の国道(その点に入る辺の区間。最初の点は出る辺)と、経由地にしてよいか
-  const segAt = (i: number) => edges[Math.max(0, i - 1)]?.seg ?? -1;
+  const segAt = (i: number) => edges[Math.max(0, i - 1)]?.seg ?? SEG_LINK;
+  const routesOfSeg = (s: number) => (s === SEG_FREE ? [FREE_REF] : s >= 0 ? graph.segments[s].routes : null);
   const routesAt = (i: number): string[] => {
     for (let j = i; j >= 0 && j > i - 50; j--) {
-      const s = segAt(j);
-      if (s >= 0) return graph.segments[s].routes;
+      const rs = routesOfSeg(segAt(j));
+      if (rs) return rs;
     }
     return [];
   };
+  // 一般道の区間
+  const freeSpans: { from: number; to: number }[] = [];
+  edges.forEach((e, k) => {
+    if (e.seg !== SEG_FREE) return;
+    const last = freeSpans[freeSpans.length - 1];
+    if (last && last.to === acc[k]) last.to = acc[k + 1];
+    else freeSpans.push({ from: acc[k], to: acc[k + 1] });
+  });
   const safeEdge = (e: Edge | undefined) => {
     if (!e || e.seg < 0) return false;
     const s = graph.segments[e.seg];
@@ -326,6 +539,11 @@ export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOption
   };
   // 点の前後の辺がどちらも安全なら、その点は経由地にしてよい
   const safe = (i: number) => i > 0 && i < end && safeEdge(edges[i - 1]) && safeEdge(edges[i]);
+  /** i から手前 limit m 以内で、経由地にしてよい点 */
+  const backward = (i: number, limit: number) => {
+    for (let j = i; j > 0 && acc[i] - acc[j] <= limit; j--) if (safe(j)) return j;
+    return i;
+  };
   /** i から先 limit m 以内で、経由地にしてよい点 */
   const forward = (i: number, min: number, limit: number) => {
     let first = -1;
@@ -340,22 +558,38 @@ export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOption
   // 2. 必ず置く経由地: 出発の少し先、選んだ点、国道を乗り換えた少し先(400m)
   const must = new Set<number>();
   must.add(forward(0, 200, 800));
-  for (const i of picked) must.add(forward(i, 0, 500));
+  for (const i of picked) must.add(exact.has(i) ? i : forward(i, 0, 500));
+  for (const p of opts.extra ?? []) {
+    const q: LonLat = [p.lon, p.lat];
+    let k = -1;
+    let dk = 300;
+    for (let i = 1; i < end; i++) {
+      const d = dist(q, pos[i]);
+      if (d < dk) {
+        dk = d;
+        k = i;
+      }
+    }
+    if (k > 0) must.add(safe(k) ? k : forward(k, 0, 300));
+  }
+  // 一般道に入る少し手前(そこまではデータの道を通らせる)
+  edges.forEach((e, k) => {
+    if (e.seg === SEG_FREE && k > 0 && edges[k - 1].seg !== SEG_FREE) must.add(backward(k, 300));
+  });
   let cur = new Set(routesAt(1));
   /** 通る国道と、その区間(道筋の最初からの距離 m) */
   const spans: { ref: string; from: number; to: number }[] = [];
   let spanFrom = 0;
   const pushRoute = (rs: Iterable<string>, to: number) => {
-    const r = [...rs].sort((a, b) => Number(a) - Number(b))[0];
+    const r = [...rs].sort(compareRef)[0];
     const last = spans[spans.length - 1];
     if (r && last?.ref === r) last.to = to;
     else if (r) spans.push({ ref: r, from: spanFrom, to });
     spanFrom = to;
   };
   for (let i = 1; i <= end; i++) {
-    const s = edges[i - 1].seg;
-    if (s < 0) continue;
-    const rs = graph.segments[s].routes;
+    const rs = routesOfSeg(edges[i - 1].seg);
+    if (!rs) continue;
     const common = rs.filter((r) => cur.has(r));
     if (common.length) {
       cur = new Set(common);
@@ -363,7 +597,8 @@ export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOption
     }
     pushRoute(cur, acc[i - 1]);
     cur = new Set(rs);
-    must.add(forward(i, 400, 1200));
+    // 一般道に入ったところには置かない(一般道の中は Google に任せる)
+    if (rs[0] !== FREE_REF) must.add(forward(i, 400, 1200));
   }
   pushRoute(cur, acc[end]);
   must.add(end);
@@ -431,7 +666,7 @@ export function planNavi(graph: RoadGraph, points: NaviPoint[], opts: NaviOption
     links.push({ url: googleMapsUrl(ways, dest), from: prevAt, to: dest.at, routes: rs, waypoints: ways, dest });
     prevAt = dest.at;
   }
-  return { path: pos, length: acc[end], waypoints, routes: spans.map((sp) => sp.ref), links };
+  return { path: pos, length: acc[end], waypoints, routes: spans.map((sp) => sp.ref), links, acc, freeSpans };
 }
 
 const round5 = (v: number) => Math.round(v * 1e5) / 1e5;
@@ -461,7 +696,7 @@ export function segmentsIn(segments: Segment[], box: [number, number, number, nu
 /** リンクの一覧を、LINE などに貼れる文字にする */
 export function linksText(plan: NaviPlan, routeName: (ref: string) => string): string {
   const km = (m: number) => (m / 1000).toFixed(1);
-  const lines = [`国道ナビ(${plan.routes.map(routeName).join(" → ")}、約${km(plan.length)}km)`, "前のリンクの目的地に着いたら次のリンクを開く"];
+  const lines = [`ナビ(${plan.routes.map(routeName).join(" → ")}、約${km(plan.length)}km)`, "前のリンクの目的地に着いたら次のリンクを開く"];
   plan.links.forEach((l, i) => {
     lines.push("", `${i + 1}. ${l.routes.map(routeName).join(" → ")}(${km(l.from)}〜${km(l.to)}km)`, l.url);
   });
