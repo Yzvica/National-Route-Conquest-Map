@@ -314,6 +314,7 @@ ${row("天気の取り直し待ち", `${h.weather.pending} 本`)}
 </table>
 <h2>Google マップ</h2><table>
 ${g.enabled ? row("今日 / 今月", `${g.today} / ${g.dailyLimit} ・ ${g.month} / ${g.monthlyLimit} タイル`) : row("状態", "キーが置かれていません")}
+${g.enabled && g.routes ? row("ナビの確かめ(今日 / 今月)", `${g.routes.today} / ${g.routes.dailyLimit} ・ ${g.routes.month} / ${g.routes.monthlyLimit} 回`) : ""}
 </table>
 <h2>国道データ(リリース)</h2><table>
 ${h.release ? Object.entries(h.release).map(([k, v]) => row(k, esc(jst(v)))).join("") : row("状態", "不明")}

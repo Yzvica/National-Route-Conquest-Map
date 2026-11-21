@@ -434,7 +434,7 @@ body:has(#detail:not([hidden])) #replay { right: 324px; }
   .rp-body:has(.rp-gcircle) .rp-chart { margin-right: 88px; width: auto; }
 }
 
-/* ---- 国道ナビ(Google マップに送る) ---- */
+/* ---- ナビ・コース(Google マップに送る) ---- */
 #navi-open { display: block; width: 100%; margin: 0 0 8px; }
 .navi {
   position: absolute; top: 12px; left: 12px; z-index: 6; width: 320px; max-width: calc(100% - 24px);
@@ -470,3 +470,9 @@ body:has(#detail:not([hidden])) #replay { right: 324px; }
   .navi { top: auto; bottom: 12px; left: 8px; right: 8px; width: auto; max-width: none; max-height: 45%; }
 }
 .navi-help summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 6px; }
+.navi-ok { color: #188038; }
+.navi-per { display: block; margin: 6px 0; }
+.navi-courses { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 4px; }
+.navi-courses summary { cursor: pointer; font-weight: 700; margin: 4px 0; }
+.navi-courses select { flex: 1; min-width: 0; }
+.navi-courses input[type="text"] { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 14px; }

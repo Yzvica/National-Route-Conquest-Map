@@ -593,3 +593,36 @@ describe("走行を忘れる(DELETE /api/rawlog/session)", () => {
     expect((await fetch(`${root}/rawlog/session?session=20000101-000000`, { method: "DELETE" })).status).toBe(404);
   });
 });
+
+describe("ナビのコース(/api/navi/courses)と Google での確かめ(/api/gmaps/route)", () => {
+  it("保存・同じ名前は置き換え・消す。キーがなければ確かめは 404、経由地 10 個以上は 400", async () => {
+    delete process.env.GOOGLE_MAPS_API_KEY;
+    const app = createApp().listen(0);
+    await new Promise((ok) => app.once("listening", ok));
+    const root = `http://localhost:${app.address().port}/api`;
+    const base = `${root}/navi/courses`;
+    try {
+      const post = (b) => fetch(base, { method: "POST", body: JSON.stringify(b) });
+      const pts = [{ lon: 140.88, lat: 38.26 }, { lon: 140.72, lat: 38.23 }];
+      expect((await post({ name: "秋保", points: pts.slice(0, 1) })).status).toBe(400);
+      expect((await post({ name: "", points: pts })).status).toBe(400);
+      await post({ name: "秋保", points: pts, mode: "pref" });
+      await post({ name: "松島", points: pts, mode: "bad" });
+      let list = await (await post({ name: "秋保", points: [...pts, { lon: 140.6, lat: 38.2 }], mode: "free", extra: [{ lon: 140.8, lat: 38.25 }, { lon: "x" }] })).json();
+      expect(list.map((c) => [c.name, c.mode, c.points.length])).toEqual([
+        ["秋保", "free", 3],
+        ["松島", "kokudo", 2],
+      ]);
+      expect(list[0].extra).toEqual([{ lon: 140.8, lat: 38.25 }]);
+      list = await (await fetch(`${base}?name=${encodeURIComponent("松島")}`, { method: "DELETE" })).json();
+      expect((await (await fetch(base)).json()).map((c) => c.name)).toEqual(["秋保"]);
+
+      const route = (b) => fetch(`${root}/gmaps/route`, { method: "POST", body: JSON.stringify(b) });
+      const p = { lat: 38.26, lon: 140.88 };
+      expect((await route({ origin: p, destination: p, waypoints: [] })).status).toBe(404);
+      expect((await fetch(`${root}/gmaps/route`)).status).toBe(405);
+    } finally {
+      app.close();
+    }
+  });
+});
