@@ -4,16 +4,18 @@
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource } from "maplibre-gl";
 import { muteRoadClicks } from "./map";
-import { FREE_REF, RoadGraph, bboxOf, linksText, planNavi, segmentsIn, type NaviPlan, type NaviPoint } from "./navi";
+import { EXP_PREFIX, FREE_REF, RoadGraph, bboxOf, expBboxOf, isExpRef, linksText, planNavi, segmentsIn, type ExpresswayExtras, type NaviPlan, type NaviPoint } from "./navi";
 import { compareRoute, decodePolyline, fixPoint, originOf, type RouteCheck } from "./naviCheck";
 import { prefRouteLabel } from "./prefroads";
 import { splitLoaderOf } from "./splitData";
-import type { PrefRoadIndex, RouteData } from "./types";
+import type { LonLat, PrefRoadIndex, RouteData, Segment } from "./types";
 
 export interface NaviContext {
   map: maplibregl.Map;
   /** 国道のデータ(まだ読んでいなければ undefined) */
   kokudo: () => RouteData | undefined;
+  /** 高速道路のデータ(まだ読んでいなければ undefined) */
+  expressway: () => RouteData | undefined;
   /** 都道府県道の一覧(読み込み前は undefined、データがなければ null) */
   prefIndex: () => PrefRoadIndex | null | undefined;
   loadPref: (code: number) => Promise<RouteData | undefined>;
@@ -21,12 +23,13 @@ export interface NaviContext {
   toast: (lines: string[]) => void;
 }
 
-/** 道の選び方: 国道だけ / 国道→都道府県道 / 国道→都道府県道→一般道 */
-export type NaviMode = "kokudo" | "pref" | "free";
+/** 道の選び方: 国道だけ / 国道→都道府県道 / 国道→都道府県道→一般道 / それに高速道路も */
+export type NaviMode = "kokudo" | "pref" | "free" | "exp";
 const MODE_LABELS: Record<NaviMode, string> = {
   kokudo: "国道だけ",
   pref: "国道 → 都道府県道",
   free: "国道 → 都道府県道 → 一般道",
+  exp: "高速も使う(+ 国道 → 都道府県道 → 一般道)",
 };
 
 interface Course {
@@ -87,11 +90,12 @@ const writeJson = (key: string, v: unknown) => {
 const perLink = () => readJson<number>(PER_LINK_KEY, 9);
 const mode = (): NaviMode => {
   const m = readJson<string>(MODE_KEY, "kokudo");
-  return m === "pref" || m === "free" ? m : "kokudo";
+  return m === "pref" || m === "free" || m === "exp" ? m : "kokudo";
 };
 
 function routeName(ref: string): string {
   if (ref === FREE_REF) return "一般道";
+  if (isExpRef(ref)) return ref.slice(EXP_PREFIX.length);
   if (ref.includes("-")) return prefRouteLabel(ref, prefNames.get(ref), ctx?.prefName ?? String);
   return `国道${ref}号`;
 }
@@ -193,6 +197,29 @@ function prefsInBox(idx: PrefRoadIndex, box: [number, number, number, number]): 
     .map(([code]) => Number(code));
 }
 
+/** 高速道路の区間を、路線に EXP_PREFIX を付けた区間にしたもの(作り直さないよう覚えておく) */
+const expSegCache = new WeakMap<Segment, Segment>();
+const expSegment = (s: Segment): Segment => {
+  let e = expSegCache.get(s);
+  if (!e) expSegCache.set(s, (e = { ...s, routes: s.routes.map((r) => EXP_PREFIX + r) }));
+  return e;
+};
+
+/** 範囲にかかる高速道路の区間と、ランプなど */
+async function expresswayIn(box: [number, number, number, number]): Promise<{ segs: Segment[]; extras: ExpresswayExtras }> {
+  const ex = ctx?.expressway();
+  if (!ex) throw new Error("高速道路のデータを読み込み中です。少しお待ちください");
+  const loader = splitLoaderOf(ex);
+  if (loader) await loader.load(loader.cellsIn(...box));
+  const [w, s, e, n] = box;
+  const inBox = ([x, y]: LonLat) => x >= w && x <= e && y >= s && y <= n;
+  const lines = (ls: LonLat[][] | undefined) => (ls ?? []).filter((c) => c.some(inBox));
+  return {
+    segs: segmentsIn(ex.segments, box).map(expSegment),
+    extras: { ramps: (ex.ramps ?? []).filter((r) => r.c.some(inBox)), jct: lines(ex.jct), uncounted: lines(ex.uncounted), access: (ex.access ?? []).filter(inBox) },
+  };
+}
+
 async function graphFor(data: RouteData, m: NaviMode): Promise<RoadGraph> {
   const box = bboxOf(points);
   const key = box.map((v) => v.toFixed(2)).join(",");
@@ -204,7 +231,16 @@ async function graphFor(data: RouteData, m: NaviMode): Promise<RoadGraph> {
   const loader = splitLoaderOf(data);
   if (loader) await loader.load(loader.cellsIn(...box));
   // 点線国道(歩道・山道のことがある)・海上区間・旧道は通らない
-  const segs = segmentsIn(data.segments, box).filter((s) => !s.cats.some((c) => c === "dotted" || c === "ferry" || c === "old"));
+  let segs = segmentsIn(data.segments, box).filter((s) => !s.cats.some((c) => c === "dotted" || c === "ferry" || c === "old"));
+  let expressway: ExpresswayExtras | undefined;
+  if (m === "exp") {
+    const ex = await expresswayIn(expBboxOf(points));
+    // 国道の自動車専用道路(高速道路のデータにもある同じ道)は、高速道路として扱う(ランプでだけ乗り降りする)
+    const ids = new Set(ex.segs.map((s) => s.id));
+    segs = segs.filter((s) => !ids.has(s.id));
+    segs.push(...ex.segs);
+    expressway = ex.extras;
+  }
   if (m !== "kokudo" && ctx) {
     const idx = ctx.prefIndex();
     if (!idx) throw new Error(idx === null ? "都道府県道のデータがまだありません(国道だけで作れます)" : "都道府県道の一覧を読み込み中です。少しお待ちください");
@@ -221,7 +257,7 @@ async function graphFor(data: RouteData, m: NaviMode): Promise<RoadGraph> {
         }
     }
   }
-  const graph = new RoadGraph(segs, { free: m === "free" });
+  const graph = new RoadGraph(segs, { free: m === "free" || m === "exp", expressway });
   graphCache = { data, box: key, mode: m, graph };
   return graph;
 }
@@ -248,8 +284,9 @@ async function compute() {
   try {
     const m = mode();
     const graph = await graphFor(data, m);
-    labels = points.map((p) => (m === "free" && graph.distanceTo(p) > 80 ? "一般道" : graph.routesNear(p).map(routeName).join(" / ")));
-    const r = planNavi(graph, points, { perLink: perLink(), free: m === "free", extra });
+    const free = m === "free" || m === "exp";
+    labels = points.map((p) => (free && graph.distanceTo(p) > 80 ? "一般道" : graph.routesNear(p).map(routeName).join(" / ")));
+    const r = planNavi(graph, points, { perLink: perLink(), free, extra });
     if ("error" in r) {
       plan = null;
       message = r.error;
@@ -331,7 +368,7 @@ function drawPlan(p: NaviPlan | null) {
     id: "navi-path",
     type: "line",
     source: "navi-path",
-    filter: ["==", ["get", "free"], 0],
+    filter: ["==", ["get", "kind"], 0],
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#7b1fa2", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 3, 14, 8], "line-opacity": 0.75 },
   });
@@ -340,8 +377,17 @@ function drawPlan(p: NaviPlan | null) {
     id: "navi-path-free",
     type: "line",
     source: "navi-path",
-    filter: ["==", ["get", "free"], 1],
+    filter: ["==", ["get", "kind"], 1],
     paint: { "line-color": "#7b1fa2", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 2, 14, 5], "line-opacity": 0.75, "line-dasharray": [1.5, 1.5] },
+  });
+  // 高速道路(Google に任せる区間)は緑
+  map.addLayer({
+    id: "navi-path-exp",
+    type: "line",
+    source: "navi-path",
+    filter: ["==", ["get", "kind"], 2],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#0b8043", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 3, 14, 8], "line-opacity": 0.75 },
   });
   // Google が引いた道(灰色)と、道筋から外れた所(赤)
   map.addLayer({
@@ -378,18 +424,18 @@ function keepOnTop() {
   const map = ctx.map;
   const layers = map.getStyle()?.layers ?? [];
   if (!map.getLayer("navi-wp") || layers[layers.length - 1]?.id === "navi-wp") return;
-  for (const id of ["navi-path", "navi-path-free", "navi-google", "navi-wp"]) map.moveLayer(id);
+  for (const id of ["navi-path", "navi-path-free", "navi-path-exp", "navi-google", "navi-wp"]) map.moveLayer(id);
 }
 
-/** 道筋を、データの道の部分と一般道の部分に分けた線 */
+/** 道筋を、データの道(kind 0)・一般道(1)・高速道路(2)の部分に分けた線 */
 function pathFeatures(p: NaviPlan) {
-  const isFree = (i: number) => p.freeSpans.some((f) => p.acc[i] >= f.from - 0.01 && p.acc[i + 1] <= f.to + 0.01);
-  const out: { type: "Feature"; properties: { free: number }; geometry: { type: "LineString"; coordinates: [number, number][] } }[] = [];
+  const inSpans = (spans: { from: number; to: number }[], i: number) => spans.some((f) => p.acc[i] >= f.from - 0.01 && p.acc[i + 1] <= f.to + 0.01);
+  const out: { type: "Feature"; properties: { kind: number }; geometry: { type: "LineString"; coordinates: [number, number][] } }[] = [];
   for (let i = 0; i + 1 < p.path.length; i++) {
-    const free = isFree(i) ? 1 : 0;
+    const kind = inSpans(p.freeSpans, i) ? 1 : inSpans(p.expSpans, i) ? 2 : 0;
     const last = out[out.length - 1];
-    if (last && last.properties.free === free) last.geometry.coordinates.push(p.path[i + 1]);
-    else out.push({ type: "Feature", properties: { free }, geometry: { type: "LineString", coordinates: [p.path[i], p.path[i + 1]] } });
+    if (last && last.properties.kind === kind) last.geometry.coordinates.push(p.path[i + 1]);
+    else out.push({ type: "Feature", properties: { kind }, geometry: { type: "LineString", coordinates: [p.path[i], p.path[i + 1]] } });
   }
   return out;
 }
@@ -414,11 +460,13 @@ function render() {
   else if (message) result = `<p class="navi-error">${esc(message)}</p>`;
   else if (plan) {
     const freeLen = plan.freeSpans.reduce((s, f) => s + f.to - f.from, 0);
+    const expLen = plan.expSpans.reduce((s, f) => s + f.to - f.from, 0);
     const allChecked = checks.length === plan.links.length && checks.every((c) => c && "line" in c);
     const offCount = checks.reduce((s, c) => s + (c && "offs" in c ? c.offs.length : 0), 0);
     result =
       `<p class="navi-summary">${plan.routes.map((r) => esc(name(r))).join(" → ")}<br>` +
       `約${kmText(plan.length)}km・経由地 ${plan.waypoints.length - 1} 個・リンク ${plan.links.length} 本` +
+      (expLen > 0 ? `<br><span class="muted">緑は高速道路(約${kmText(expLen)}km。経由地は置かず、どの高速道路を通るかは Google マップに任せる)</span>` : "") +
       (freeLen > 0 ? `<br><span class="muted">点線は一般道(Google マップに道を任せる。長さは直線で約${kmText(freeLen)}km)</span>` : "") +
       `</p>` +
       `<ol class="navi-links">` +
@@ -462,7 +510,9 @@ function render() {
     `<div class="navi-head"><h2>🧭 ナビ・コース</h2><button type="button" data-act="close" aria-label="閉じる">×</button></div>` +
     `<details class="navi-help"${points.length >= 2 ? "" : " open"}><summary>使い方</summary><p class="muted">地図を押して、出発 → 通りたい道の上 → … → 到着 の順に点を置きます(点はドラッグで動かせます)。` +
     `道を乗り換えるところでは、乗り換えた先の道の上に点を置くと確実です。選んだ道の選び方で道筋を作り、Google マップのナビ用リンクにします。` +
-    `都道府県道は国道より少し遠回りとみなして国道を優先します。「一般道」まで使うと、データの道の切れ目や道から離れた点を、Google マップに任せる区間(点線)でつなぎます。</p></details>` +
+    `都道府県道は国道より少し遠回りとみなして国道を優先します。「一般道」まで使うと、データの道の切れ目や道から離れた点を、Google マップに任せる区間(点線)でつなぎます。` +
+    `「高速も使う」にすると、速い高速道路(緑)も使って、遠くの点の間は高速道路で移動します。高速道路には経由地を置かず、降りた少し先に経由地を置きます。` +
+    `高速道路を走りたくない区間は、その区間の下の道の上に点を置いてください。</p></details>` +
     `<label class="navi-per">道の選び方 <select data-act="mode">` +
     (Object.keys(MODE_LABELS) as NaviMode[]).map((k) => `<option value="${k}"${m === k ? " selected" : ""}>${MODE_LABELS[k]}</option>`).join("") +
     `</select></label>` +

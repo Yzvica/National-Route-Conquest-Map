@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FREE_REF, RoadGraph, compareRef, dist, googleMapsUrl, linksText, planNavi, segmentsIn, type NaviPlan } from "./navi";
+import { EXP_PREFIX, FREE_REF, RoadGraph, compareRef, dist, googleMapsUrl, linksText, planNavi, segmentsIn, type NaviPlan } from "./navi";
 import type { LonLat, Segment } from "./types";
 
 // 緯度38度付近で、経度 0.001 度 ≒ 88m、緯度 0.001 度 ≒ 111m
@@ -149,6 +149,57 @@ describe("都道府県道と一般道", () => {
 
   it("compareRef は国道 → 都道府県道 → 一般道の順", () => {
     expect([FREE_REF, "13-3", "4-22", "45", "4"].sort(compareRef)).toEqual(["4", "45", "4-22", "13-3", FREE_REF]);
+  });
+});
+
+describe("高速も使う", () => {
+  // 国道1号: 東へ約35km(緯度 38.0)。高速道路: その北 約2.2km を上下線別に並走し、西の端の入口と東の端の出口のランプでだけ乗り降りできる
+  const r1 = straight("a", ["1"], [140.0, 38.0], [140.4, 38.0]);
+  const E = EXP_PREFIX + "テスト自動車道";
+  const east = straight("e", [E], [140.0, 38.02], [140.4, 38.02], { pair: "w-0", cats: ["expressway"] });
+  const west = straight("w", [E], [140.4, 38.0203], [140.0, 38.0203], { pair: "e-0", cats: ["expressway"] });
+  // 南北の国道3号は高速道路の下をくぐる(点を共有しない)
+  const r3 = straight("c", ["3"], [140.2, 38.0], [140.2, 38.05]);
+  const ramps = {
+    ramps: [
+      { k: "in" as const, c: [[140.02, 38.0], [140.02, 38.01], [140.03, 38.02]] as LonLat[] },
+      { k: "out" as const, c: [[140.37, 38.02], [140.38, 38.01], [140.38, 38.0]] as LonLat[] },
+    ],
+  };
+  const segs = [...r1, ...east, ...west, ...r3];
+  const from = { lon: 140.0, lat: 38.0 };
+  const to = { lon: 140.4, lat: 38.0 };
+
+  it("遠い所へは高速道路で行き、高速道路の上には経由地を置かず、降りた少し先に置く", () => {
+    const plan = ok(planNavi(new RoadGraph(segs, { free: true, expressway: ramps }), [from, to], { free: true }));
+    expect(plan.routes).toContain(E);
+    expect(plan.expSpans.length).toBe(1);
+    const x = plan.expSpans[0];
+    expect(x.to - x.from).toBeGreaterThan(30000);
+    expect(plan.waypoints.some((w) => w.at > x.from + 1 && w.at < x.to - 1)).toBe(false);
+    // 降りて国道1号に入ってから 400m〜1.2km の間に経由地がある
+    expect(plan.waypoints.some((w) => w.at >= x.to + 300 && w.at <= x.to + 1500 && w.routes.includes("1"))).toBe(true);
+    // 国道だけより経由地がずっと少ない
+    const kokudo = ok(planNavi(new RoadGraph(segs), [from, to]));
+    expect(kokudo.routes).toEqual(["1"]);
+    expect(plan.waypoints.length).toBeLessThan(kokudo.waypoints.length);
+  });
+
+  it("近い所へは高速道路に乗らない。高速道路の下をくぐる道から高速道路には乗れない", () => {
+    const g = new RoadGraph(segs, { free: true, expressway: ramps });
+    expect(ok(planNavi(g, [from, { lon: 140.1, lat: 38.0 }], { free: true })).expSpans.length).toBe(0);
+    const north = ok(planNavi(g, [from, { lon: 140.2, lat: 38.05 }], { free: true }));
+    expect(north.routes).toEqual(["1", "3"]);
+  });
+
+  it("選んだ点は高速道路の上には置かない(下の道に付ける)", () => {
+    const g = new RoadGraph(segs, { free: true, expressway: ramps });
+    expect(g.routesNear({ lon: 140.2006, lat: 38.0202 })).toEqual(["3"]);
+    expect(g.routesNear({ lon: 140.25, lat: 38.0202 })).toEqual([]);
+  });
+
+  it("compareRef は国道 → 都道府県道 → 高速道路 → 一般道の順", () => {
+    expect([FREE_REF, E, "4-22", "4"].sort(compareRef)).toEqual(["4", "4-22", E, FREE_REF]);
   });
 });
 
