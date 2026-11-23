@@ -1,6 +1,6 @@
 // 作ったリンクを Google(Routes API。MiniPC が中継)に問い合わせて、Google が実際に引く道と道筋を比べる。
 // Google が道筋から外れる所(近道や回り道)を見つけて、そこに経由地を足せば直せるようにする。
-// 一般道の区間は Google に任せているので、そこで外れるのは数えない。
+// 一般道・高速道路の区間は Google に任せているので、そこで外れるのは数えない。
 import { dist, type NaviLink, type NaviPlan } from "./navi";
 import type { LonLat } from "./types";
 
@@ -93,8 +93,9 @@ export function compareRoute(plan: NaviPlan, link: NaviLink, googleLine: LonLat[
   let hi = lo;
   while (hi < acc.length - 1 && acc[hi] < link.to + 500) hi++;
   const loc = line.map((p) => locate(plan, p, lo, hi));
+  // 高速道路の区間も Google に任せている(どの高速道路を通るか、どこで乗り換えるか)
   const inFree = (a: number, b: number) =>
-    plan.freeSpans.some((f) => Math.min(b, f.to + FREE_MARGIN) > Math.max(a, f.from - FREE_MARGIN));
+    [...plan.freeSpans, ...(plan.expSpans ?? [])].some((f) => Math.min(b, f.to + FREE_MARGIN) > Math.max(a, f.from - FREE_MARGIN));
   const offs: OffRoute[] = [];
   let i = 0;
   while (i < line.length) {
