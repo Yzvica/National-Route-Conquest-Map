@@ -2,6 +2,7 @@
 // 走行記録を data/record.json に保存して、LAN 内のどの端末からも同じ記録を見られるようにする。
 // Node.js の標準機能だけで動く。
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { freemem } from "node:os";
 import { basename, dirname, extname, join, normalize, resolve } from "node:path";
@@ -1331,7 +1332,14 @@ export function saveCourse(body) {
   // Google が道筋から外れた所に足した経由地
   const extra = pts(body?.extra).slice(0, 100);
   const list = loadCourses().filter((c) => c.name !== name);
-  list.unshift({ name, points, mode, extra, savedAt: new Date().toISOString() });
+  const course = { name, points, mode, extra, savedAt: new Date().toISOString() };
+  // アプリの音声案内に渡すデータ(src/naviGuide.ts)。大きいのでコースとは別のファイルにする
+  const guide = body?.guide;
+  if (guide && guide.v === 1 && Array.isArray(guide.pts) && Array.isArray(guide.man) && guide.pts.length >= 4) {
+    writeGuide(name, { ...guide, name, savedAt: course.savedAt });
+    course.guide = { length: Number(guide.length) || 0, maneuvers: guide.man.length };
+  } else rmSync(guidePath(name), { force: true });
+  list.unshift(course);
   writeCourses(list);
   return list;
 }
@@ -1339,7 +1347,25 @@ export function saveCourse(body) {
 export function deleteCourse(name) {
   const list = loadCourses().filter((c) => c.name !== name);
   writeCourses(list);
+  rmSync(guidePath(name), { force: true });
   return list;
+}
+
+// ---- アプリの音声案内のデータ(data/navi-guides/<名前のハッシュ>.json) ----
+const GUIDES = join(dirname(RECORD), "navi-guides");
+const guidePath = (name) => join(GUIDES, `${createHash("sha1").update(String(name)).digest("hex")}.json`);
+
+function writeGuide(name, guide) {
+  mkdirSync(GUIDES, { recursive: true });
+  writeFileSync(guidePath(name), JSON.stringify(guide));
+}
+
+export function loadGuide(name) {
+  try {
+    return JSON.parse(readFileSync(guidePath(name), "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 export function createApp() {
@@ -1370,6 +1396,11 @@ export function createApp() {
         }
         if (req.method === "DELETE") return json(res, 200, deleteCourse(url.searchParams.get("name") ?? ""));
         return json(res, 405, { error: "method not allowed" });
+      }
+      // コースの音声案内のデータ(iPhone アプリが受け取る)
+      if (url.pathname === "/api/navi/guide") {
+        const g = loadGuide(url.searchParams.get("name") ?? "");
+        return g ? json(res, 200, g) : json(res, 404, { error: "このコースには案内のデータがありません(地図でコースを保存し直してください)" });
       }
       // 保守用の状態まとめ(server/health.mjs)
       if (url.pathname === "/api/health" || url.pathname === "/health") {

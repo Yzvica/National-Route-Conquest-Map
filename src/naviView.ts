@@ -5,6 +5,7 @@ import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource } from "maplibre-gl";
 import { muteRoadClicks } from "./map";
 import { EXP_PREFIX, FREE_REF, RoadGraph, bboxOf, expBboxOf, isExpRef, linksText, planNavi, segmentsIn, type ExpresswayExtras, type NaviPlan, type NaviPoint } from "./navi";
+import { buildGuide } from "./naviGuide";
 import { compareRoute, decodePolyline, fixPoint, originOf, type RouteCheck } from "./naviCheck";
 import { prefRouteLabel } from "./prefroads";
 import { splitLoaderOf } from "./splitData";
@@ -38,6 +39,8 @@ interface Course {
   mode: NaviMode;
   extra?: NaviPoint[];
   savedAt?: string;
+  /** アプリの音声案内のデータがあるか(MiniPC に保存したとき) */
+  guide?: { length: number; maneuvers: number };
 }
 
 const POINTS_KEY = "kokudo-navi-points";
@@ -504,7 +507,7 @@ function render() {
       `有料道路を避けたいときは、Google マップの経路オプションで「有料道路を使用しない」にしてください。</p>`;
   }
   const courseList = courses
-    .map((c, i) => `<option value="${i}">${esc(c.name)}(${esc(MODE_LABELS[c.mode] ?? "")})</option>`)
+    .map((c, i) => `<option value="${i}">${c.guide ? "📱 " : ""}${esc(c.name)}(${esc(MODE_LABELS[c.mode] ?? "")})</option>`)
     .join("");
   panel.innerHTML =
     `<div class="navi-head"><h2>🧭 ナビ・コース</h2><button type="button" data-act="close" aria-label="閉じる">×</button></div>` +
@@ -534,7 +537,7 @@ function render() {
       : `<p class="muted">保存したコースはまだありません</p>`) +
     `<div class="navi-row"><input type="text" data-course-name maxlength="60" placeholder="コースの名前" value="${esc(courseName)}">` +
     `<button type="button" data-act="save-course"${points.length >= 2 ? "" : " disabled"}>保存</button></div>` +
-    `<p class="muted">${coursesOnServer ? "コースは MiniPC に保存するので、ほかの端末からも開けます。" : "MiniPC に保存できないので、この端末のブラウザに保存します。"}</p>` +
+    `<p class="muted">${coursesOnServer ? "コースは MiniPC に保存するので、ほかの端末からも開けます。道筋ができてから保存すると、iPhone の走行ロガーの「ナビ」で音声案内できます(📱 の付いたコース)。" : "MiniPC に保存できないので、この端末のブラウザに保存します。"}</p>` +
     `</details>`;
 }
 
@@ -567,10 +570,12 @@ async function saveCourse() {
   const course: Course = { name: nm, points: points.map(nf), mode: mode(), extra: extra.map(nf) };
   if (coursesOnServer) {
     try {
-      const r = await fetch(`${API}/navi/courses`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(course) });
+      // iPhone アプリの音声案内のデータも一緒に送る(道筋ができているとき)
+      const guide = plan ? buildGuide(plan, nm, routeName) : undefined;
+      const r = await fetch(`${API}/navi/courses`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...course, guide }) });
       if (!r.ok) throw new Error(String(r.status));
       courses = (await r.json()) as Course[];
-      ctx?.toast([`コース「${nm}」を保存しました`]);
+      ctx?.toast([guide ? `コース「${nm}」を保存しました(アプリで音声案内できます。案内 ${guide.man.length} か所)` : `コース「${nm}」を保存しました`]);
       render();
       return;
     } catch {

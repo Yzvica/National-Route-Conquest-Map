@@ -617,6 +617,18 @@ describe("ナビのコース(/api/navi/courses)と Google での確かめ(/api/g
       list = await (await fetch(`${base}?name=${encodeURIComponent("松島")}`, { method: "DELETE" })).json();
       expect((await (await fetch(base)).json()).map((c) => c.name)).toEqual(["秋保"]);
 
+      // アプリの音声案内のデータ: コースと一緒に送ると別に保存し、名前で取り出せる。案内なしで保存し直すと消える
+      const guideUrl = (n) => `${root}/navi/guide?name=${encodeURIComponent(n)}`;
+      expect((await fetch(guideUrl("秋保"))).status).toBe(404);
+      const guide = { v: 1, name: "x", length: 1234, pts: [38.26, 140.88, 38.23, 140.72], man: [{ i: 1, at: 1234, kind: "arrive", angle: 0, text: "目的地", road: "" }], roads: [], free: [], exp: [] };
+      list = await (await post({ name: "秋保", points: pts, mode: "free", guide })).json();
+      expect(list[0].guide).toEqual({ length: 1234, maneuvers: 1 });
+      const got = await (await fetch(guideUrl("秋保"))).json();
+      expect(got.name).toBe("秋保");
+      expect(got.pts).toEqual(guide.pts);
+      await post({ name: "秋保", points: pts, mode: "free" });
+      expect((await fetch(guideUrl("秋保"))).status).toBe(404);
+
       const route = (b) => fetch(`${root}/gmaps/route`, { method: "POST", body: JSON.stringify(b) });
       const p = { lat: 38.26, lon: 140.88 };
       expect((await route({ origin: p, destination: p, waypoints: [] })).status).toBe(404);
