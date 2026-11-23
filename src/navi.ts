@@ -54,6 +54,12 @@ export interface NaviPlan {
   freeSpans: { from: number; to: number }[];
   /** 高速道路(ランプを含む。Google に任せる)の区間(道筋の最初からの距離 m) */
   expSpans: { from: number; to: number }[];
+  /** 通る道とその区間(道筋の最初からの距離 m。アプリの音声案内で道の変わり目に使う) */
+  spans: { ref: string; from: number; to: number }[];
+  /** 道筋の点のうち、ほかの道と分かれる・合わさる点(交差点)の添字 */
+  junctions: number[];
+  /** ランプ・JCT(高速道路の出入りと乗り換え)の区間(道筋の最初からの距離 m) */
+  rampSpans: { from: number; to: number }[];
 }
 
 export interface NaviOptions {
@@ -569,6 +575,26 @@ export class RoadGraph {
     return out;
   }
 
+  /**
+   * 道筋の点のうち交差点(つながる点が3つ以上)の添字。辺は向き付きなので、入ってくる辺も数える。
+   * 一般道の仮の辺(データにない道)は数えない
+   */
+  junctionsOf(nodes: number[]): number[] {
+    const want = new Map<number, Set<number>>();
+    for (const n of nodes) want.set(n, new Set());
+    for (let a = 0; a < this.adj.length; a++)
+      for (const e of this.adj[a]) {
+        if (e.seg === SEG_FREE) continue;
+        want.get(a)?.add(e.to);
+        want.get(e.to)?.add(a);
+      }
+    const out: number[] = [];
+    nodes.forEach((n, i) => {
+      if (i > 0 && i < nodes.length - 1 && want.get(n)!.size >= 3) out.push(i);
+    });
+    return out;
+  }
+
   /** 点からいちばん近い道までの距離(m) */
   distanceTo(p: NaviPoint): number {
     const n = this.nearest(p, 0, Infinity);
@@ -744,6 +770,7 @@ function planInner(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions): Na
   };
   const freeSpans = spansOf((e) => e.seg === SEG_FREE);
   const expSpans = spansOf(expEdge);
+  const rampSpans = spansOf((e) => e.seg === SEG_RAMP);
   const safeEdge = (e: Edge | undefined) => {
     if (!e || e.seg < 0) return false;
     const s = graph.segments[e.seg];
@@ -910,7 +937,7 @@ function planInner(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions): Na
     links.push({ url: googleMapsUrl(ways, dest), from: prevAt, to: dest.at, routes: rs, waypoints: ways, dest });
     prevAt = dest.at;
   }
-  return { path: pos, length: acc[end], waypoints, routes: spans.map((sp) => sp.ref), links, acc, freeSpans, expSpans };
+  return { path: pos, length: acc[end], waypoints, routes: spans.map((sp) => sp.ref), links, acc, freeSpans, expSpans, spans, junctions: graph.junctionsOf(nodes), rampSpans };
 }
 
 const round5 = (v: number) => Math.round(v * 1e5) / 1e5;
