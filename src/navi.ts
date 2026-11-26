@@ -60,6 +60,10 @@ export interface NaviPlan {
   junctions: number[];
   /** ランプ・JCT(高速道路の出入りと乗り換え)の区間(道筋の最初からの距離 m) */
   rampSpans: { from: number; to: number }[];
+  /** まだ通っていない道の区間(道筋の最初からの距離 m)。NaviOptions.fresh を渡したときだけ */
+  freshSpans: { from: number; to: number }[];
+  /** まだ通っていない道の長さ(m。区間の走行済みの割合で按分)。NaviOptions.fresh を渡したときだけ */
+  freshLength: number;
 }
 
 export interface NaviOptions {
@@ -73,6 +77,8 @@ export interface NaviOptions {
   free?: boolean;
   /** 必ず経由地を置く場所(道筋の上か、そのそば 300m 以内)。Google が道筋を通らなかったときに足す */
   extra?: NaviPoint[];
+  /** 区間のまだ通っていない割合(0〜1)。渡すと、道筋のうち未走行の区間と長さを数える */
+  fresh?: (s: Segment) => number;
 }
 
 /** 一般道の印(路線のかわり) */
@@ -96,6 +102,21 @@ export function roadWeight(s: Segment): number {
   if (s.cats.includes("general")) return PREF_WEIGHT.general;
   if (s.cats.includes("major")) return PREF_WEIGHT.major;
   return 1;
+}
+
+/** 「未走行を優先」の強さ: まだ通っていない区間の重みを、この割合だけ軽くする(0 = 優先しない) */
+export const FRESH_BONUS = { off: 0, some: 0.3, strong: 0.55 } as const;
+export type FreshLevel = keyof typeof FRESH_BONUS;
+/** これ以上通っていない区間を「未走行」として地図に出す */
+export const FRESH_MIN = 0.5;
+
+/**
+ * 未走行を優先する重み。base(道の種類の重み)に、まだ通っていない割合 fresh(0〜1)に応じて
+ * (1 - bonus × fresh) を掛ける。通った道はそのまま、通っていない道ほど近いとみなして選ばれやすくする
+ */
+export function freshWeight(base: (s: Segment) => number, fresh: (s: Segment) => number, bonus: number): (s: Segment) => number {
+  if (bonus <= 0) return base;
+  return (s) => base(s) * (1 - bonus * Math.min(1, Math.max(0, fresh(s))));
 }
 
 /** 路線の並び: 国道(番号順) → 都道府県道 → 高速道路 → 一般道 */
@@ -771,6 +792,16 @@ function planInner(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions): Na
   const freeSpans = spansOf((e) => e.seg === SEG_FREE);
   const expSpans = spansOf(expEdge);
   const rampSpans = spansOf((e) => e.seg === SEG_RAMP);
+  // まだ通っていない道(区間ごとの割合は一度だけ数える)
+  const freshOf = new Map<number, number>();
+  const freshAt = (e: Edge) => {
+    if (!opts.fresh || e.seg < 0) return 0;
+    let f = freshOf.get(e.seg);
+    if (f === undefined) freshOf.set(e.seg, (f = Math.min(1, Math.max(0, opts.fresh(graph.segments[e.seg])))));
+    return f;
+  };
+  const freshSpans = opts.fresh ? spansOf((e) => freshAt(e) >= FRESH_MIN) : [];
+  const freshLength = opts.fresh ? edges.reduce((sum, e, k) => sum + (acc[k + 1] - acc[k]) * freshAt(e), 0) : 0;
   const safeEdge = (e: Edge | undefined) => {
     if (!e || e.seg < 0) return false;
     const s = graph.segments[e.seg];
@@ -937,7 +968,7 @@ function planInner(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions): Na
     links.push({ url: googleMapsUrl(ways, dest), from: prevAt, to: dest.at, routes: rs, waypoints: ways, dest });
     prevAt = dest.at;
   }
-  return { path: pos, length: acc[end], waypoints, routes: spans.map((sp) => sp.ref), links, acc, freeSpans, expSpans, spans, junctions: graph.junctionsOf(nodes), rampSpans };
+  return { path: pos, length: acc[end], waypoints, routes: spans.map((sp) => sp.ref), links, acc, freeSpans, expSpans, spans, junctions: graph.junctionsOf(nodes), rampSpans, freshSpans, freshLength };
 }
 
 const round5 = (v: number) => Math.round(v * 1e5) / 1e5;

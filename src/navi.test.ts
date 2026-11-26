@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EXP_PREFIX, FREE_REF, RoadGraph, compareRef, dist, googleMapsUrl, linksText, planNavi, segmentsIn, type NaviPlan } from "./navi";
+import { EXP_PREFIX, FREE_REF, FRESH_BONUS, PREF_WEIGHT, RoadGraph, freshWeight, roadWeight, compareRef, dist, googleMapsUrl, linksText, planNavi, segmentsIn, type NaviPlan } from "./navi";
 import type { LonLat, Segment } from "./types";
 
 // 緯度38度付近で、経度 0.001 度 ≒ 88m、緯度 0.001 度 ≒ 111m
@@ -212,5 +212,44 @@ describe("helpers", () => {
   it("segmentsIn は範囲にかかる区間だけを返す", () => {
     const s = [seg("in", ["1"], [[140.0, 38.0], [140.1, 38.0]]), seg("out", ["1"], [[141.0, 39.0], [141.1, 39.0]])];
     expect(segmentsIn(s, [139.9, 37.9, 140.05, 38.1]).map((x) => x.id)).toEqual(["in"]);
+  });
+});
+
+describe("未走行を優先", () => {
+  // 西(140.0)から東(140.1)へ: まっすぐな国道1号(約8.8km、走行済み)と、北へ膨らむ国道2号(約11km、未走行)
+  const r1 = straight("a", ["1"], [140.0, 38.0], [140.1, 38.0]);
+  const r2 = [
+    ...straight("b1", ["2"], [140.0, 38.0], [140.02, 38.012]),
+    ...straight("b2", ["2"], [140.02, 38.012], [140.08, 38.012]),
+    ...straight("b3", ["2"], [140.08, 38.012], [140.1, 38.0]),
+  ];
+  const segs = [...r1, ...r2];
+  const driven = new Set(r1.map((s) => s.id));
+  const fresh = (s: Segment) => (driven.has(s.id) ? 0 : 1);
+  const pts = [
+    { lon: 140.0, lat: 38.0 },
+    { lon: 140.1, lat: 38.0 },
+  ];
+
+  it("優先しないときは近い走行済みの道、優先すると少し遠回りでも未走行の道を通る", () => {
+    const plain = ok(planNavi(new RoadGraph(segs), pts, { fresh }));
+    expect(plain.routes).toEqual(["1"]);
+    expect(plain.freshLength).toBeLessThan(100);
+    expect(plain.freshSpans).toEqual([]);
+
+    const pref = ok(planNavi(new RoadGraph(segs, { weight: freshWeight(roadWeight, fresh, FRESH_BONUS.strong) }), pts, { fresh }));
+    expect(pref.routes).toEqual(["2"]);
+    expect(pref.freshLength / pref.length).toBeGreaterThan(0.95);
+    expect(pref.freshSpans.length).toBe(1);
+  });
+
+  it("走った割合に応じて重みを軽くし、優先しないときは元の重みのまま", () => {
+    const s = r1[0];
+    expect(freshWeight(roadWeight, () => 1, 0)).toBe(roadWeight);
+    expect(freshWeight(roadWeight, () => 1, 0.5)(s)).toBeCloseTo(0.5);
+    expect(freshWeight(roadWeight, () => 0.5, 0.5)(s)).toBeCloseTo(0.75);
+    expect(freshWeight(roadWeight, () => 0, 0.5)(s)).toBeCloseTo(1);
+    const general: Segment = { ...s, cats: ["general"] };
+    expect(freshWeight(roadWeight, () => 1, 0.5)(general)).toBeCloseTo(PREF_WEIGHT.general * 0.5);
   });
 });
