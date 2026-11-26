@@ -4,12 +4,12 @@
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource } from "maplibre-gl";
 import { muteRoadClicks } from "./map";
-import { EXP_PREFIX, FREE_REF, RoadGraph, bboxOf, expBboxOf, isExpRef, linksText, planNavi, segmentsIn, type ExpresswayExtras, type NaviPlan, type NaviPoint } from "./navi";
+import { EXP_PREFIX, FREE_REF, FRESH_BONUS, RoadGraph, bboxOf, freshWeight, roadWeight, type FreshLevel, expBboxOf, isExpRef, linksText, planNavi, segmentsIn, type ExpresswayExtras, type NaviPlan, type NaviPoint } from "./navi";
 import { buildGuide } from "./naviGuide";
 import { compareRoute, decodePolyline, fixPoint, originOf, type RouteCheck } from "./naviCheck";
 import { prefRouteLabel } from "./prefroads";
 import { splitLoaderOf } from "./splitData";
-import type { LonLat, PrefRoadIndex, RouteData, Segment } from "./types";
+import type { Coverage, LonLat, PrefRoadIndex, RouteData, Segment } from "./types";
 
 export interface NaviContext {
   map: maplibregl.Map;
@@ -22,6 +22,8 @@ export interface NaviContext {
   loadPref: (code: number) => Promise<RouteData | undefined>;
   prefName: (code: number) => string;
   toast: (lines: string[]) => void;
+  /** 走行の記録(区間ID → 走った割合)。「未走行を優先」で使う */
+  coverage: () => Coverage;
 }
 
 /** 道の選び方: 国道だけ / 国道→都道府県道 / 国道→都道府県道→一般道 / それに高速道路も */
@@ -32,11 +34,19 @@ const MODE_LABELS: Record<NaviMode, string> = {
   free: "国道 → 都道府県道 → 一般道",
   exp: "高速も使う(+ 国道 → 都道府県道 → 一般道)",
 };
+/** 「未走行を優先」の強さ */
+const FRESH_LABELS: Record<FreshLevel, string> = {
+  off: "しない",
+  some: "少し(未走行の道を約3割近いとみなす)",
+  strong: "強く(未走行の道を約半分の距離とみなす)",
+};
 
 interface Course {
   name: string;
   points: NaviPoint[];
   mode: NaviMode;
+  /** 未走行を優先する強さ(ないときは優先しない) */
+  fresh?: FreshLevel;
   extra?: NaviPoint[];
   savedAt?: string;
   /** アプリの音声案内のデータがあるか(MiniPC に保存したとき) */
@@ -47,6 +57,7 @@ const POINTS_KEY = "kokudo-navi-points";
 const EXTRA_KEY = "kokudo-navi-extra";
 const MODE_KEY = "kokudo-navi-mode";
 const PER_LINK_KEY = "kokudo-navi-per-link";
+const FRESH_KEY = "kokudo-navi-fresh";
 /** MiniPC に保存できないとき(静的な公開版など)のコースの置き場所 */
 const COURSES_KEY = "kokudo-navi-courses";
 const API = "/api";
@@ -64,7 +75,7 @@ let busy = false;
 /** 開いたときに、道筋が見えるよう地図を動かす */
 let fitNext = false;
 let timer = 0;
-let graphCache: { data: RouteData; box: string; mode: NaviMode; graph: RoadGraph } | null = null;
+let graphCache: { data: RouteData; box: string; mode: NaviMode; fresh: FreshLevel; cov: Coverage | null; graph: RoadGraph } | null = null;
 /** Google が道筋から外れた所に足した経由地 */
 let extra: NaviPoint[] = [];
 /** Google で確かめた結果(リンクごと)。道筋が変わったら消す */
@@ -95,6 +106,16 @@ const mode = (): NaviMode => {
   const m = readJson<string>(MODE_KEY, "kokudo");
   return m === "pref" || m === "free" || m === "exp" ? m : "kokudo";
 };
+
+const freshLevel = (): FreshLevel => {
+  const f = readJson<string>(FRESH_KEY, "off");
+  return f === "some" || f === "strong" ? f : "off";
+};
+
+/** 区間のまだ通っていない割合(上下線が別の道は、どちらかを走れば走ったことにする) */
+function freshOf(cov: Coverage): (s: Segment) => number {
+  return (s) => 1 - Math.max(cov.get(s.id) ?? 0, s.pair ? (cov.get(s.pair) ?? 0) : 0);
+}
 
 function routeName(ref: string): string {
   if (ref === FREE_REF) return "一般道";
@@ -223,11 +244,13 @@ async function expresswayIn(box: [number, number, number, number]): Promise<{ se
   };
 }
 
-async function graphFor(data: RouteData, m: NaviMode): Promise<RoadGraph> {
+async function graphFor(data: RouteData, m: NaviMode, f: FreshLevel): Promise<RoadGraph> {
   const box = bboxOf(points);
   const key = box.map((v) => v.toFixed(2)).join(",");
+  // 未走行を優先するときは、走行の記録が変わったら作り直す
+  const cov = f === "off" || !ctx ? null : ctx.coverage();
   // 前に作った範囲に収まっていれば作り直さない
-  if (graphCache?.data === data && graphCache.mode === m) {
+  if (graphCache?.data === data && graphCache.mode === m && graphCache.fresh === f && graphCache.cov === cov) {
     const [w, s, e, n] = graphCache.box.split(",").map(Number);
     if (box[0] >= w && box[1] >= s && box[2] <= e && box[3] <= n) return graphCache.graph;
   }
@@ -260,8 +283,9 @@ async function graphFor(data: RouteData, m: NaviMode): Promise<RoadGraph> {
         }
     }
   }
-  const graph = new RoadGraph(segs, { free: m === "free" || m === "exp", expressway });
-  graphCache = { data, box: key, mode: m, graph };
+  const weight = cov ? freshWeight(roadWeight, freshOf(cov), FRESH_BONUS[f]) : roadWeight;
+  const graph = new RoadGraph(segs, { free: m === "free" || m === "exp", expressway, weight });
+  graphCache = { data, box: key, mode: m, fresh: f, cov, graph };
   return graph;
 }
 
@@ -286,10 +310,12 @@ async function compute() {
   render();
   try {
     const m = mode();
-    const graph = await graphFor(data, m);
+    const f = freshLevel();
+    const graph = await graphFor(data, m, f);
     const free = m === "free" || m === "exp";
     labels = points.map((p) => (free && graph.distanceTo(p) > 80 ? "一般道" : graph.routesNear(p).map(routeName).join(" / ")));
-    const r = planNavi(graph, points, { perLink: perLink(), free, extra });
+    // 未走行の道の長さは、優先しないときも数えて出す
+    const r = planNavi(graph, points, { perLink: perLink(), free, extra, fresh: freshOf(ctx.coverage()) });
     if ("error" in r) {
       plan = null;
       message = r.error;
@@ -375,6 +401,15 @@ function drawPlan(p: NaviPlan | null) {
     layout: { "line-cap": "round", "line-join": "round" },
     paint: { "line-color": "#7b1fa2", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 3, 14, 8], "line-opacity": 0.75 },
   });
+  // まだ通っていない道は、線の真ん中を明るい橙にする
+  map.addLayer({
+    id: "navi-path-fresh",
+    type: "line",
+    source: "navi-path",
+    filter: ["==", ["get", "fresh"], 1],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ffab00", "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.5, 14, 3.5], "line-opacity": 0.95 },
+  });
   // 一般道(Google に任せる区間)は点線
   map.addLayer({
     id: "navi-path-free",
@@ -427,18 +462,19 @@ function keepOnTop() {
   const map = ctx.map;
   const layers = map.getStyle()?.layers ?? [];
   if (!map.getLayer("navi-wp") || layers[layers.length - 1]?.id === "navi-wp") return;
-  for (const id of ["navi-path", "navi-path-free", "navi-path-exp", "navi-google", "navi-wp"]) map.moveLayer(id);
+  for (const id of ["navi-path", "navi-path-free", "navi-path-exp", "navi-path-fresh", "navi-google", "navi-wp"]) map.moveLayer(id);
 }
 
-/** 道筋を、データの道(kind 0)・一般道(1)・高速道路(2)の部分に分けた線 */
+/** 道筋を、データの道(kind 0)・一般道(1)・高速道路(2)の部分に分けた線。fresh はまだ通っていない道か */
 function pathFeatures(p: NaviPlan) {
   const inSpans = (spans: { from: number; to: number }[], i: number) => spans.some((f) => p.acc[i] >= f.from - 0.01 && p.acc[i + 1] <= f.to + 0.01);
-  const out: { type: "Feature"; properties: { kind: number }; geometry: { type: "LineString"; coordinates: [number, number][] } }[] = [];
+  const out: { type: "Feature"; properties: { kind: number; fresh: number }; geometry: { type: "LineString"; coordinates: [number, number][] } }[] = [];
   for (let i = 0; i + 1 < p.path.length; i++) {
     const kind = inSpans(p.freeSpans, i) ? 1 : inSpans(p.expSpans, i) ? 2 : 0;
+    const fresh = inSpans(p.freshSpans, i) ? 1 : 0;
     const last = out[out.length - 1];
-    if (last && last.properties.kind === kind) last.geometry.coordinates.push(p.path[i + 1]);
-    else out.push({ type: "Feature", properties: { kind }, geometry: { type: "LineString", coordinates: [p.path[i], p.path[i + 1]] } });
+    if (last && last.properties.kind === kind && last.properties.fresh === fresh) last.geometry.coordinates.push(p.path[i + 1]);
+    else out.push({ type: "Feature", properties: { kind, fresh }, geometry: { type: "LineString", coordinates: [p.path[i], p.path[i + 1]] } });
   }
   return out;
 }
@@ -450,6 +486,7 @@ function render() {
   if (!panel || !ctx) return;
   const name = routeName;
   const m = mode();
+  const fresh = freshLevel();
   const pts = points
     .map(
       (_, i) =>
@@ -469,6 +506,8 @@ function render() {
     result =
       `<p class="navi-summary">${plan.routes.map((r) => esc(name(r))).join(" → ")}<br>` +
       `約${kmText(plan.length)}km・経由地 ${plan.waypoints.length - 1} 個・リンク ${plan.links.length} 本` +
+      `<br>まだ通っていない道 約${kmText(plan.freshLength)}km(${plan.length > 0 ? Math.round((plan.freshLength / plan.length) * 100) : 0}%)` +
+      (plan.freshSpans.length ? `<span class="muted">・線の真ん中が橙の所</span>` : "") +
       (expLen > 0 ? `<br><span class="muted">緑は高速道路(約${kmText(expLen)}km。経由地は置かず、どの高速道路を通るかは Google マップに任せる)</span>` : "") +
       (freeLen > 0 ? `<br><span class="muted">点線は一般道(Google マップに道を任せる。長さは直線で約${kmText(freeLen)}km)</span>` : "") +
       `</p>` +
@@ -507,7 +546,7 @@ function render() {
       `有料道路を避けたいときは、Google マップの経路オプションで「有料道路を使用しない」にしてください。</p>`;
   }
   const courseList = courses
-    .map((c, i) => `<option value="${i}">${c.guide ? "📱 " : ""}${esc(c.name)}(${esc(MODE_LABELS[c.mode] ?? "")})</option>`)
+    .map((c, i) => `<option value="${i}">${c.guide ? "📱 " : ""}${esc(c.name)}(${esc(MODE_LABELS[c.mode] ?? "")}${c.fresh && c.fresh !== "off" ? "・未走行優先" : ""})</option>`)
     .join("");
   panel.innerHTML =
     `<div class="navi-head"><h2>🧭 ナビ・コース</h2><button type="button" data-act="close" aria-label="閉じる">×</button></div>` +
@@ -515,9 +554,13 @@ function render() {
     `道を乗り換えるところでは、乗り換えた先の道の上に点を置くと確実です。選んだ道の選び方で道筋を作り、Google マップのナビ用リンクにします。` +
     `都道府県道は国道より少し遠回りとみなして国道を優先します。「一般道」まで使うと、データの道の切れ目や道から離れた点を、Google マップに任せる区間(点線)でつなぎます。` +
     `「高速も使う」にすると、速い高速道路(緑)も使って、遠くの点の間は高速道路で移動します。高速道路には経由地を置かず、降りた少し先に経由地を置きます。` +
-    `高速道路を走りたくない区間は、その区間の下の道の上に点を置いてください。</p></details>` +
+    `高速道路を走りたくない区間は、その区間の下の道の上に点を置いてください。` +
+    `「まだ通っていない道を優先」にすると、走行の記録でまだ通っていない国道・都道府県道・高速道路を近いとみなして選び、少し遠回りでも未走行の道を通ります(線の真ん中が橙の所)。</p></details>` +
     `<label class="navi-per">道の選び方 <select data-act="mode">` +
     (Object.keys(MODE_LABELS) as NaviMode[]).map((k) => `<option value="${k}"${m === k ? " selected" : ""}>${MODE_LABELS[k]}</option>`).join("") +
+    `</select></label>` +
+    `<label class="navi-per">まだ通っていない道を優先 <select data-act="fresh">` +
+    (Object.keys(FRESH_LABELS) as FreshLevel[]).map((k) => `<option value="${k}"${fresh === k ? " selected" : ""}>${FRESH_LABELS[k]}</option>`).join("") +
     `</select></label>` +
     (pts ? `<ol class="navi-points">${pts}</ol>` : "") +
     `<div class="navi-row">` +
@@ -567,7 +610,7 @@ async function saveCourse() {
     return;
   }
   courseName = nm;
-  const course: Course = { name: nm, points: points.map(nf), mode: mode(), extra: extra.map(nf) };
+  const course: Course = { name: nm, points: points.map(nf), mode: mode(), fresh: freshLevel(), extra: extra.map(nf) };
   if (coursesOnServer) {
     try {
       // iPhone アプリの音声案内のデータも一緒に送る(道筋ができているとき)
@@ -600,6 +643,7 @@ function openCourse() {
   extra = (c.extra ?? []).map(nf);
   courseName = c.name;
   writeJson(MODE_KEY, c.mode);
+  writeJson(FRESH_KEY, c.fresh ?? "off");
   fitNext = true;
   changed();
 }
@@ -750,6 +794,10 @@ function onPanelChange(e: Event) {
   }
   if (el.dataset.act === "mode") {
     writeJson(MODE_KEY, el.value);
+    schedule();
+  }
+  if (el.dataset.act === "fresh") {
+    writeJson(FRESH_KEY, el.value);
     schedule();
   }
 }
