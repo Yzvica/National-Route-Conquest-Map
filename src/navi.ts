@@ -79,7 +79,15 @@ export interface NaviOptions {
   extra?: NaviPoint[];
   /** 区間のまだ通っていない割合(0〜1)。渡すと、道筋のうち未走行の区間と長さを数える */
   fresh?: (s: Segment) => number;
+  /**
+   * 前の区間(点と点の間)で通った道を、後の区間ではなるべく通らない(周回コースで同じ道を行き帰りしない)。
+   * 通った道は、未走行の優遇をなくしたうえで REUSE_FACTOR 倍の長さとみなす
+   */
+  avoidReuse?: boolean;
 }
+
+/** 前の区間で通った道を、この倍の長さとみなす(avoidReuse) */
+export const REUSE_FACTOR = 2;
 
 /** 一般道の印(路線のかわり) */
 export const FREE_REF = "*";
@@ -186,6 +194,8 @@ export interface ExpresswayExtras {
 export interface RoadGraphOptions {
   /** 区間の重み(長さに掛ける)。既定は roadWeight */
   weight?: (s: Segment) => number;
+  /** 未走行の優遇などを除いた、道の種類だけの重み(同じ道を通り直すときに使う)。既定は weight */
+  baseWeight?: (s: Segment) => number;
   /** データの道の切れ目どうしを一般道でつなぐ */
   free?: boolean;
   /**
@@ -209,14 +219,24 @@ export class RoadGraph {
   /** 一時的に足した点・辺(planNavi の間だけ。終わったら戻す) */
   private tempEdges: number[] = [];
   private baseSize = 0;
+  /** 区間ごとの重み(weight)と、道の種類だけの重み(baseWeight) */
+  readonly segWeight: number[] = [];
+  readonly segBase: number[] = [];
+  /** 上下線の相手の区間の番号(なければ -1) */
+  readonly segPair: number[] = [];
 
   constructor(
     readonly segments: Segment[],
     opts: RoadGraphOptions = {},
   ) {
     const weight = opts.weight ?? roadWeight;
+    const base = opts.baseWeight ?? weight;
+    const index = new Map(segments.map((s, i) => [s.id, i]));
     segments.forEach((s, si) => {
       const wk = weight(s);
+      this.segWeight.push(wk);
+      this.segBase.push(base(s));
+      this.segPair.push(s.pair ? (index.get(s.pair) ?? -1) : -1);
       const c = s.coords;
       // 上下線が別の道は一方通行(点の並びの向きに進む)
       const oneway = !!s.pair;
@@ -629,7 +649,7 @@ export class RoadGraph {
   }
 
   /** いくつかの点からいくつかの点への最短の道筋(点の番号の列と、通る辺) */
-  shortest(from: number[], to: number[]): { nodes: number[]; edges: Edge[] } | null {
+  shortest(from: number[], to: number[], factor?: (seg: number) => number): { nodes: number[]; edges: Edge[] } | null {
     const goal = new Set(to);
     const d = new Float64Array(this.size).fill(Infinity);
     const prev = new Int32Array(this.size).fill(-1);
@@ -652,7 +672,7 @@ export class RoadGraph {
         return { nodes: nodes.reverse(), edges: edges.reverse() };
       }
       for (const e of this.adj[u]) {
-        const nd = du + e.w;
+        const nd = du + (factor && e.seg >= 0 ? e.w * factor(e.seg) : e.w);
         if (nd < d[e.to]) {
           d[e.to] = nd;
           prev[e.to] = u;
@@ -740,22 +760,32 @@ function planInner(graph: RoadGraph, points: NaviPoint[], opts: NaviOptions): Na
   const exact = new Set<number>();
   // 一般道も使うときは、道から離れた点はその場所の点にして、一般道で近くの道につなぐ
   const snap = (p: NaviPoint): number[] => (free && graph.distanceTo(p) > OFF_ROAD ? [graph.addOffRoad(p)] : graph.nearest(p));
+  // 前の区間で通った道(上下線の相手も)。後の区間では遠回りとみなす
+  const used = new Set<number>();
+  const reuse = opts.avoidReuse
+    ? (seg: number) => (used.has(seg) ? (graph.segBase[seg] * REUSE_FACTOR) / graph.segWeight[seg] : 1)
+    : undefined;
   let from = snap(points[0]);
   if (!from.length) return { error: "1番目の点の近くに道がありません", leg: 0 };
   for (let i = 1; i < points.length; i++) {
     const to = snap(points[i]);
     if (!to.length) return { error: `${i + 1}番目の点の近くに道がありません`, leg: i };
-    let r = graph.shortest(from, to);
+    let r = graph.shortest(from, to, reuse);
     if (!r && free) {
       // データの道でつながらなければ、その区間はまるごと Google に任せる
       graph.addFreeLink(from[0], to[0]);
-      r = graph.shortest(from, to);
+      r = graph.shortest(from, to, reuse);
     }
     if (!r) return { error: `${i}番目から${i + 1}番目の点まで、データの道だけではつながりませんでした(上下線の向きや、データの切れ目のため。「一般道も使う」にするとつなげます)`, leg: i };
     if (nodes.length) r.nodes.shift();
     else nodes.push(r.nodes.shift()!);
     nodes.push(...r.nodes);
     edges.push(...r.edges);
+    for (const e of r.edges)
+      if (e.seg >= 0) {
+        used.add(e.seg);
+        if (graph.segPair[e.seg] >= 0) used.add(graph.segPair[e.seg]);
+      }
     if (i < points.length - 1) picked.push(nodes.length - 1);
     if (graph.isTemp(nodes[nodes.length - 1])) exact.add(nodes.length - 1);
     from = [nodes[nodes.length - 1]];
