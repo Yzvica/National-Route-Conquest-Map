@@ -1334,7 +1334,9 @@ export function saveCourse(body) {
   const list = loadCourses().filter((c) => c.name !== name);
   // まだ通っていない道を優先する強さ(src/naviView.ts の FreshLevel)
   const fresh = ["some", "strong"].includes(body?.fresh) ? body.fresh : undefined;
-  const course = { name, points, mode, ...(fresh ? { fresh } : {}), extra, savedAt: new Date().toISOString() };
+  // 同じ道の行き帰りを避けるか(既定は避ける。避けないときだけ残す)
+  const reuse = body?.avoidReuse === false ? { avoidReuse: false } : {};
+  const course = { name, points, mode, ...(fresh ? { fresh } : {}), ...reuse, extra, savedAt: new Date().toISOString() };
   // アプリの音声案内に渡すデータ(src/naviGuide.ts)。大きいのでコースとは別のファイルにする
   const guide = body?.guide;
   if (guide && guide.v === 1 && Array.isArray(guide.pts) && Array.isArray(guide.man) && guide.pts.length >= 4) {

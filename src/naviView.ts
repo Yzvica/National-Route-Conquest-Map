@@ -47,6 +47,8 @@ interface Course {
   mode: NaviMode;
   /** 未走行を優先する強さ(ないときは優先しない) */
   fresh?: FreshLevel;
+  /** 同じ道の行き帰りを避けるか(ないときは避ける) */
+  avoidReuse?: boolean;
   extra?: NaviPoint[];
   savedAt?: string;
   /** アプリの音声案内のデータがあるか(MiniPC に保存したとき) */
@@ -58,6 +60,7 @@ const EXTRA_KEY = "kokudo-navi-extra";
 const MODE_KEY = "kokudo-navi-mode";
 const PER_LINK_KEY = "kokudo-navi-per-link";
 const FRESH_KEY = "kokudo-navi-fresh";
+const REUSE_KEY = "kokudo-navi-avoid-reuse";
 /** MiniPC に保存できないとき(静的な公開版など)のコースの置き場所 */
 const COURSES_KEY = "kokudo-navi-courses";
 const API = "/api";
@@ -111,6 +114,9 @@ const freshLevel = (): FreshLevel => {
   const f = readJson<string>(FRESH_KEY, "off");
   return f === "some" || f === "strong" ? f : "off";
 };
+
+/** 前の区間で通った道を、後の区間でなるべく通らない(既定は避ける) */
+const avoidReuse = (): boolean => readJson<boolean>(REUSE_KEY, true) !== false;
 
 /** 区間のまだ通っていない割合(上下線が別の道は、どちらかを走れば走ったことにする) */
 function freshOf(cov: Coverage): (s: Segment) => number {
@@ -284,7 +290,7 @@ async function graphFor(data: RouteData, m: NaviMode, f: FreshLevel): Promise<Ro
     }
   }
   const weight = cov ? freshWeight(roadWeight, freshOf(cov), FRESH_BONUS[f]) : roadWeight;
-  const graph = new RoadGraph(segs, { free: m === "free" || m === "exp", expressway, weight });
+  const graph = new RoadGraph(segs, { free: m === "free" || m === "exp", expressway, weight, baseWeight: roadWeight });
   graphCache = { data, box: key, mode: m, fresh: f, cov, graph };
   return graph;
 }
@@ -315,7 +321,7 @@ async function compute() {
     const free = m === "free" || m === "exp";
     labels = points.map((p) => (free && graph.distanceTo(p) > 80 ? "一般道" : graph.routesNear(p).map(routeName).join(" / ")));
     // 未走行の道の長さは、優先しないときも数えて出す
-    const r = planNavi(graph, points, { perLink: perLink(), free, extra, fresh: freshOf(ctx.coverage()) });
+    const r = planNavi(graph, points, { perLink: perLink(), free, extra, fresh: freshOf(ctx.coverage()), avoidReuse: avoidReuse() });
     if ("error" in r) {
       plan = null;
       message = r.error;
@@ -555,13 +561,15 @@ function render() {
     `都道府県道は国道より少し遠回りとみなして国道を優先します。「一般道」まで使うと、データの道の切れ目や道から離れた点を、Google マップに任せる区間(点線)でつなぎます。` +
     `「高速も使う」にすると、速い高速道路(緑)も使って、遠くの点の間は高速道路で移動します。高速道路には経由地を置かず、降りた少し先に経由地を置きます。` +
     `高速道路を走りたくない区間は、その区間の下の道の上に点を置いてください。` +
-    `「まだ通っていない道を優先」にすると、走行の記録でまだ通っていない国道・都道府県道・高速道路を近いとみなして選び、少し遠回りでも未走行の道を通ります(線の真ん中が橙の所)。</p></details>` +
+    `「まだ通っていない道を優先」にすると、走行の記録でまだ通っていない国道・都道府県道・高速道路を近いとみなして選び、少し遠回りでも未走行の道を通ります(線の真ん中が橙の所)。` +
+    `「同じ道の行き帰りを避ける」にすると、前の区間で通った道を後の区間では遠回り(2倍の長さ)とみなし、行きと帰りで別の道を選びます。</p></details>` +
     `<label class="navi-per">道の選び方 <select data-act="mode">` +
     (Object.keys(MODE_LABELS) as NaviMode[]).map((k) => `<option value="${k}"${m === k ? " selected" : ""}>${MODE_LABELS[k]}</option>`).join("") +
     `</select></label>` +
     `<label class="navi-per">まだ通っていない道を優先 <select data-act="fresh">` +
     (Object.keys(FRESH_LABELS) as FreshLevel[]).map((k) => `<option value="${k}"${fresh === k ? " selected" : ""}>${FRESH_LABELS[k]}</option>`).join("") +
     `</select></label>` +
+    `<label class="navi-per"><input type="checkbox" data-act="reuse"${avoidReuse() ? " checked" : ""}> 同じ道の行き帰りを避ける(周回コース)</label>` +
     (pts ? `<ol class="navi-points">${pts}</ol>` : "") +
     `<div class="navi-row">` +
     `<button type="button" data-act="undo"${points.length ? "" : " disabled"}>最後の点を消す</button>` +
@@ -610,7 +618,7 @@ async function saveCourse() {
     return;
   }
   courseName = nm;
-  const course: Course = { name: nm, points: points.map(nf), mode: mode(), fresh: freshLevel(), extra: extra.map(nf) };
+  const course: Course = { name: nm, points: points.map(nf), mode: mode(), fresh: freshLevel(), avoidReuse: avoidReuse(), extra: extra.map(nf) };
   if (coursesOnServer) {
     try {
       // iPhone アプリの音声案内のデータも一緒に送る(道筋ができているとき)
@@ -644,6 +652,7 @@ function openCourse() {
   courseName = c.name;
   writeJson(MODE_KEY, c.mode);
   writeJson(FRESH_KEY, c.fresh ?? "off");
+  writeJson(REUSE_KEY, c.avoidReuse !== false);
   fitNext = true;
   changed();
 }
@@ -794,6 +803,10 @@ function onPanelChange(e: Event) {
   }
   if (el.dataset.act === "mode") {
     writeJson(MODE_KEY, el.value);
+    schedule();
+  }
+  if (el.dataset.act === "reuse") {
+    writeJson(REUSE_KEY, (el as unknown as HTMLInputElement).checked);
     schedule();
   }
   if (el.dataset.act === "fresh") {

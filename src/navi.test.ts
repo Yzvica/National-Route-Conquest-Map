@@ -253,3 +253,29 @@ describe("未走行を優先", () => {
     expect(freshWeight(roadWeight, () => 1, 0.5)(general)).toBeCloseTo(PREF_WEIGHT.general * 0.5);
   });
 });
+
+describe("同じ道の行き帰りを避ける", () => {
+  // A(西)→B(東)へ: 国道1号(まっすぐ約8.8km)と、北へ膨らむ国道2号(約11km)。A→B→A の周回
+  const r1 = straight("a", ["1"], [140.0, 38.0], [140.1, 38.0]);
+  const r2 = [
+    ...straight("b1", ["2"], [140.0, 38.0], [140.02, 38.012]),
+    ...straight("b2", ["2"], [140.02, 38.012], [140.08, 38.012]),
+    ...straight("b3", ["2"], [140.08, 38.012], [140.1, 38.0]),
+  ];
+  const pts = [
+    { lon: 140.0, lat: 38.0 },
+    { lon: 140.1, lat: 38.0 },
+    { lon: 140.0, lat: 38.0 },
+  ];
+  it("避けないと同じ道を往復し、避けると帰りは別の道を通る", () => {
+    const g = new RoadGraph([...r1, ...r2]);
+    expect(ok(planNavi(g, pts)).routes).toEqual(["1"]);
+    expect(ok(planNavi(g, pts, { avoidReuse: true })).routes).toEqual(["1", "2"]);
+  });
+  it("通った道は未走行の優遇もなくす", () => {
+    // 2号だけ未走行で強く優先: 行きは2号、帰りは(2号が2倍とみなされ)1号
+    const fresh = (s: Segment) => (s.routes[0] === "2" ? 1 : 0);
+    const g = new RoadGraph([...r1, ...r2], { weight: freshWeight(roadWeight, fresh, FRESH_BONUS.strong), baseWeight: roadWeight });
+    expect(ok(planNavi(g, pts, { avoidReuse: true })).routes).toEqual(["2", "1"]);
+  });
+});
