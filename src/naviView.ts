@@ -8,6 +8,7 @@ import { EXP_PREFIX, FREE_REF, FRESH_BONUS, RoadGraph, bboxOf, freshWeight, road
 import { buildGuide } from "./naviGuide";
 import { compareRoute, decodePolyline, fixPoint, originOf, type RouteCheck } from "./naviCheck";
 import { prefRouteLabel } from "./prefroads";
+import { cardFileName, composeCard, openCardModal, renderRouteMap, type CardInfo, type CardLine } from "./shareCard";
 import { splitLoaderOf } from "./splitData";
 import type { Coverage, LonLat, PrefRoadIndex, RouteData, Segment } from "./types";
 
@@ -73,6 +74,8 @@ let points: NaviPoint[] = [];
 let labels: string[] = [];
 let markers: maplibregl.Marker[] = [];
 let plan: NaviPlan | null = null;
+/** 次に地図を押したとき、点をこの位置に入れる(null なら最後に足す) */
+let insertAt: number | null = null;
 let message = "";
 let busy = false;
 /** 開いたときに、道筋が見えるよう地図を動かす */
@@ -170,7 +173,11 @@ function onMapClick(e: maplibregl.MapMouseEvent) {
   if (!naviOpen() || !ctx) return;
   // 経由地の丸を押したときは、その説明を出すだけ
   if (ctx.map.getLayer("navi-wp") && ctx.map.queryRenderedFeatures(e.point, { layers: ["navi-wp"] }).length) return;
-  points.push({ lon: round5(e.lngLat.lng), lat: round5(e.lngLat.lat) });
+  const p = { lon: round5(e.lngLat.lng), lat: round5(e.lngLat.lat) };
+  if (insertAt !== null && insertAt <= points.length) {
+    points.splice(insertAt, 0, p);
+    insertAt = null;
+  } else points.push(p);
   changed();
 }
 
@@ -496,7 +503,11 @@ function render() {
   const pts = points
     .map(
       (_, i) =>
+        (insertAt === i ? `<li class="navi-insert-here">ここに入れます: 地図を押してください</li>` : "") +
         `<li><span class="navi-no">${pointLabel(i)}</span><span class="navi-road">${esc(labels[i] || "")}</span>` +
+        `<button type="button" data-up="${i}" aria-label="前へ動かす" title="前へ"${i === 0 ? " disabled" : ""}>↑</button>` +
+        `<button type="button" data-down="${i}" aria-label="後ろへ動かす" title="後ろへ"${i === points.length - 1 ? " disabled" : ""}>↓</button>` +
+        `<button type="button" data-insert="${i + 1}" aria-label="この後に点を入れる" title="この後に点を入れる"${i === points.length - 1 ? " disabled" : ""}>＋</button>` +
         `<button type="button" data-remove="${i}" aria-label="この点を消す">×</button></li>`,
     )
     .join("");
@@ -538,6 +549,7 @@ function render() {
         .join("") +
       `</ol>` +
       `<div class="navi-row"><button type="button" data-act="copy-all">まとめてコピー</button>` +
+      `<button type="button" data-act="image">コースの画像</button>` +
       (typeof navigator.share === "function" ? `<button type="button" data-act="share">共有</button>` : "") +
       `</div>` +
       `<div class="navi-row">` +
@@ -557,6 +569,7 @@ function render() {
   panel.innerHTML =
     `<div class="navi-head"><h2>🧭 ナビ・コース</h2><button type="button" data-act="close" aria-label="閉じる">×</button></div>` +
     `<details class="navi-help"${points.length >= 2 ? "" : " open"}><summary>使い方</summary><p class="muted">地図を押して、出発 → 通りたい道の上 → … → 到着 の順に点を置きます(点はドラッグで動かせます)。` +
+    `点の ↑↓ で順番を入れ替え、＋ を押してから地図を押すとその後ろに点を入れられます。` +
     `道を乗り換えるところでは、乗り換えた先の道の上に点を置くと確実です。選んだ道の選び方で道筋を作り、Google マップのナビ用リンクにします。` +
     `都道府県道は国道より少し遠回りとみなして国道を優先します。「一般道」まで使うと、データの道の切れ目や道から離れた点を、Google マップに任せる区間(点線)でつなぎます。` +
     `「高速も使う」にすると、速い高速道路(緑)も使って、遠くの点の間は高速道路で移動します。高速道路には経由地を置かず、降りた少し先に経由地を置きます。` +
@@ -571,6 +584,7 @@ function render() {
     `</select></label>` +
     `<label class="navi-per"><input type="checkbox" data-act="reuse"${avoidReuse() ? " checked" : ""}> 同じ道の行き帰りを避ける(周回コース)</label>` +
     (pts ? `<ol class="navi-points">${pts}</ol>` : "") +
+    (insertAt !== null ? `<div class="navi-row"><button type="button" data-act="cancel-insert">点を入れるのをやめる(最後に足す)</button></div>` : "") +
     `<div class="navi-row">` +
     `<button type="button" data-act="undo"${points.length ? "" : " disabled"}>最後の点を消す</button>` +
     `<button type="button" data-act="back"${points.length >= 2 ? "" : " disabled"}>出発に戻る</button>` +
@@ -648,6 +662,7 @@ function openCourse() {
   const c = selectedCourse();
   if (!c) return;
   points = c.points.map(nf);
+  insertAt = null;
   extra = (c.extra ?? []).map(nf);
   courseName = c.name;
   writeJson(MODE_KEY, c.mode);
@@ -742,7 +757,23 @@ function onPanelClick(e: MouseEvent) {
   if (!el || !ctx) return;
   if (el.dataset.remove) {
     points.splice(Number(el.dataset.remove), 1);
+    insertAt = null;
     changed();
+    return;
+  }
+  if (el.dataset.up || el.dataset.down) {
+    const i = Number(el.dataset.up ?? el.dataset.down);
+    const j = el.dataset.up ? i - 1 : i + 1;
+    if (j < 0 || j >= points.length) return;
+    [points[i], points[j]] = [points[j], points[i]];
+    insertAt = null;
+    changed();
+    return;
+  }
+  if (el.dataset.insert) {
+    const i = Number(el.dataset.insert);
+    insertAt = insertAt === i ? null : i;
+    render();
     return;
   }
   if (el.dataset.copy && plan) {
@@ -753,7 +784,15 @@ function onPanelClick(e: MouseEvent) {
     case "close":
       closeNavi();
       break;
+    case "cancel-insert":
+      insertAt = null;
+      render();
+      break;
+    case "image":
+      void makeCourseImage();
+      break;
     case "undo":
+      insertAt = null;
       points.pop();
       changed();
       break;
@@ -762,6 +801,7 @@ function onPanelClick(e: MouseEvent) {
       changed();
       break;
     case "clear":
+      insertAt = null;
       points = [];
       extra = [];
       courseName = "";
@@ -812,5 +852,88 @@ function onPanelChange(e: Event) {
   if (el.dataset.act === "fresh") {
     writeJson(FRESH_KEY, el.value);
     schedule();
+  }
+}
+
+/** 道筋の線の色: データの道 / 一般道(点線) / 高速道路 / まだ通っていない道 */
+const CARD_COLORS = { road: "#7b1fa2", exp: "#0b8043", fresh: "#ef6c00" };
+
+/** コースの道筋を、画像の線(色分け)にする */
+export function courseLines(p: NaviPlan): CardLine[] {
+  const inSpans = (spans: { from: number; to: number }[], i: number) => spans.some((f) => p.acc[i] >= f.from - 0.01 && p.acc[i + 1] <= f.to + 0.01);
+  const out: (CardLine & { key: string })[] = [];
+  for (let i = 0; i + 1 < p.path.length; i++) {
+    const free = inSpans(p.freeSpans, i);
+    const color = free ? CARD_COLORS.road : inSpans(p.freshSpans, i) ? CARD_COLORS.fresh : inSpans(p.expSpans, i) ? CARD_COLORS.exp : CARD_COLORS.road;
+    const key = `${color}|${free}`;
+    const last = out[out.length - 1];
+    if (last?.key === key) last.coords.push(p.path[i + 1]);
+    else out.push({ key, color, dashed: free, coords: [p.path[i], p.path[i + 1]] });
+  }
+  return out.map(({ key: _k, ...l }) => l);
+}
+
+/** コースの画像の文字の部分 */
+export function courseCardInfo(
+  p: NaviPlan,
+  o: { title: string; mode: string; fresh: boolean; avoidReuse: boolean; points: number; routeName: (ref: string) => string },
+): CardInfo {
+  const sum = (spans: { from: number; to: number }[]) => spans.reduce((a, f) => a + f.to - f.from, 0);
+  const km1 = (m: number) => (m / 1000).toFixed(1);
+  const expLen = sum(p.expSpans);
+  const freeLen = sum(p.freeSpans);
+  const refs = [...new Set(p.spans.filter((sp) => sp.to - sp.from >= 300).map((sp) => sp.ref))];
+  const kokudo = refs.filter((r) => r !== FREE_REF && !isExpRef(r) && !r.includes("-")).sort((a, b) => Number(a) - Number(b));
+  const pref = refs.filter((r) => !isExpRef(r) && r.includes("-"));
+  const exp = refs.filter(isExpRef);
+  const sec = (label: string, list: string[]) => (list.length ? [{ label, count: list.length, names: list.slice(0, 40).map(o.routeName) }] : []);
+  return {
+    title: o.title,
+    subtitle: [o.mode, o.fresh ? "未走行を優先" : "", o.avoidReuse ? "行き帰りの重複を避ける" : ""].filter(Boolean).join("・"),
+    tiles: [
+      { label: "距離", value: km1(p.length), unit: "km" },
+      { label: "まだ通っていない道", value: km1(p.freshLength), unit: "km" },
+      { label: "経由地", value: String(p.waypoints.length - 1), unit: "個" },
+      { label: "リンク", value: String(p.links.length), unit: "本" },
+    ],
+    rows: [
+      { color: CARD_COLORS.road, text: `国道・都道府県道(紫)` },
+      ...(p.freshLength > 0 ? [{ color: CARD_COLORS.fresh, text: `まだ通っていない道(橙) 約${km1(p.freshLength)}km・${p.length > 0 ? Math.round((p.freshLength / p.length) * 100) : 0}%` }] : []),
+      ...(expLen > 0 ? [{ color: CARD_COLORS.exp, text: `高速道路(緑) 約${km1(expLen)}km` }] : []),
+      ...(freeLen > 0 ? [{ text: `点線は一般道(Google マップ任せ) 直線で約${km1(freeLen)}km` }] : []),
+      { text: `選んだ点 ${o.points} か所(緑=出発・赤=到着)` },
+    ],
+    routes: [...sec("通る国道", kokudo), ...sec("通る都道府県道", pref), ...sec("通る高速道路", exp)],
+    footer: "国道制覇マップ・ナビ・コース",
+  };
+}
+
+/** 今のコースを画像にする(地図に道筋と点、距離・通る道など) */
+async function makeCourseImage() {
+  const p = plan;
+  if (!p) return;
+  const modal = openCardModal();
+  try {
+    const f = freshLevel();
+    const info = courseCardInfo(p, {
+      title: courseName || "ナビ・コース",
+      mode: MODE_LABELS[mode()],
+      fresh: f !== "off",
+      avoidReuse: avoidReuse(),
+      points: points.length,
+      routeName,
+    });
+    const markers = points.map((q, i) => ({
+      at: [q.lon, q.lat] as [number, number],
+      color: i === 0 ? "#2e7d32" : i === points.length - 1 ? "#d32f2f" : CARD_COLORS.road,
+    }));
+    // 出発と到着が同じ周回コースは、出発の印を上に描く
+    if (points.length > 1) markers.push(markers.shift()!);
+    modal.status("地図を描いています…");
+    const img = await renderRouteMap(courseLines(p), { width: 540, height: 560, markers });
+    if (modal.closed) return;
+    modal.show(composeCard(img, info), cardFileName(info.title));
+  } catch (e) {
+    modal.status(`画像を作れませんでした: ${(e as Error).message}`);
   }
 }
